@@ -1,0 +1,48 @@
+/dts-v1/;
+/plugin/;
+
+/*
+ * PixelPilot GSMenu navigation buttons as a kernel gpio-keys evdev device.
+ * Board: Radxa Zero 3 (rk3566).
+ * Mappings mirror board/radxa/zero3/overlay/etc/pixelpilot.yaml:
+ *   left:13  right:11  up:16  down:18  rec:32   (no center)
+ *
+ * linux,code uses the F13..F18 range (183..188) on purpose: those codes are
+ * NOT in the console keymap, so button presses never leak to the foreground
+ * tty -- whether or not PixelPilot is running -- while evdev still delivers
+ * them. PixelPilot's keycode_to_button() maps F13..F18 to up/down/left/right/
+ * center/rec.
+ *
+ * gpio cell = <&gpio3 line flags>:  flags 0 = GPIO_ACTIVE_HIGH (pressed reads
+ * high), matching input.cpp which treats line value 1 as "pressed". Flip a
+ * line to flags 1 (ACTIVE_LOW) if a unit wires that button to ground instead.
+ */
+
+/ {
+	metadata {
+		title = "PixelPilot GSMenu keys (Radxa Zero 3)";
+		compatible = "radxa,zero3", "rockchip,rk3566";
+		category = "misc";
+		description = "Expose GSMenu navigation buttons as a gpio-keys evdev device";
+	};
+
+	fragment@0 {
+		target-path = "/";
+		__overlay__ {
+			gsmenu_keys: gsmenu-keys {
+				compatible = "gpio-keys";
+
+				/* PIN_16 -> GPIO3_B1, up    (KEY_F13) */
+				key-up    { label = "gsmenu-up";    linux,code = <183>; gpios = <&gpio3 9 0>;  debounce-interval = <50>; };
+				/* PIN_18 -> GPIO3_B2, down  (KEY_F14) */
+				key-down  { label = "gsmenu-down";  linux,code = <184>; gpios = <&gpio3 10 0>; debounce-interval = <50>; };
+				/* PIN_13 -> GPIO3_A2, left  (KEY_F15) */
+				key-left  { label = "gsmenu-left";  linux,code = <185>; gpios = <&gpio3 2 0>;  debounce-interval = <50>; };
+				/* PIN_11 -> GPIO3_A1, right (KEY_F16) */
+				key-right { label = "gsmenu-right"; linux,code = <186>; gpios = <&gpio3 1 0>;  debounce-interval = <50>; };
+				/* PIN_32 -> GPIO3_C2, rec   (KEY_F18) */
+				key-rec   { label = "gsmenu-rec";   linux,code = <188>; gpios = <&gpio3 18 0>; debounce-interval = <50>; };
+			};
+		};
+	};
+};

@@ -1,12 +1,9 @@
 gsmenu:
   enabled: true
-  gpio:
-    left: 13
-    right: 12
-    up: 16
-    down: 18
-    center: 11
-    rec: 22
+  # Buttons are provided by the kernel via DT overlay
+  # rk3566-gsmenu-keys-openipc-overlay; PixelPilot reads them through evdev.
+  input:
+    backend: evdev
 
 # enables collection of `os_mon.*` OSD facts
 os_sensors:

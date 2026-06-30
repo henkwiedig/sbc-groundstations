@@ -1,10 +1,9 @@
 gsmenu:
   enabled: true
-  gpio:
-    left: 38
-    right: 32
-    up: 16
-    down: 18
+  # Buttons are provided by the kernel via DT overlay
+  # rk3566-gsmenu-keys-emax-overlay; PixelPilot reads them through evdev.
+  input:
+    backend: evdev
   actions:
     ground:
       - label: Toggle gadget mode
