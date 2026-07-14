@@ -751,7 +751,7 @@ case "$@" in
         ;;
     "get gs system webcam_fps"*)
         echo -n "30"
-        emit_values "15\n30"
+        emit_values "15\n30\n60"
         ;;
     "get gs system webcam_quality"*)
         echo -n "80"
