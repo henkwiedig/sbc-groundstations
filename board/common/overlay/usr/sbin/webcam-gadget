@@ -1,0 +1,227 @@
+#!/bin/sh
+# webcam-gadget — standalone UVC (USB webcam) gadget for PixelPilot.
+#
+# Deliberately SEPARATE from the default composite `gadget` script so the webcam
+# can be toggled without touching that setup. A single USB controller (UDC) can
+# only bind ONE gadget at a time, so this script:
+#
+#   • auto-detects a FREE UDC (e.g. the second/usbdrd_dwc3 port) and binds the
+#     webcam there — it then coexists with the network/serial/storage gadget on
+#     the primary UDC (no re-enumeration of that gadget); OR
+#   • if no UDC is free, SWAPS onto the primary UDC: it unbinds the default
+#     composite and brings the webcam up in its place, carrying an NCM function
+#     so USB networking (ssh / gsmenu) survives. `down` restores the composite.
+#
+# The advertised MJPEG frame is passed in so the gadget descriptor, the
+# PixelPilot UVC sink and the encoder all agree on one resolution.
+#
+# Usage: webcam-gadget up [WIDTH HEIGHT FPS]   (defaults 1280 720 30)
+#        webcam-gadget down
+
+ACTION="$1"
+WIDTH="${2:-1280}"
+HEIGHT="${3:-720}"
+FPS="${4:-30}"
+[ "$FPS" -gt 0 ] 2>/dev/null || FPS=30
+INTERVAL=$((10000000 / FPS))   # dwFrameInterval, 100ns units
+MAXFRAME=$((WIDTH * HEIGHT * 2))
+
+GADGET=/sys/kernel/config/usb_gadget/g_webcam
+PRIMARY=/sys/kernel/config/usb_gadget/g1
+STATE=/tmp/webcam-gadget.state
+
+VID=0x1d6b            # Linux Foundation
+PID=0x0102
+# Reuse the default composite's MACs so a swap re-enumerates as the same NIC.
+HOST_MAC="48:6f:73:74:50:43"
+DEV_MAC="42:61:64:55:53:42"
+
+configfs_ready() {
+    grep -q "/sys/kernel/config configfs" /proc/mounts || \
+        mount -t configfs none /sys/kernel/config
+    [ -d /sys/kernel/config/usb_gadget ] || modprobe libcomposite
+}
+
+# Names of UDCs already bound by some gadget.
+bound_udcs() {
+    for f in /sys/kernel/config/usb_gadget/*/UDC; do
+        [ -f "$f" ] || continue
+        tr -d ' \n' < "$f"
+        echo
+    done 2>/dev/null
+}
+
+# First UDC not bound by any gadget, or empty.
+free_udc() {
+    _bound="$(bound_udcs)"
+    for u in /sys/class/udc/*; do
+        [ -e "$u" ] || continue
+        _n=$(basename "$u")
+        echo "$_bound" | grep -qxF "$_n" || { echo "$_n"; return 0; }
+    done
+    return 1
+}
+
+# Best-effort: put a dwc2-style OTG controller into device mode before binding.
+force_device_mode() {
+    _dbg="/sys/kernel/debug/usb/$1/mode"
+    [ -e /sys/kernel/debug/usb ] || mount -t debugfs none /sys/kernel/debug 2>/dev/null
+    if [ -f "$_dbg" ] && [ "$(cat "$_dbg" 2>/dev/null)" = "host" ]; then
+        echo device > "$_dbg" 2>/dev/null && sleep 0.3
+    fi
+}
+
+# A UDC only registers once an OTG controller is in peripheral mode. The dwc2
+# OTG (e.g. fcc00000.usb) exposes this via debugfs `mode`; mirror the stock
+# `gadget` script and flip any host-mode controller to device BEFORE we pick a
+# UDC — otherwise /sys/class/udc is empty and there is nothing to bind.
+ensure_udc() {
+    [ -n "$(ls /sys/class/udc 2>/dev/null)" ] && return 0
+    [ -e /sys/kernel/debug/usb ] || mount -t debugfs none /sys/kernel/debug 2>/dev/null
+    for m in /sys/kernel/debug/usb/*/mode; do
+        [ -f "$m" ] || continue
+        [ "$(cat "$m" 2>/dev/null)" = "host" ] && echo device > "$m" 2>/dev/null
+    done
+    sleep 0.5
+    [ -n "$(ls /sys/class/udc 2>/dev/null)" ]
+}
+
+create_uvc_function() {
+    UVC="$GADGET/functions/uvc.0"
+    mkdir -p "$UVC"
+
+    # High-bandwidth isochronous on HS: up to 3072 bytes/microframe (~24 MB/s),
+    # enough for 720p/1080p MJPEG. Must match the sink's dwMaxPayloadTransferSize.
+    echo 3072 > "$UVC/streaming_maxpacket" 2>/dev/null
+    echo 1    > "$UVC/streaming_interval"  2>/dev/null
+
+    # Single MJPEG format 'm' with one frame 'f'.
+    FR="$UVC/streaming/mjpeg/m/f"
+    mkdir -p "$FR"
+    echo "$WIDTH"    > "$FR/wWidth"
+    echo "$HEIGHT"   > "$FR/wHeight"
+    echo "$MAXFRAME" > "$FR/dwMaxVideoFrameBufferSize"
+    echo "$INTERVAL" > "$FR/dwDefaultFrameInterval"
+    echo "$INTERVAL" > "$FR/dwFrameInterval"
+
+    # Control interface header.
+    mkdir -p "$UVC/control/header/h"
+    ln -s "$UVC/control/header/h" "$UVC/control/class/fs/h"
+    ln -s "$UVC/control/header/h" "$UVC/control/class/ss/h"
+
+    # Streaming interface header links the MJPEG format at all speeds.
+    mkdir -p "$UVC/streaming/header/h"
+    ln -s "$UVC/streaming/mjpeg/m"    "$UVC/streaming/header/h/m"
+    ln -s "$UVC/streaming/header/h"   "$UVC/streaming/class/fs/h"
+    ln -s "$UVC/streaming/header/h"   "$UVC/streaming/class/hs/h"
+    ln -s "$UVC/streaming/header/h"   "$UVC/streaming/class/ss/h"
+}
+
+create_webcam_gadget() {
+    mkdir -p "$GADGET"
+    echo "$VID"    > "$GADGET/idVendor"
+    echo "$PID"    > "$GADGET/idProduct"
+    echo 0x0100    > "$GADGET/bcdDevice"
+    echo 0x0200    > "$GADGET/bcdUSB"
+
+    mkdir -p "$GADGET/strings/0x409"
+    (tr -d '\0' < /proc/device-tree/serial-number 2>/dev/null) \
+        > "$GADGET/strings/0x409/serialnumber" 2>/dev/null
+    [ -s "$GADGET/strings/0x409/serialnumber" ] || \
+        echo "0123456789" > "$GADGET/strings/0x409/serialnumber"
+    echo "PixelPilot"        > "$GADGET/strings/0x409/manufacturer"
+    echo "PixelPilot Webcam" > "$GADGET/strings/0x409/product"
+
+    mkdir -p "$GADGET/configs/c.1/strings/0x409"
+    echo 0x80 > "$GADGET/configs/c.1/bmAttributes"
+    echo 500  > "$GADGET/configs/c.1/MaxPower"
+    echo "UVC" > "$GADGET/configs/c.1/strings/0x409/configuration"
+
+    # In swap mode keep networking alive alongside the webcam.
+    if [ "$MODE" = "swap" ]; then
+        mkdir -p "$GADGET/functions/ncm.usb0"
+        echo "$HOST_MAC" > "$GADGET/functions/ncm.usb0/host_addr"
+        echo "$DEV_MAC"  > "$GADGET/functions/ncm.usb0/dev_addr"
+        ln -s "$GADGET/functions/ncm.usb0" "$GADGET/configs/c.1/"
+    fi
+
+    create_uvc_function
+    ln -s "$GADGET/functions/uvc.0" "$GADGET/configs/c.1/"
+}
+
+remove_gadget() {
+    _g="$1"
+    [ -d "$_g" ] || return 0
+    echo '' > "$_g/UDC" 2>/dev/null
+    # Drop every symlink, then every directory deepest-first (configfs rmdir
+    # only succeeds bottom-up: frame → format → header/class dirs → function).
+    find "$_g" -type l -exec rm -f {} \; 2>/dev/null
+    find "$_g" -depth -type d -exec rmdir {} \; 2>/dev/null
+}
+
+up() {
+    configfs_ready
+    if [ -d "$GADGET" ]; then
+        echo "webcam-gadget already up"
+        return 0
+    fi
+
+    ensure_udc   # mount debugfs + flip a host-mode OTG controller to device
+
+    UDC="$(free_udc)"
+    PRIMARY_UDC=""
+    if [ -n "$UDC" ]; then
+        MODE="coexist"
+    else
+        MODE="swap"
+        if [ -d "$PRIMARY" ]; then
+            PRIMARY_UDC="$(tr -d ' \n' < "$PRIMARY/UDC" 2>/dev/null)"
+            if [ -n "$PRIMARY_UDC" ]; then
+                echo '' > "$PRIMARY/UDC"
+                ifdown usb0 2>/dev/null
+            fi
+        fi
+        UDC="${PRIMARY_UDC:-$(ls /sys/class/udc 2>/dev/null | head -n1)}"
+    fi
+
+    if [ -z "$UDC" ]; then
+        echo "webcam-gadget: no UDC available" >&2
+        return 1
+    fi
+
+    create_webcam_gadget
+    force_device_mode "$UDC"
+    if ! echo "$UDC" > "$GADGET/UDC" 2>/dev/null; then
+        echo "webcam-gadget: failed to bind UDC $UDC" >&2
+        remove_gadget "$GADGET"
+        # Restore the composite if we had unbound it.
+        [ "$MODE" = "swap" ] && [ -n "$PRIMARY_UDC" ] && \
+            { echo "$PRIMARY_UDC" > "$PRIMARY/UDC" 2>/dev/null; ifup usb0 2>/dev/null; }
+        return 1
+    fi
+
+    printf 'MODE=%s\nPRIMARY_UDC=%s\n' "$MODE" "$PRIMARY_UDC" > "$STATE"
+    echo "webcam-gadget up: mode=$MODE udc=$UDC ${WIDTH}x${HEIGHT}@${FPS}fps"
+}
+
+down() {
+    MODE="coexist"
+    PRIMARY_UDC=""
+    [ -f "$STATE" ] && . "$STATE"
+
+    remove_gadget "$GADGET"
+
+    if [ "$MODE" = "swap" ] && [ -n "$PRIMARY_UDC" ] && [ -d "$PRIMARY" ]; then
+        echo "$PRIMARY_UDC" > "$PRIMARY/UDC" 2>/dev/null
+        ifup usb0 2>/dev/null
+    fi
+
+    rm -f "$STATE"
+    echo "webcam-gadget down"
+}
+
+case "$ACTION" in
+    up)   up ;;
+    down) down ;;
+    *)    echo "Usage: $0 up [WIDTH HEIGHT FPS] | down" >&2; exit 1 ;;
+esac

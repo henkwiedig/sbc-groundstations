@@ -742,6 +742,24 @@ case "$@" in
         . /etc/default/pixelpilot
         [ x$PIXELPILOT_DVR_OSD = x"" ] && echo 0 || echo 1
         ;;
+    "get gs system webcam_enabled"*)
+        echo 0
+        ;;
+    "get gs system webcam_resolution"*)
+        echo -n "720p"
+        emit_values "720p\n1080p"
+        ;;
+    "get gs system webcam_fps"*)
+        echo -n "30"
+        emit_values "15\n30"
+        ;;
+    "get gs system webcam_quality"*)
+        echo -n "80"
+        emit_values "50\n60\n70\n80\n90"
+        ;;
+    "get gs system webcam_osd"*)
+        echo 0
+        ;;
     "set gs system rx_codec"*)
         sed -i "s/^PIXELPILOT_CODEC=.*/PIXELPILOT_CODEC=\"$5\"/" /etc/default/pixelpilot
         ;;
@@ -854,6 +872,11 @@ EOF
             sed -i "s/^PIXELPILOT_DVR_OSD=.*/PIXELPILOT_DVR_OSD=\"\"/" /etc/default/pixelpilot
         fi
         ;;
+    "set gs system webcam_enabled"*)        : ;;
+    "set gs system webcam_resolution"*)     : ;;
+    "set gs system webcam_fps"*)            : ;;
+    "set gs system webcam_quality"*)        : ;;
+    "set gs system webcam_osd"*)            : ;;
 
 # ── GS: APFPV ───────────────────────────────────────────────────────────────
 
