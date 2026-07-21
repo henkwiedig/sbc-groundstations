@@ -1,0 +1,39 @@
+#!/bin/sh
+# usb-tether-up — bring up a phone's USB-tethering network interface.
+#
+# When a phone is plugged into one of the SBC's normal USB-A (host) ports with
+# "USB tethering" enabled, the phone acts as a USB device offering RNDIS/CDC-Ether,
+# and the kernel creates a host-side network interface for it. The udev rule (see
+# /etc/udev/rules.d/91-usb-tether.rules) deterministically renames that interface
+# to "usbtether0" by driver (rndis_host/cdc_ether/cdc_ncm) — NOT by the kernel's
+# generic usbN counter, which is shared with our own Gadget-mode interface and can
+# assign either role "usb0" first depending on boot-time enumeration order.
+#
+# This script brings the link up and runs a DHCP client against it to get an IP
+# from the phone's tethering DHCP server, so PixelPilot's Phone Restream ARP
+# auto-discovery (which scans wlan0/usb*) can see it.
+
+IFACE="$1"
+[ -z "$IFACE" ] && exit 1
+
+ip link set "$IFACE" up 2>/dev/null
+
+# Avoid stacking a duplicate client if this interface re-appears (e.g. the phone
+# briefly re-enumerates while negotiating tethering, or udev fires more than one
+# "add" event for it).
+PIDFILE="/var/run/udhcpc.$IFACE.pid"
+if [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null; then
+	exit 0
+fi
+rm -f "$PIDFILE"
+
+# Same flags already used successfully elsewhere in this image for other
+# interfaces (see the wlan0/wlx* udhcpc invocations) — NOT -n/-q, which would
+# make the client exit instead of staying resident to renew the lease.
+udhcpc -t1 -A3 -b -R -p "$PIDFILE" -i "$IFACE" -s /etc/udhcpc/udhcpc.apfpv.script >/dev/null 2>&1 &
+
+# Avoid stacking a duplicate client if this interface re-appears (e.g. the phone
+# briefly re-enumerates while negotiating tethering).
+pkill -f "udhcpc .*-i $IFACE( |$)" 2>/dev/null
+
+udhcpc -i "$IFACE" -b -n -q -t 10 -s /etc/udhcpc/udhcpc.apfpv.script >/dev/null 2>&1 &
