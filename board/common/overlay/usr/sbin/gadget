@@ -4,8 +4,19 @@
 
 sed -i '/^ttyGS0/d' /etc/inittab
 kill -HUP 1
-if [ x$1 = "xinit" -a ! -f /tmp/gadget ] ; then
-	exit 0
+if [ x$1 = "xinit" ]; then
+	# Enabled by default at boot unless the user explicitly disabled it via the
+	# GS menu (set gs wifi gadget off -> /etc/default/gadget). The GPIO-triggered
+	# /tmp/gadget marker (see board/common/overlay/init) still force-enables it.
+	# NOTE: `.` on a missing file aborts the whole (non-interactive) script under
+	# dash/ash, even with 2>/dev/null — so always guard with -f first.
+	[ -f /etc/default/gadget ] && . /etc/default/gadget
+	if [ ! -f /tmp/gadget ] && [ "$GADGET_MODE_ENABLED" != "false" ]; then
+		touch /tmp/gadget
+	fi
+	if [ ! -f /tmp/gadget ]; then
+		exit 0
+	fi
 fi
 rm -f /tmp/gadget
 

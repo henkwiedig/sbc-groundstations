@@ -1,0 +1,20 @@
+# Both our own USB Gadget-mode interface (created via configfs, see /usr/sbin/gadget)
+# and a phone's USB-tethering interface (RNDIS/CDC-Ether/CDC-NCM, host-mode) draw
+# their network device name from the SAME generic kernel "usb%d" counter — so
+# whichever one registers first at boot wins "usb0" and bumps the other to "usb1",
+# non-deterministically. That silently breaks whichever role assumed it would
+# always be "usb0" (our gadget's static IP config) or always be "usb1"/"usbN"
+# (this tethering script). Fix: rename each deterministically by driver instead.
+#
+# Our Gadget-mode NCM function is always driven by configfs-gadget.g1 — force it
+# to always be named usb0 (matches /etc/network/interfaces.d/usb0's static config
+# and /usr/sbin/gadget's own "ifup usb0").
+SUBSYSTEM=="net", ACTION=="add", DRIVERS=="configfs-gadget.g1", NAME="usb0"
+
+# Any USB-tethered phone plugged into a normal host port always gets a fixed,
+# distinct name (regardless of enumeration order) — bring it up and get a DHCP
+# lease from it so PixelPilot's Phone Restream ARP auto-discovery (which scans
+# wlan0/usb*) can see it. Covers Android (rndis_host) and CDC-Ethernet/NCM phones.
+SUBSYSTEM=="net", ACTION=="add", DRIVERS=="rndis_host", NAME="usbtether0", RUN+="/usr/sbin/usb-tether-up usbtether0"
+SUBSYSTEM=="net", ACTION=="add", DRIVERS=="cdc_ether", NAME="usbtether0", RUN+="/usr/sbin/usb-tether-up usbtether0"
+SUBSYSTEM=="net", ACTION=="add", DRIVERS=="cdc_ncm", NAME="usbtether0", RUN+="/usr/sbin/usb-tether-up usbtether0"

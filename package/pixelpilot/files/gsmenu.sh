@@ -960,6 +960,20 @@ EOF
             echo 0
         fi
         ;;
+    "get gs wifi restream")
+        # Live, in-process toggle (gstrtpreceiver.cpp), mirrored to this state file by
+        # the app itself on every change (see colmenu_pages.c). Enabled by default.
+        if [ -f /tmp/.pp_restream_enabled ]; then
+            cat /tmp/.pp_restream_enabled
+        else
+            echo 1
+        fi
+        ;;
+    "get gs wifi gadget")
+        # Ground truth is the live USB gadget kernel state, so this is always correct
+        # even if the boot-time default and last user action ever disagree.
+        if [ -d /sys/kernel/config/usb_gadget/g1 ]; then echo 1; else echo 0; fi
+        ;;
     "get gs wifi wlan")
         [ ! -d /sys/class/net/wlan0 ] && { echo 0; exit 0; }
         # Hotspot uses wlan0 in AP mode — not a managed client connection
@@ -1122,6 +1136,22 @@ EOF
             rm -f /etc/network/interfaces.d/wlan0
             rm -f /etc/wpa_supplicant.hotspot.conf
         fi
+        ;;
+    "set gs wifi restream"*)        : ;;
+    "set gs wifi gadget"*)
+        # /usr/sbin/gadget is a pure toggle (create if absent, tear down if present),
+        # so only invoke it when the live state actually needs to change.
+        CUR=0
+        [ -d /sys/kernel/config/usb_gadget/g1 ] && CUR=1
+        WANT=0
+        [ "$5" = "on" ] && WANT=1
+        mkdir -p /etc/default
+        if [ "$WANT" = "1" ]; then
+            echo 'GADGET_MODE_ENABLED=true' > /etc/default/gadget
+        else
+            echo 'GADGET_MODE_ENABLED=false' > /etc/default/gadget
+        fi
+        [ "$CUR" != "$WANT" ] && /usr/sbin/gadget
         ;;
 
 # ── GS: Main page (info labels) ─────────────────────────────────────────────
