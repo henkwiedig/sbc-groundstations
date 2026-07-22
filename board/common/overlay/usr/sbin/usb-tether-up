@@ -18,22 +18,18 @@ IFACE="$1"
 
 ip link set "$IFACE" up 2>/dev/null
 
-# Avoid stacking a duplicate client if this interface re-appears (e.g. the phone
-# briefly re-enumerates while negotiating tethering, or udev fires more than one
-# "add" event for it).
+# The interface just (re)appeared (udev "add"). A previous DHCP client may still be
+# running but bound to a now-dead instance of this interface after the phone
+# re-enumerated (unplug/replug, or toggling USB tethering off then on) — that stale
+# client will never obtain a lease on the fresh interface. So always tear down any
+# existing client for this iface first, then start exactly one new resident client.
 PIDFILE="/var/run/udhcpc.$IFACE.pid"
-if [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null; then
-	exit 0
-fi
+[ -f "$PIDFILE" ] && kill "$(cat "$PIDFILE")" 2>/dev/null
 rm -f "$PIDFILE"
-
-# Same flags already used successfully elsewhere in this image for other
-# interfaces (see the wlan0/wlx* udhcpc invocations) — NOT -n/-q, which would
-# make the client exit instead of staying resident to renew the lease.
-udhcpc -t1 -A3 -b -R -p "$PIDFILE" -i "$IFACE" -s /etc/udhcpc/udhcpc.apfpv.script >/dev/null 2>&1 &
-
-# Avoid stacking a duplicate client if this interface re-appears (e.g. the phone
-# briefly re-enumerates while negotiating tethering).
 pkill -f "udhcpc .*-i $IFACE( |$)" 2>/dev/null
 
-udhcpc -i "$IFACE" -b -n -q -t 10 -s /etc/udhcpc/udhcpc.apfpv.script >/dev/null 2>&1 &
+# Start a single, resident DHCP client against the phone's tethering DHCP server.
+# Do NOT use -n/-q (they make udhcpc exit instead of staying resident to renew the
+# lease). -t 6 gives the phone enough discover attempts while it finishes
+# negotiating the tether link.
+udhcpc -t 6 -A3 -b -R -p "$PIDFILE" -i "$IFACE" -s /etc/udhcpc/udhcpc.apfpv.script >/dev/null 2>&1 &
