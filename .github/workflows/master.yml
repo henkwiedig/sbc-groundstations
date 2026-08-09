@@ -4,7 +4,8 @@ on:
     branches:
       - master
     tags:
-      - 'v*'
+      # CalVer releases: YY.M, e.g. 26.8 (suffixed tags like 26.8-rc1 build as prereleases)
+      - '2*'
   pull_request:
     branches:
       - master
@@ -129,8 +130,10 @@ jobs:
           tag_name: ${{ github.ref_name }}
           name: Release ${{ github.ref_name }}
           body: |
-            Stable release ${{ github.ref_name }}
+            Release ${{ github.ref_name }}
             Commit: ${{ github.sha }}
           files: artifacts/**/*
           draft: false
-          prerelease: false
+          # A suffixed tag (26.8-rc1, 26.8-beta1) is a prerelease, so it never
+          # becomes the "latest" release that stable devices upgrade to.
+          prerelease: ${{ contains(github.ref_name, '-') }}
