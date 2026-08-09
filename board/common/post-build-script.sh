@@ -3,15 +3,21 @@
 eval $(grep BR2_DEFCONFIG ${O}/.config)
 echo "BUILD_CONFIG=$(basename $(basename $BR2_DEFCONFIG) _defconfig)" >> $TARGET_DIR/etc/os-release
 
-DOWNLOAD_URL="${GITHUB_SERVER_URL:-https://github.com}/${GITHUB_REPOSITORY:-OpenIPC/sbc-groundstations}/releases/download/buildroot-snapshot/$(basename $(basename $BR2_DEFCONFIG) _defconfig).tar.gz"
-# Get version: tag or short SHA, add -dirty if repo is dirty
+# Get version: tag or short SHA, add -dirty if repo is dirty.
+# The upgrade channel follows from it: a tagged build tracks the newest
+# published release, an untagged one tracks the rolling master snapshot.
+# Both are moving targets, so sysupgrade always moves the device forward.
 if git describe --tags --exact-match >/dev/null 2>&1; then
     # Building from a tag
     VERSION=$(git describe --tags)
+    RELEASE_PATH="releases/latest/download"
 else
     # Not a tag, use short SHA
     VERSION=$(git rev-parse --short HEAD)
+    RELEASE_PATH="releases/download/buildroot-snapshot"
 fi
+
+DOWNLOAD_URL="${GITHUB_SERVER_URL:-https://github.com}/${GITHUB_REPOSITORY:-OpenIPC/sbc-groundstations}/${RELEASE_PATH}/$(basename $(basename $BR2_DEFCONFIG) _defconfig).tar.gz"
 
 # Check if repo is dirty (has uncommitted changes)
 if ! git diff --quiet || ! git diff --cached --quiet; then
