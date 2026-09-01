@@ -7,3 +7,5 @@ CONFIG_ZSTD=y
 # extlinux's fdtdir auto-selection fails to find it and silently falls back
 # to U-Boot's own embedded (wrong) devicetree.
 CONFIG_DEFAULT_FDT_FILE="rockchip/rk3568-caddx-vrxpro.dtb"
+
+CONFIG_BAUDRATE=115200
