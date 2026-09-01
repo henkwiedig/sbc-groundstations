@@ -1,0 +1,9 @@
+CONFIG_CMD_SQUASHFS=y
+CONFIG_ZSTD=y
+
+# We're building on the generic evb-rk3568 reference target (no dedicated
+# upstream board support for this hardware), whose default fdtfile points
+# at its own reference dtb. Point it at our actual board's dtb instead, or
+# extlinux's fdtdir auto-selection fails to find it and silently falls back
+# to U-Boot's own embedded (wrong) devicetree.
+CONFIG_DEFAULT_FDT_FILE="rockchip/rk3568-caddx-vrxpro.dtb"
