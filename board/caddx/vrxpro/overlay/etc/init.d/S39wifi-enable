@@ -1,0 +1,24 @@
+#!/bin/sh
+# Powers on the onboard Realtek RTL8188FTV (0bda:f179) companion wifi chip.
+# It's gated by a plain GPIO (gpio105), not the devicetree's SDIO
+# wifi-enable-h/rfkill-wlan path (that targets an unpopulated SDIO wifi
+# footprint) -- confirmed against Ascent's own start_wifi.sh and by driving
+# it directly on real hardware. rtl8xxxu binds and loads automatically via
+# udev/modalias once the chip is powered and enumerates on USB.
+exit 0
+case "$1" in
+  start)
+	[ -d /sys/class/gpio/gpio105 ] || echo 105 > /sys/class/gpio/export
+	echo out > /sys/class/gpio/gpio105/direction
+	echo 1 > /sys/class/gpio/gpio105/value
+	;;
+  stop)
+	[ -d /sys/class/gpio/gpio105 ] && echo 0 > /sys/class/gpio/gpio105/value
+	;;
+  *)
+	echo "Usage: $0 {start|stop}"
+	exit 1
+	;;
+esac
+
+exit 0
