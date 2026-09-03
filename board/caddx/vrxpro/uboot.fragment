@@ -8,4 +8,16 @@ CONFIG_ZSTD=y
 # to U-Boot's own embedded (wrong) devicetree.
 CONFIG_DEFAULT_FDT_FILE="rockchip/rk3568-caddx-vrxpro.dtb"
 
+# U-Boot's own internal devicetree (used for its own driver-model probing,
+# e.g. regulator/PMIC init) was still the generic evb1-v10 reference board,
+# separately from the kernel-facing fdtfile above -- that reference dtb has
+# no regulator-init-microvolt values at all for our board's rails, unlike
+# our real board's dtb (0002-add-rk3568-caddx-vrxpro-devicetree.patch adds
+# it to the u-boot source tree).
+CONFIG_DEFAULT_DEVICE_TREE="rockchip/rk3568-caddx-vrxpro"
+
+# binman's FIT packaging step keeps its own separate list of fdt names to
+# bundle, independent of CONFIG_DEFAULT_DEVICE_TREE above.
+CONFIG_OF_LIST="rockchip/rk3568-caddx-vrxpro"
+
 CONFIG_BAUDRATE=115200

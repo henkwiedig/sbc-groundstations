@@ -31,3 +31,56 @@ directory previously had no custom board code at all — just `Kconfig` and
 `rockchip_dnl_key_pressed()` that always returns 0, rather than patching the
 shared vendor file directly — keeps the fix board-scoped instead of
 affecting every other board built from this same generic Rockchip code.
+
+## 0003 — local patch
+
+`0003-uboot-replicate-rp_power-gpios-in-board-late-init.patch` is our own
+patch, not upstream, keep indefinitely.
+
+Adds a strong `rk_board_late_init()` override (weak default just returns 0,
+nothing lost) to the same `evb-rk3568.c` from 0001. Two things bundled into
+it, both found by decompiling Ascent's real stock U-Boot binary and
+cross-checked against a real serial capture of stock booting
+(`stockboot.cap`, kept alongside this repo during the investigation):
+
+**PMIC register init.** Stock's `rk8xx_probe()` does substantial raw RK817
+register configuration beyond what mainline's generic `rk8xx.c`
+regulator/pmic drivers ever touch — `RK817_PMIC_CHRG_TERM`,
+`RK817_POWER_EN_SAVE0/1` (rebuilt live from the chip's own OTP/trim
+registers), a 5-entry raw register table, an unconditional
+`RK817_PMIC_CHRG_IN` write, and bits in an unnamed register (`0xf7`). This
+is the fix that actually resolved the real bug this patch series was
+chasing: an intermittent SoC brownout/reset under wifi/USB load. The PMIC
+is an external I2C chip, so unlike SoC-internal state its registers
+survive a warm SoC reset — which is exactly why the one boot sequence
+confirmed reliable on real hardware even without `cpufreq.off=1` was: halt
+stock U-Boot at its own prompt (its `rk8xx_probe()` already ran in full),
+insert the SD card, `reset` — our own U-Boot and kernel then boot against a
+PMIC stock already finished configuring, not a freshly power-on-reset one.
+Confirmed fixed on real hardware: three stable cold boots, wifi up, H265
+decode under load, `cpufreq.off=1` since removed as unnecessary too.
+
+**`rp_power`/wifi-chip GPIOs.** Stock's vendor "rp_power" board-support
+code drives `usb_pwr`/`hub_rst`/`otg_mode`/`sd_pwren`/`spk_en`/`spk_mute`
+from *within U-Boot itself*, seconds into power-on ("buzzer on"
+immediately followed by "rp_power: ... gpio set output", well before
+"Starting kernel..."), holding them stable through the whole U-Boot +
+kernel boot — our kernel replicates these same pins itself (`rp_power`'s
+actual out-of-tree driver isn't ported), so this didn't fix the brownout
+bug on its own, but moves pin configuration seconds earlier than the old
+`/init`-based approach, matching stock's own timing. Each GPIO is
+requested by its controller devicetree node name + offset (not a global
+GPIO number, to avoid depending on U-Boot's driver-model gpiochip
+base-allocation order) and driven to the raw level `rp_power`'s devicetree
+node specifies. `led` (gpio_function 3) is intentionally skipped — stock's
+own U-Boot port skips it too (the capture shows it's not implemented
+there). Also bundled in the same table: `wifi_pwr` (gpio105, i.e. gpio3
+offset 9) is the RTL8188FTV companion wifi chip's own power-enable pin —
+not part of `rp_power`'s devicetree node at all, previously toggled from
+`board/caddx/vrxpro/overlay/etc/init.d/S99zwifi-enable` (now removed
+entirely). That script also power-cycled the chip and retried up to 5
+times to work around intermittent USB firmware-download failures on
+power-on; that retry is now handled at the actual failure point instead,
+inside the kernel's own `rtl8xxxu_download_firmware()` (see
+`linux-patches/0002-rtl8xxxu-retry-firmware-download-on-error.patch`), so
+a single one-time power-on here is enough.

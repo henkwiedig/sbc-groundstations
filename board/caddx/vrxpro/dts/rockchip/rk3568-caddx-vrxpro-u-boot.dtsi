@@ -1,0 +1,35 @@
+// SPDX-License-Identifier: (GPL-2.0+ OR MIT)
+
+/*
+ * U-Boot's build only ever includes ONE arch/arm/dts/*-u-boot.dtsi (first
+ * match wins: board name, then SOC, then CPU, then vendor, then a generic
+ * fallback -- see scripts/Makefile.lib's u_boot_dtsi_options). Naming this
+ * file after our board makes it win that search ahead of rk356x-u-boot.dtsi,
+ * so we must #include that one ourselves or lose everything it sets up
+ * (including the top-level "binman" node the FIT-packaging step needs).
+ */
+#include "rk356x-u-boot.dtsi"
+
+/*
+ * uart2 is disabled in the shared board dts (the kernel taps this same UART
+ * via the fiq-debugger driver instead), but U-Boot proper has no fiq-debugger
+ * equivalent -- it needs the plain serial node enabled to bind a console
+ * driver at all, or it fails with "No serial driver found" and resets before
+ * ever printing anything.
+ */
+&uart2 {
+	status = "okay";
+};
+
+/*
+ * The shared board dts also has no /chosen/stdout-path at all (the kernel
+ * doesn't need one -- it gets console= explicitly on the cmdline via
+ * extlinux.conf). U-Boot uses stdout-path to pick which enabled serial node
+ * is actually its console; without it, U-Boot has nothing to select even
+ * with uart2 now enabled above. Baud matches this project's own U-Boot
+ * console rate (CONFIG_BAUDRATE=115200 in uboot.fragment), not the reference
+ * board's 1500000.
+ */
+&chosen {
+	stdout-path = "serial2:115200n8";
+};

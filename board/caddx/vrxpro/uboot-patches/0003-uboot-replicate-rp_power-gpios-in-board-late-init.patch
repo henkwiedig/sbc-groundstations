@@ -1,0 +1,196 @@
+diff --git a/board/rockchip/evb_rk3568/evb-rk3568.c b/board/rockchip/evb_rk3568/evb-rk3568.c
+index 03995b0..6ab384d 100644
+--- a/board/rockchip/evb_rk3568/evb-rk3568.c
++++ b/board/rockchip/evb_rk3568/evb-rk3568.c
+@@ -1,5 +1,11 @@
+ // SPDX-License-Identifier: GPL-2.0+
+ 
++#include <dm.h>
++#include <dm/uclass.h>
++#include <asm-generic/gpio.h>
++#include <linux/kernel.h>
++#include <power/pmic.h>
++
+ /*
+  * The generic evb-rk3568 boot_mode.c reads the download key from an ADC
+  * channel wired as a resistor-divider button on the Rockchip EVB reference
+@@ -12,3 +18,179 @@ int rockchip_dnl_key_pressed(void)
+ {
+ 	return 0;
+ }
++
++/*
++ * Stock firmware's vendor "rp_power" board-support code (out-of-tree, not
++ * ported here) drives these same GPIOs from within U-Boot itself, seconds
++ * into power-on, and holds them through the whole U-Boot + kernel boot --
++ * confirmed directly from a real serial capture of stock booting (see
++ * stockboot.cap kept alongside this repo during the investigation):
++ * "buzzer on" (regulator/DMC init just completed) is immediately followed
++ * by "rp_power: usb_pwr/hub_rst/otg_mode/sd_pwren/spk_en/spk_mute gpio set
++ * output", all while still in U-Boot -- well before "Starting kernel...".
++ *
++ * Our kernel already replicates rp_power's pins from /init (see
++ * board/common/overlay/init), but that only runs once Linux has booted far
++ * enough to mount /sys -- many seconds later than stock. This is the same
++ * replication, moved as early as our own boot chain allows, to close that
++ * timing gap.
++ *
++ * gpio_num/gpio_function/flags values (bank+offset, raw output level) are
++ * taken directly from the rp_power devicetree node in
++ * board/caddx/vrxpro/dts/rockchip/rk3568-caddx-vrxpro.dts, and the derived
++ * raw levels were cross-checked against the kernel-side rp_power dmesg in
++ * the same capture ("success request gpioN out", N matching gpio0/gpio1
++ * bank+offset numbering). "led" (gpio_function 3) is skipped -- stock's own
++ * U-Boot port skips it too ("rp_power: led gpio function is 3, not
++ * realize!" in the capture), and it's unrelated to power sequencing.
++ *
++ * "wifi_pwr" below is a different thing bundled into the same table for
++ * convenience: gpio105 (bank+offset derived the same way as gpio3b5/gpio3a7
++ * elsewhere in this project: 105 - 96 = offset 9 on gpio3, using the same
++ * bank*32 base that's already confirmed correct for gpio3 against the real
++ * kernel dmesg) is the RTL8188FTV companion wifi chip's own power-enable
++ * pin -- not part of rp_power's devicetree node at all, previously toggled
++ * from board/caddx/vrxpro/overlay/etc/init.d/S99zwifi-enable (now removed).
++ * That script also power-cycled the chip and retried up to 5 times to work
++ * around intermittent USB firmware-download failures on power-on
++ * (rtl8xxxu_writeN: usb_control_msg -EAGAIN partway through); that retry is
++ * now handled at the actual failure point instead, inside the kernel's own
++ * rtl8xxxu_download_firmware() (see linux-patches/0002-rtl8xxxu-retry-
++ * firmware-download-on-error.patch), so a single one-time power-on here,
++ * seconds earlier than the old userspace init.d script ever ran, is enough.
++ */
++struct rpdzkj_gpio {
++	const char *bank;	/* gpio controller node name */
++	unsigned int offset;
++	bool active_high;	/* raw level to drive: 1 = high, 0 = low */
++	const char *label;
++};
++
++static const struct rpdzkj_gpio rpdzkj_late_gpios[] = {
++	{ "gpio0@fdd60000", 6, true, "usb_pwr" },
++	{ "gpio0@fdd60000", 8, true, "hub_rst" },
++	{ "gpio1@fe740000", 4, false, "otg_mode" },
++	{ "gpio0@fdd60000", 5, false, "sd_pwren" },
++	{ "gpio1@fe740000", 9, true, "spk_en" },
++	{ "gpio1@fe740000", 10, false, "spk_mute" },
++	{ "gpio3@fe760000", 9, true, "wifi_pwr" },
++};
++
++/*
++ * Stock U-Boot's rk8xx_probe() does substantial raw register configuration
++ * on the RK817 beyond what the generic mainline rk8xx.c regulator/pmic
++ * drivers ever touch -- found by decompiling the real stock U-Boot binary's
++ * PMIC probe function (the one that prints "PMIC:  RK8170 (on=... off=...)"
++ * -- see stockboot.cap). This matters specifically because the PMIC is an
++ * external I2C chip: unlike SoC-internal state, its registers survive a
++ * warm SoC reset. That's precisely the mechanism behind the one boot
++ * sequence confirmed reliable on real hardware even without cpufreq.off=1:
++ * halt stock U-Boot at its own prompt (its rk8xx_probe already ran in
++ * full), insert the SD card, "reset" -- our own U-Boot and kernel then boot
++ * against a PMIC that stock already finished configuring, not a freshly
++ * power-on-reset one.
++ *
++ * All of the below is a direct, byte-for-byte port of that same probe
++ * function's RK817 branch, using the real stock values/registers rather
++ * than the generic mainline driver's regulator-only view of the chip:
++ *
++ * - RK817_PMIC_CHRG_TERM (0xe6): clear bit 0x80. In stock this is gated by
++ *   a devicetree field that isn't present in our shared dts (decompiled
++ *   from the same stock dtb), so it defaults to 0 there too -- this branch
++ *   is what actually runs on real hardware, not a guess.
++ * - RK817_POWER_EN_SAVE0/1 (0x99/0xa4): rebuilt from registers 0xb1-0xb4,
++ *   which read back this chip's own OTP/trim data -- not hardcoded values,
++ *   the actual silicon's factory state, computed the same way stock does.
++ * - A 5-entry (reg,val,mask) table applied as new = (old & ~mask) | val,
++ *   covering registers 0xc6, 0xf1, 0xf4 and two updates to 0xfe
++ *   (RK817_GPIO_INT_CFG). 0xc6/0xf1/0xf4 have no symbolic name in even our
++ *   own (fuller, BSP-derived) kernel's RK817 header -- ported verbatim
++ *   from the real binary's data table rather than reinterpreted, since
++ *   getting a raw PMIC register write wrong is worse than an unexplained
++ *   one that faithfully matches what stock itself does.
++ * - RK817_PMIC_CHRG_IN (0xe5): unconditional write of 0xdf, gated by no
++ *   devicetree property at all in stock's own code.
++ * - Register 0xf7 (also unnamed in our kernel header): clear bits 0x30 and
++ *   0x40. Stock ORs in two more devicetree-derived bit-fields here; those
++ *   properties don't exist in our shared dts either, so on real hardware
++ *   this also resolves to "clear both, OR in nothing" -- not an assumption
++ *   made for convenience, the actual behavior on the real board.
++ */
++struct rk817_reg_update {
++	u8 reg;
++	u8 val;
++	u8 mask;
++};
++
++static const struct rk817_reg_update rk817_extra_regs[] = {
++	{ 0xc6, 0x6b, 0x6e },
++	{ 0xf1, 0x20, 0x70 },
++	{ 0xf4, 0x00, 0x18 },
++	{ 0xfe, 0x00, 0x20 },
++	{ 0xfe, 0x02, 0x00 },
++};
++
++static void rk817_extra_pmic_init(void)
++{
++	struct udevice *dev;
++	unsigned int i;
++	int b1, b2, b3, b4;
++
++	if (pmic_get("pmic@20", &dev))
++		return;
++
++	/* RK817_PMIC_CHRG_TERM: clear bit 0x80 (dts field absent -> default) */
++	pmic_clrsetbits(dev, 0xe6, 0x80, 0x00);
++
++	/* RK817_POWER_EN_SAVE0/1: rebuilt from this chip's own trim registers */
++	b1 = pmic_reg_read(dev, 0xb1);
++	b2 = pmic_reg_read(dev, 0xb2);
++	if (b1 >= 0 && b2 >= 0)
++		pmic_reg_write(dev, 0x99, (b1 & 0x0f) | ((b2 & 0x0f) << 4));
++
++	b3 = pmic_reg_read(dev, 0xb3);
++	b4 = pmic_reg_read(dev, 0xb4);
++	if (b3 >= 0 && b4 >= 0)
++		pmic_reg_write(dev, 0xa4, (b3 & 0x0f) | ((b4 & 0x0f) << 4));
++
++	for (i = 0; i < ARRAY_SIZE(rk817_extra_regs); i++) {
++		const struct rk817_reg_update *r = &rk817_extra_regs[i];
++
++		pmic_clrsetbits(dev, r->reg, r->mask, r->val);
++	}
++
++	/* RK817_PMIC_CHRG_IN: unconditional raw write, not gated in stock either */
++	pmic_reg_write(dev, 0xe5, 0xdf);
++
++	/* reg 0xf7: clear bits 0x30 and 0x40, nothing to OR back in here */
++	pmic_clrsetbits(dev, 0xf7, 0x70, 0x00);
++}
++
++int rk_board_late_init(void)
++{
++	unsigned int i;
++
++	rk817_extra_pmic_init();
++
++	for (i = 0; i < ARRAY_SIZE(rpdzkj_late_gpios); i++) {
++		const struct rpdzkj_gpio *g = &rpdzkj_late_gpios[i];
++		struct udevice *dev;
++		struct gpio_desc desc = { 0 };
++		int ret;
++
++		ret = uclass_get_device_by_name(UCLASS_GPIO, g->bank, &dev);
++		if (ret)
++			continue;
++
++		desc.dev = dev;
++		desc.offset = g->offset;
++		ret = dm_gpio_request(&desc, g->label);
++		if (ret)
++			continue;
++
++		dm_gpio_set_dir_flags(&desc, GPIOD_IS_OUT |
++				       (g->active_high ? GPIOD_IS_OUT_ACTIVE : 0));
++	}
++
++	return 0;
++}
