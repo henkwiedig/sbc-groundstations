@@ -1,0 +1,46 @@
+gsmenu:
+  enabled: true
+  # Ascent VRX Pro: the 5-way joystick + OK/RECORD/BACK buttons are not on
+  # GPIOs at all -- they're one resistor-ladder button network read off a
+  # single SARADC channel (confirmed on real hardware: idle ~20mV, each
+  # button lands within a few mV of a fixed voltage table). This polls that
+  # channel directly instead of going through gpio: above. Leave this
+  # section out entirely on hardware that doesn't have it.
+  vrx_adc:
+    enabled: true
+    device: /sys/bus/iio/devices/iio:device0/in_voltage6_raw
+  # Define custom actions here
+  # action is the command the button will trigger
+  # actions:
+  #   air:
+  #     - label: Custom Action 1
+  #       action: sleep 5
+  #     - label: Custom Action 1
+  #       action: sleep 5
+  #   ground:
+  #     - label: Custom Action 1
+  #       action: sleep 5
+# enables collection of `os_mon.*` OSD facts
+# os_sensors:
+#   cpu: true      # Monitor CPU load percentage
+#   power:
+#     # Monitor power supply voltage and current (advanced: requires INA226 sensor to be installed)
+#     # It can be several, but normally you just install one to monitor battery
+#     - type: ina226  # currently the only type supported
+#       hwmon_id: hwmon3  # /sys/class/hwmon/{hwmon_id}/name should be ina226
+#   temperature:
+#     # Monitor Radxa chip temperatures, see /sys/class/thermal/thermal_zone*/
+#     - thermal_zone: thermal_zone0  # CPU on Radxa
+#     - thermal_zone: thermal_zone1  # GPU on Radxa
+
+# OS sensors can be auto-discovered
+# os_sensors:
+#   cpu: auto
+#   power: auto
+#   temperature: auto
+
+# Phone restream target IP (optional)
+# manual_ip: permanently pins this IP in the "Stream To" dropdown so it is
+#   always visible as an option, even when auto-discovery finds no clients.
+# restream:
+#   manual_ip: 192.168.1.100
