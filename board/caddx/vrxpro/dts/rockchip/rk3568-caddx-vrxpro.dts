@@ -866,7 +866,7 @@
 		phandle = <0x154>;
 	};
 
-	xin24m {
+	xin24m: xin24m {
 		compatible = "fixed-clock";
 		#clock-cells = <0x00>;
 		clock-frequency = <0x16e3600>;
@@ -1073,7 +1073,7 @@
 		phandle = <0x161>;
 	};
 
-	syscon@fdc20000 {
+	pmugrf: syscon@fdc20000 {
 		compatible = "rockchip,rk3568-pmugrf\0syscon\0simple-mfd";
 		reg = <0x00 0xfdc20000 0x00 0x10000>;
 		phandle = <0x3b>;
@@ -1114,7 +1114,7 @@
 		phandle = <0x10b>;
 	};
 
-	syscon@fdc60000 {
+	grf: syscon@fdc60000 {
 		compatible = "rockchip,rk3568-grf\0syscon\0simple-mfd";
 		reg = <0x00 0xfdc60000 0x00 0x10000>;
 		phandle = <0x3a>;
@@ -1282,7 +1282,7 @@
 		};
 	};
 
-	clock-controller@fdd00000 {
+	pmucru: clock-controller@fdd00000 {
 		compatible = "rockchip,rk3568-pmucru";
 		reg = <0x00 0xfdd00000 0x00 0x1000>;
 		rockchip,grf = <0x3a>;
@@ -1294,7 +1294,7 @@
 		phandle = <0x39>;
 	};
 
-	clock-controller@fdd20000 {
+	cru: clock-controller@fdd20000 {
 		compatible = "rockchip,rk3568-cru";
 		reg = <0x00 0xfdd20000 0x00 0x1000>;
 		rockchip,grf = <0x3a>;
@@ -1433,7 +1433,26 @@
 					regulator-max-microvolt = <0x325aa0>;
 					regulator-init-microvolt = <0x325aa0>;
 					regulator-ramp-delay = <0x1771>;
-					regulator-initial-mode = <0x02>;
+					/*
+					 * Forced PWM (1), not auto PFM/PWM (2, stock's
+					 * own value -- this dts is decompiled from the
+					 * real stock dtb, so this is a deliberate
+					 * deviation, not a gap). This is vcc_3v3, the
+					 * rail behind usb_pwr/the onboard wifi chip's
+					 * gpio105 switch: powering that chip on is a
+					 * confirmed real current step that triggers a
+					 * genuine SoC brownout (POR) on real hardware
+					 * (see S99zwifi-enable). Auto/PFM mode has much
+					 * worse transient response to a fast load step
+					 * than FPWM -- verified against this kernel's
+					 * actual rk8xx_set_mode()/rk8xx_regulator_of_map_mode()
+					 * in drivers/regulator/rk808-regulator.c, not
+					 * assumed from generic/upstream driver behavior.
+					 * Trade-off: worse light-load efficiency/more
+					 * heat on this rail; scope down later if that
+					 * matters more than the brownout.
+					 */
+					regulator-initial-mode = <0x01>;
 					regulator-name = "vcc_3v3";
 					phandle = <0x32>;
 
@@ -3322,7 +3341,7 @@
 		};
 	};
 
-	dwmmc@fe2b0000 {
+	sdmmc0: dwmmc@fe2b0000 {
 		compatible = "rockchip,rk3568-dw-mshc\0rockchip,rk3288-dw-mshc";
 		reg = <0x00 0xfe2b0000 0x00 0x4000>;
 		interrupts = <0x00 0x62 0x04>;
@@ -3373,7 +3392,7 @@
 		phandle = <0x1a3>;
 	};
 
-	spi@fe300000 {
+	sfc: spi@fe300000 {
 		compatible = "rockchip,sfc";
 		reg = <0x00 0xfe300000 0x00 0x4000>;
 		interrupts = <0x00 0x65 0x04>;
@@ -3399,7 +3418,7 @@
 		};
 	};
 
-	sdhci@fe310000 {
+	sdhci: sdhci@fe310000 {
 		compatible = "rockchip,rk3568-dwcmshc\0rockchip,dwcmshc-sdhci";
 		reg = <0x00 0xfe310000 0x00 0x10000>;
 		interrupts = <0x00 0x13 0x04>;
@@ -3452,7 +3471,7 @@
 		phandle = <0x1a7>;
 	};
 
-	rng@fe388000 {
+	rng: rng@fe388000 {
 		compatible = "rockchip,cryptov2-rng";
 		reg = <0x00 0xfe388000 0x00 0x2000>;
 		clocks = <0x22 0x70 0x22 0x6f>;
@@ -4019,7 +4038,7 @@
 		phandle = <0x1bc>;
 	};
 
-	serial@fe660000 {
+	uart2: serial@fe660000 {
 		compatible = "rockchip,rk3568-uart\0snps,dw-apb-uart";
 		reg = <0x00 0xfe660000 0x00 0x100>;
 		interrupts = <0x00 0x76 0x04>;
@@ -4533,7 +4552,7 @@
 		phandle = <0xaf>;
 	};
 
-	pinctrl {
+	pinctrl: pinctrl {
 		compatible = "rockchip,rk3568-pinctrl";
 		rockchip,grf = <0x3a>;
 		rockchip,pmu = <0x3b>;
@@ -4602,7 +4621,7 @@
 			phandle = <0x135>;
 		};
 
-		pcfg-pull-up {
+		pcfg_pull_up: pcfg-pull-up {
 			bias-pull-up;
 			phandle = <0x115>;
 		};
@@ -4612,7 +4631,7 @@
 			phandle = <0x11c>;
 		};
 
-		pcfg-pull-none {
+		pcfg_pull_none: pcfg-pull-none {
 			bias-disable;
 			phandle = <0x113>;
 		};
@@ -4725,7 +4744,7 @@
 			phandle = <0x11a>;
 		};
 
-		pcfg-pull-up-drv-level-2 {
+		pcfg_pull_up_drv_level_2: pcfg-pull-up-drv-level-2 {
 			bias-pull-up;
 			drive-strength = <0x02>;
 			phandle = <0x114>;
@@ -4917,7 +4936,7 @@
 			phandle = <0x202>;
 		};
 
-		pcfg-pull-none-smt {
+		pcfg_pull_none_smt: pcfg-pull-none-smt {
 			bias-disable;
 			input-schmitt-enable;
 			phandle = <0x118>;
@@ -5202,27 +5221,27 @@
 
 		emmc {
 
-			emmc-rstnout {
+			emmc_rstnout: emmc-rstnout {
 				rockchip,pins = <0x01 0x17 0x01 0x113>;
 				phandle = <0x229>;
 			};
 
-			emmc-bus8 {
+			emmc_bus8: emmc-bus8 {
 				rockchip,pins = <0x01 0x0c 0x01 0x114 0x01 0x0d 0x01 0x114 0x01 0x0e 0x01 0x114 0x01 0x0f 0x01 0x114 0x01 0x10 0x01 0x114 0x01 0x11 0x01 0x114 0x01 0x12 0x01 0x114 0x01 0x13 0x01 0x114>;
 				phandle = <0x22a>;
 			};
 
-			emmc-clk {
+			emmc_clk: emmc-clk {
 				rockchip,pins = <0x01 0x15 0x01 0x114>;
 				phandle = <0x22b>;
 			};
 
-			emmc-cmd {
+			emmc_cmd: emmc-cmd {
 				rockchip,pins = <0x01 0x14 0x01 0x114>;
 				phandle = <0x22c>;
 			};
 
-			emmc-datastrobe {
+			emmc_datastrobe: emmc-datastrobe {
 				rockchip,pins = <0x01 0x16 0x01 0x113>;
 				phandle = <0x22d>;
 			};
@@ -5259,7 +5278,7 @@
 
 		fspi {
 
-			fspi-pins {
+			fspi_pins: fspi-pins {
 				rockchip,pins = <0x01 0x18 0x01 0x113 0x01 0x1b 0x01 0x113 0x01 0x19 0x01 0x113 0x01 0x1a 0x01 0x113 0x01 0x17 0x02 0x113 0x01 0x1c 0x01 0x113>;
 				phandle = <0x232>;
 			};
@@ -6270,27 +6289,27 @@
 
 		sdmmc0 {
 
-			sdmmc0-bus4 {
+			sdmmc0_bus4: sdmmc0-bus4 {
 				rockchip,pins = <0x01 0x1d 0x01 0x114 0x01 0x1e 0x01 0x114 0x01 0x1f 0x01 0x114 0x02 0x00 0x01 0x114>;
 				phandle = <0xb5>;
 			};
 
-			sdmmc0-clk {
+			sdmmc0_clk: sdmmc0-clk {
 				rockchip,pins = <0x02 0x02 0x01 0x114>;
 				phandle = <0xb6>;
 			};
 
-			sdmmc0-cmd {
+			sdmmc0_cmd: sdmmc0-cmd {
 				rockchip,pins = <0x02 0x01 0x01 0x114>;
 				phandle = <0xb7>;
 			};
 
-			sdmmc0-det {
+			sdmmc0_det: sdmmc0-det {
 				rockchip,pins = <0x00 0x04 0x01 0x115>;
 				phandle = <0xb8>;
 			};
 
-			sdmmc0-pwren {
+			sdmmc0_pwren: sdmmc0-pwren {
 				rockchip,pins = <0x00 0x05 0x01 0x113>;
 				phandle = <0x2af>;
 			};
@@ -6588,7 +6607,7 @@
 
 		uart2 {
 
-			uart2m0-xfer {
+			uart2m0_xfer: uart2m0-xfer {
 				rockchip,pins = <0x00 0x18 0x01 0x115 0x00 0x19 0x01 0x115>;
 				phandle = <0xee>;
 			};
@@ -7327,8 +7346,7 @@
 		status = "okay";
 	};
 
-	chosen {
-		bootargs = "earlycon=uart8250,mmio32,0xfe660000 console=ttyFIQ0 ubi.mtd=5 root=ubi0:rootfs rootfstype=ubifs";
+	chosen: chosen {
 		phandle = <0x30e>;
 	};
 

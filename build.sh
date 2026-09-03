@@ -110,7 +110,9 @@ build_project() {
         md5sum rootfs.squashfs > rootfs.squashfs.md5sum
         md5sum u-boot.bin > u-boot.bin.md5sum
         tar zcvf "$(basename $DEFCONFIG _defconfig)".tar.gz rootfs.squashfs u-boot.bin *.md5sum
-        cp boot.scr "$(basename $DEFCONFIG _defconfig)_boot.scr"
+        if [ -f "boot.scr" ]; then
+            cp boot.scr "$(basename $DEFCONFIG _defconfig)_boot.scr"
+        fi
         cd -
     fi
 
