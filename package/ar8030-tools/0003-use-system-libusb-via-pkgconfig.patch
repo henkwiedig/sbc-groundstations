@@ -1,0 +1,86 @@
+usb8030, ar8030_usb_test_tool: link system libusb via pkg-config
+
+Both usb_dev.c (daemon's USING_8030USB backend) and ar8030_usb_test_tool
+independently FetchContent+build their own private copy of libusb from a
+bundled tarball (third_package/libusb/libusb-cmake.tar), each producing a
+"usb-1.0" CMake target. That vendored copy's own CMakeLists.txt has no
+install() rule -- it's evidently meant to be preinstalled on the target
+system already, not shipped by this build -- so the resulting binaries
+compiled and linked fine but failed at runtime with "error while loading
+shared libraries: libusb-1.0.so: cannot open shared object file".
+
+Rather than manually copying the vendored .so into the rootfs, link
+against buildroot's own libusb package (BR2_PACKAGE_LIBUSB, a normal
+tracked dependency staged/installed the standard way) via pkg-config
+instead -- avoids building and shipping a second, unmaintained copy of
+the same library.
+
+--- a/daemon/dev8030/usb8030/CMakeLists.txt
++++ b/daemon/dev8030/usb8030/CMakeLists.txt
+@@ -1,21 +1,6 @@
+ ﻿
+-set(LIBUSB_ENABLE_UDEV OFF CACHE INTERNAL "")
+-
+-include(FetchContent)
+-
+-FetchContent_Declare(
+-    libusb-cmake
+-    DOWNLOAD_EXTRACT_TIMESTAMP YES
+-    URL ${PROJECT_SOURCE_DIR}/third_package/libusb/libusb-cmake.tar
+-    URL_HASH MD5=fbcb49c19ae645efa9c9c77728651ffb
+-)
+-
+-FetchContent_GetProperties(libusb-cmake)
+-
+-if(NOT libusb-cmake_POPULATED)
+-    FetchContent_Populate(libusb-cmake)
+-    add_subdirectory(${libusb-cmake_SOURCE_DIR} ${libusb-cmake_BINARY_DIR} EXCLUDE_FROM_ALL)
+-endif()
++find_package(PkgConfig REQUIRED)
++pkg_check_modules(LIBUSB REQUIRED IMPORTED_TARGET libusb-1.0)
+ 
+ set(file
+     usb_dev.c
+@@ -26,5 +11,4 @@
+ target_include_directories(usb8030 PRIVATE ../)
+ target_include_directories(usb8030 PRIVATE ../../)
+ 
+-target_include_directories(usb8030 PRIVATE usb-1.0)
+-target_link_libraries(usb8030 PUBLIC usb-1.0)
++target_link_libraries(usb8030 PUBLIC PkgConfig::LIBUSB)
+--- a/dev_helper/ar8030_usb_test_tool/CMakeLists.txt
++++ b/dev_helper/ar8030_usb_test_tool/CMakeLists.txt
+@@ -1,21 +1,6 @@
+ ﻿
+-set(LIBUSB_ENABLE_UDEV OFF CACHE INTERNAL "")
+-
+-include(FetchContent)
+-
+-FetchContent_Declare(
+-    libusb-cmake
+-    DOWNLOAD_EXTRACT_TIMESTAMP YES
+-    URL ${PROJECT_SOURCE_DIR}/third_package/libusb/libusb-cmake.tar
+-    URL_HASH MD5=fbcb49c19ae645efa9c9c77728651ffb
+-)
+-
+-FetchContent_GetProperties(libusb-cmake)
+-
+-if(NOT libusb-cmake_POPULATED)
+-    FetchContent_Populate(libusb-cmake)
+-    add_subdirectory(${libusb-cmake_SOURCE_DIR} ${libusb-cmake_BINARY_DIR} EXCLUDE_FROM_ALL)
+-endif()
++find_package(PkgConfig REQUIRED)
++pkg_check_modules(LIBUSB REQUIRED IMPORTED_TARGET libusb-1.0)
+ 
+ add_executable(ar8030_usb_test_tool)
+ 
+@@ -23,8 +8,7 @@
+ target_sources(ar8030_usb_test_tool PRIVATE ar8030_usb_tool.cpp)
+ target_sources(ar8030_usb_test_tool PRIVATE ar_usb.cpp)
+ 
+-target_include_directories(ar8030_usb_test_tool PRIVATE usb-1.0)
+-target_link_libraries(ar8030_usb_test_tool PUBLIC usb-1.0)
++target_link_libraries(ar8030_usb_test_tool PUBLIC PkgConfig::LIBUSB)
+ 
+ INSTALL(TARGETS ar8030_usb_test_tool
+     RUNTIME DESTINATION dev_helper

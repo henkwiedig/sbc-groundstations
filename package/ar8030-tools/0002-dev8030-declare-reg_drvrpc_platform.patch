@@ -1,0 +1,23 @@
+daemon/dev8030: declare reg_drvrpc_platform in dev8030.h
+
+Same class of bug as 0001: dev8030.h declares reg_usbrpc_platfrom,
+reg_sdiorpc_platform and reg_uartrpc_platform (one per bus backend) but
+never reg_drvrpc_platform (drv8030/drv_dev.c's real definition, signature
+matching reg_sdiorpc_platform's), even though daemon/main.c calls it
+directly under #ifdef DEV_8030_DRV. Fails as an error on GCC 14
+(-Wimplicit-function-declaration):
+
+    main.c:120:22: error: implicit declaration of function
+    'reg_drvrpc_platform' [-Wimplicit-function-declaration]
+
+diff --git a/daemon/dev8030/dev8030.h b/daemon/dev8030/dev8030.h
+index 1c1f2cc..3276375 100644
+--- a/daemon/dev8030/dev8030.h
++++ b/daemon/dev8030/dev8030.h
+@@ -42,6 +42,7 @@ typedef struct dev8030 {
+ int reg_usbrpc_platfrom(rpc_info* prpc);
+ int reg_sdiorpc_platform(rpc_info* prpc, const char** devs, int dev_cnt);
+ int reg_uartrpc_platform(rpc_info* prpc, char* devs, uart_par* par);
++int reg_drvrpc_platform(rpc_info* prpc, const char** devs, int dev_cnt);
+ int reg_usbrpc_hostjnimode_platform(rpc_info* prpc);
+ int dev8030_poll(rpc_info* prpc);

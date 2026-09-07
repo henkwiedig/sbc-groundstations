@@ -1,0 +1,29 @@
+daemon/dev8030/drv8030: include hotplug_rpc.h
+
+drv_dev.c calls dev8030_hotplug_event() (declared in the sibling
+daemon/dev8030/hotplug_rpc.h, already on this target's include path via
+CMakeLists.txt's "target_include_directories(drv8030 PRIVATE ../)") but
+never includes that header -- every other bus backend that calls the same
+function (usb8030/usb_dev.c, sdio8030/sdio_dev.c, uart8030/uart_dev.c)
+does. Harmless under older/laxer compilers (implicit-declaration was only
+a warning), but fails outright as an error on GCC 14
+(-Wimplicit-function-declaration is an error by default for C99+ there):
+
+    drv_dev.c:345:17: error: implicit declaration of function
+    'dev8030_hotplug_event' [-Wimplicit-function-declaration]
+
+USING_8030DRV (the /dev/ar_mdev0 backend this board's daemon build uses,
+alongside USING_8030USB) is the only bus backend that hits this, which is
+presumably why it went unnoticed upstream.
+
+diff --git a/daemon/dev8030/drv8030/drv_dev.c b/daemon/dev8030/drv8030/drv_dev.c
+index 568e508..82ba34c 100644
+--- a/daemon/dev8030/drv8030/drv_dev.c
++++ b/daemon/dev8030/drv8030/drv_dev.c
+@@ -1,5 +1,6 @@
+ #include "com_log.h"
+ #include "dev8030.h"
++#include "hotplug_rpc.h"
+ #include "list.h"
+ #include "rpc_node.h"
+ #include "timspec_helper.h"
