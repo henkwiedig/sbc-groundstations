@@ -1,0 +1,125 @@
+#!/bin/sh
+#
+# Starts the Artosyn AR8030 baseband/RF link.
+#
+
+# Allow a few customizations from a config file
+test -r /etc/default/ar8030 && . /etc/default/ar8030
+
+BB_FW=${BB_FW:-bb_demo_cx485_2PA.img}
+BB_CFG=${BB_CFG:-bb_config_gnd_pro.json}
+
+if [ x$AR8030_ENABLED = x"false" ]; then
+	echo "Starting ar8030... skipped (disabled)"
+	exit 0
+fi
+
+# Power-on handshake for the AR8030 RF daughterboard, ported verbatim
+# (GPIO numbers, ordering, delays) from stock's S99ar8030 enable_rf().
+# Not modeled in the shared devicetree -- stock drives these as raw sysfs
+# GPIOs too. gpio154=bank4/offset26, gpio83/84/82=bank2/offset19/20/18.
+enable_rf() {
+	echo 154 > /sys/class/gpio/export
+	echo out > /sys/class/gpio/gpio154/direction
+	echo 0 > /sys/class/gpio/gpio154/value
+
+	echo 83 > /sys/class/gpio/export
+	echo out > /sys/class/gpio/gpio83/direction
+	echo 0 > /sys/class/gpio/gpio83/value
+
+	echo 84 > /sys/class/gpio/export
+	echo out > /sys/class/gpio/gpio84/direction
+	echo 0 > /sys/class/gpio/gpio84/value
+
+	echo 82 > /sys/class/gpio/export
+	echo out > /sys/class/gpio/gpio82/direction
+	echo 0 > /sys/class/gpio/gpio82/value
+
+	usleep 100000
+
+	echo 1 > /sys/class/gpio/gpio83/value
+	echo 1 > /sys/class/gpio/gpio84/value
+
+	usleep 50000
+
+	echo 1 > /sys/class/gpio/gpio154/value
+
+	usleep 50000
+
+	echo 1 > /sys/class/gpio/gpio82/value
+
+	usleep 280000
+
+	echo in > /sys/class/gpio/gpio84/direction
+	echo in > /sys/class/gpio/gpio83/direction
+	echo in > /sys/class/gpio/gpio82/direction
+}
+
+# Waits (up to $2 seconds) for $1 to appear. Used the same way stock uses
+# it: /dev/ar_mdev0 is artosyn_drv.ko's signal that firmware+config were
+# successfully pushed to the chip over USB.
+wait_flag_file() {
+	flag_file="$1"
+	max_timeout="$2"
+	timeout_count=0
+
+	while true; do
+		[ -e "$flag_file" ] && return 0
+		sleep 1
+		timeout_count=$((timeout_count + 1))
+		[ "$timeout_count" -ge "$max_timeout" ] && return 1
+	done
+}
+
+start() {
+	printf "Starting ar8030... "
+
+	enable_rf
+
+	modprobe artosyn_drv fw_name="$BB_FW" cfg_name="$BB_CFG"
+
+	if ! wait_flag_file /dev/ar_mdev0 30; then
+		echo "FAIL (firmware/config push timed out)"
+		return 1
+	fi
+
+	# artosyn_drv.ko's only job is pushing firmware+config over USB while
+	# the chip is in its boot-ROM stage (see /dev/ar_mdev0 above, used
+	# purely as the "push done" signal). Once the chip reboots into its
+	# real firmware it re-enumerates as 1d6b:8030 and the daemon talks to
+	# it directly over USB, so the module is unloaded here -- matches
+	# stock's own S99ar8030 sequence exactly.
+	rmmod artosyn_drv
+	usleep 100000
+
+	start-stop-daemon -S -b -q -m -p /var/run/ar8030-daemon.pid \
+		-x /usr/bin/ar8030-daemon -- -i 0 -l 2
+	[ $? = 0 ] && echo "OK" || echo "FAIL"
+}
+
+stop() {
+	printf "Stopping ar8030... "
+	start-stop-daemon -K -p /var/run/ar8030-daemon.pid
+	[ $? = 0 ] && echo "OK" || echo "FAIL"
+}
+
+case "$1" in
+	start)
+		start
+		;;
+
+	stop)
+		stop
+		;;
+
+	restart)
+		stop
+		sleep 1
+		start
+		;;
+
+	*)
+		echo "Usage: $0 {start|stop|restart}"
+		exit 1
+		;;
+esac

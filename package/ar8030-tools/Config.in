@@ -1,0 +1,14 @@
+config BR2_PACKAGE_AR8030_TOOLS
+	bool "ar8030-tools"
+	select BR2_PACKAGE_AR8030
+	select BR2_PACKAGE_LIBUSB
+	help
+	  Userspace daemon and diagnostic/pairing tools for the Artosyn
+	  AR8030 baseband/RF link (built from the same yz_host_drv SDK as
+	  package/ar8030's kernel module):
+
+	  - ar8030-daemon: owns the USB-attached AR8030 once its firmware
+	    is running, exposes an RPC service other tools talk to.
+	  - bb_pair: baseband pairing/binding with an AR8030-equipped
+	    air unit.
+	  - ar8030_usb_test_tool: basic USB-level diagnostics.

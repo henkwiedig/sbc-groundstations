@@ -1,0 +1,10 @@
+config BR2_PACKAGE_AR8030
+	bool "ar8030"
+	help
+	  Artosyn AR8030 baseband/RF-link kernel driver (artosyn_drv.ko)
+	  for the Caddx VRX Pro's internal USB-attached RF module.
+
+	  Includes the GPIO power-on sequence, firmware+config for the
+	  CX486-RF-2PA RF board, and the init script that brings the link
+	  up on boot. See package/ar8030-tools for the userspace daemon
+	  and pairing/diagnostic tools that talk to it.
