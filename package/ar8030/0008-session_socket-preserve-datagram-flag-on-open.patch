@@ -1,0 +1,47 @@
+session_socket: preserve BB_SOCK_FLAG_DATAGRAM in the open-socket request
+
+bb_socket_open() decides its own *local* framing (sock->datagram_mode,
+used by bb_socket_write()/bb_socket_read() -- see
+session_socket_datagram_ext.c for the actual pack/unpack) from the
+flg the caller passes in, before this line ever runs. But the
+open-socket RPC request sent to this host's own chip unconditionally
+strips BB_SOCK_FLAG_DATAGRAM first -- so regardless of what a caller
+like tuntap_bb asks for, this host's chip is always told to open a
+plain (non-datagram) socket.
+
+The kernel-driver equivalent (OpenIPC/builder air side,
+driver/linux/rpc/session_socket.c's ar_bb_rpc_socket_open()) computes
+the same masked-down value into an unused local `flag` and then sends
+the *unmasked* `flg` instead -- so that side's chip, unlike this one,
+already gets whatever DATAGRAM bit its caller (net_dev.c, always
+BB_SOCK_FLAG_DATAGRAM) asked for. That mismatch -- one chip told
+datagram, the other always told non-datagram, for the same slot/port
+-- is what actually broke the RF link's netif bridging end to end
+(confirmed live: symmetric zero rx_bytes on both ends despite a
+healthy physical link).
+
+Making both non-datagram (see the since-reverted OpenIPC/builder
+0007-net_dev-drop-datagram-flag-mismatched-with-userspace.patch) does
+get the two chips to agree and unblocks small packets, but non-datagram
+sockets have no length-prefix framing at all, so anything that needs
+more than one underlying radio-level transfer to carry has nothing to
+preserve packet boundaries across the split -- confirmed live via
+`ping -s`: exactly 690 bytes of ICMP payload gets through every time,
+691 fails every time, a hard threshold consistent with exactly this.
+Since the kernel-driver and userspace datagram framing formats are
+otherwise byte-identical (same 0xab/length/xor/data/0xbc layout, same
+constants), preserving DATAGRAM here instead -- so both chips agree
+on *that* -- is the fix that keeps working past that ceiling, rather
+than papering over it with a smaller MTU.
+
+diff --git a/app/ar8030/session_socket.c b/app/ar8030/session_socket.c
+--- a/app/ar8030/session_socket.c
++++ b/app/ar8030/session_socket.c
+@@ -227,7 +227,7 @@
+         opt = &tmpopt;
+     }
+
+-    flg &= (BB_SOCK_FLAG_TX | BB_SOCK_FLAG_RX);
++    flg &= (BB_SOCK_FLAG_TX | BB_SOCK_FLAG_RX | BB_SOCK_FLAG_DATAGRAM);
+     memcpy(buff + 0, &flg, 4);
+     memcpy(buff + 4, opt, sizeof(bb_sock_opt_t));

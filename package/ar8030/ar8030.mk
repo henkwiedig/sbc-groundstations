@@ -16,6 +16,35 @@ AR8030_INSTALL_STAGING = YES
 # paired peer into the on-disk baseband config.
 AR8030_DEPENDENCIES = host-pkgconf libusb $(if $(BR2_PACKAGE_AR8030_PAIR_TOOL),cjson)
 
+ifeq ($(BR2_PACKAGE_AR8030_TUNTAP),y)
+# tuntap_bb's vendored libtuntap (FetchContent'd from a tarball at
+# CMake-configure time, not something a 000N-*.patch against this
+# package's own git checkout can reach -- see the AR8030_INSTALL_TUNTAP
+# comment below) hardcodes /usr/include and /usr/local/include as public
+# include dirs unconditionally on ALL Unix, host-native-build assumption
+# that predates ever being used in a cross toolchain. Buildroot's
+# compiler wrapper refuses those on principle ("unsafe header/library
+# path used in cross-compilation" -- exactly the class of bug that
+# wrapper exists to catch, since a real host header masking the
+# cross-sysroot's one would fail bafflingly later instead of here).
+# Strip just those two lines from the tarball's CMakeLists.txt before
+# CMake ever unpacks it, rather than patching the resulting build files
+# after the fact (FetchContent re-extracts on every configure).
+define AR8030_FIX_LIBTUNTAP_TARBALL
+	rm -rf $(@D)/third_package/.libtuntap-fix
+	mkdir -p $(@D)/third_package/.libtuntap-fix
+	tar -xf $(@D)/third_package/libtuntap.tar \
+		-C $(@D)/third_package/.libtuntap-fix
+	sed -i -e '\|^[[:space:]]*/usr/include/[[:space:]]*$$|d' \
+		-e '\|^[[:space:]]*/usr/local/include/[[:space:]]*$$|d' \
+		$(@D)/third_package/.libtuntap-fix/libtuntap/CMakeLists.txt
+	tar -cf $(@D)/third_package/libtuntap.tar \
+		-C $(@D)/third_package/.libtuntap-fix libtuntap
+	rm -rf $(@D)/third_package/.libtuntap-fix
+endef
+AR8030_PRE_CONFIGURE_HOOKS += AR8030_FIX_LIBTUNTAP_TARBALL
+endif
+
 #
 # Kernel driver (driver/linux, out-of-tree, built by the kernel's own kbuild).
 #
@@ -66,7 +95,7 @@ AR8030_CONF_OPTS = \
 	-DAPP_STATIC_LIB=OFF \
 	-DBUILD_ARTOSYN_EXAMPLE=OFF \
 	-DBUILD_RAM_INIT=ON \
-	-DBUILD_TUNTAP=OFF \
+	-DBUILD_TUNTAP=$(if $(BR2_PACKAGE_AR8030_TUNTAP),ON,OFF) \
 	-DBUILD_BW_UPDATE_DEMO=OFF \
 	-DBUILD_IMG_UPGRADE=OFF \
 	-DBUILD_XDATA_TEST=OFF \
@@ -121,6 +150,29 @@ define AR8030_INSTALL_TOOLS
 endef
 endif
 
+ifeq ($(BR2_PACKAGE_AR8030_TUNTAP),y)
+# tuntap_bb links a vendored libtuntap/libtuntap++ (FetchContent'd from
+# third_package/libtuntap.tar at CMake-configure time,
+# not part of this package's own git checkout, so it can't be reached by a
+# 000N-*.patch) as shared libs -- Buildroot's cmake-package always forces
+# -DBUILD_SHARED_LIBS=ON, and unlike the bundled libusb copy
+# (0004-*.patch), this one actually has working install() rules, just not
+# ones that run: AR8030_INSTALL_TARGET_CMDS below replaces CMake's own
+# install step entirely (same reason libar8030_client.so and the daemon
+# are hand-copied instead of relying on `make install`), so they need the
+# same explicit treatment.
+define AR8030_INSTALL_TUNTAP
+	$(INSTALL) -D -m 0755 $(AR8030_BUILDDIR)/dev_helper/tuntap_bb/tuntap_bb \
+		$(TARGET_DIR)/usr/bin/ar8030-tun
+	$(INSTALL) -D -m 0755 $(AR8030_BUILDDIR)/_deps/libtuntap-build/lib/libtuntap.so.2.2 \
+		$(TARGET_DIR)/usr/lib/libtuntap.so.2.2
+	ln -sf libtuntap.so.2.2 $(TARGET_DIR)/usr/lib/libtuntap.so
+	$(INSTALL) -D -m 0755 $(AR8030_BUILDDIR)/_deps/libtuntap-build/lib/libtuntap++.so.2.1 \
+		$(TARGET_DIR)/usr/lib/libtuntap++.so.2.1
+	ln -sf libtuntap++.so.2.1 $(TARGET_DIR)/usr/lib/libtuntap++.so
+endef
+endif
+
 ifeq ($(BR2_PACKAGE_AR8030_FIRMWARE),y)
 define AR8030_INSTALL_FIRMWARE
 	$(INSTALL) -d -m 0755 $(TARGET_DIR)/lib/firmware/ar8030
@@ -167,6 +219,7 @@ define AR8030_INSTALL_TARGET_CMDS
 	$(AR8030_INSTALL_PAIR_TOOL)
 	$(AR8030_INSTALL_USB_LOADER)
 	$(AR8030_INSTALL_TOOLS)
+	$(AR8030_INSTALL_TUNTAP)
 	$(AR8030_INSTALL_FIRMWARE)
 	$(AR8030_INSTALL_INIT)
 	$(AR8030_INSTALL_STATUS_TOOL)

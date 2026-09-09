@@ -1,0 +1,75 @@
+tuntap_bb: make BB_SOCK_FLAG_DATAGRAM a runtime choice, default on
+
+bb_socket_open()'s DATAGRAM bit used to always reach this host's own
+chip masked away (see 0008-session_socket-preserve-datagram-flag-on-open.patch
+for why that mattered: it left this end's chip always non-datagram
+while the camera's netif, on the OpenIPC/builder air side, was always
+datagram -- a per-chip mode mismatch that broke the RF link's netif
+bridging outright). With that fixed, both ends can actually agree on
+DATAGRAM, which is what this tool already hardcoded upstream -- so
+default it back on, but keep it a runtime flag (-g/--no-datagram to
+turn it off) instead of hardcoding one assumption, since testing
+non-datagram (its own tradeoff: no length-prefix framing, and a hard
+~718-byte per-write ceiling confirmed live via `ping -s`) shouldn't
+need a patch+rebuild cycle each time.
+
+diff --git a/dev_helper/tuntap_bb/test_bb_tun.h b/dev_helper/tuntap_bb/test_bb_tun.h
+--- a/dev_helper/tuntap_bb/test_bb_tun.h
++++ b/dev_helper/tuntap_bb/test_bb_tun.h
+@@ -12,6 +12,10 @@
+     bb_dev_handle_t* pdev    = nullptr;
+     bb_slot_e        slot_id = BB_SLOT_0;
+     int              port_id = 2;
++    // On by default: needs 0008-session_socket-preserve-datagram-flag-on-open.patch
++    // on this end and the camera's (unpatched, upstream-hardcoded) netif on the
++    // other to actually agree -- see that patch and -g/--no-datagram below.
++    int  datagram_flg = 1;
+     // tun field
+     int  ipset_flg    = 0;
+     int  mtu          = 1500;
+--- a/dev_helper/tuntap_bb/test_bb_tun.cpp
++++ b/dev_helper/tuntap_bb/test_bb_tun.cpp
+@@ -23,6 +23,7 @@
+     printf(" -v --debug             debug mode in ethernet transfer\n");
+     printf(" -r --rx_buf            buffer len of rx\n");
+     printf(" -t --tx_buf            buffer len of tx\n");
++    printf(" -g --no-datagram       don't use BB_SOCK_FLAG_DATAGRAM (on by default)\n");
+
+     return 0;
+ }
+@@ -134,7 +135,7 @@
+     cfg.bb_fd = bb_socket_open(cfg.pdev,
+                                cfg.slot_id,
+                                cfg.port_id,
+-                               BB_SOCK_FLAG_RX | BB_SOCK_FLAG_TX | BB_SOCK_FLAG_DATAGRAM,
++                               BB_SOCK_FLAG_RX | BB_SOCK_FLAG_TX | (cfg.datagram_flg ? BB_SOCK_FLAG_DATAGRAM : 0),
+                                &opt);
+     if (cfg.bb_fd < 0) {
+         printf("create bb socket failed!\n");
+@@ -155,7 +156,7 @@
+ {
+     int         opt           = 0;
+     int         flag_help     = 0;
+-    const char* short_options = "hp:i:u:d:vr:t:";
++    const char* short_options = "hp:i:u:d:vr:t:g";
+     uint32_t    rx_buffer     = 40000;
+     uint32_t    tx_buffer     = 60000;
+
+@@ -170,6 +171,7 @@
+         { "debug", no_argument,       NULL, 'v'},
+         { "rx_buf",required_argument, NULL, 'r'},
+         { "tx_buf",required_argument, NULL, 't'},
++        { "no-datagram", no_argument, NULL, 'g'},
+         { 0,       0,                 0,    0  },
+     };
+
+@@ -200,6 +202,9 @@
+         case 't':
+             cfg.tx_buf_len = strtoul(optarg, NULL, 10);
+             break;
++        case 'g':
++            cfg.datagram_flg = 0;
++            break;
+         default:
+             printf("unknown option\n");
+             break;
