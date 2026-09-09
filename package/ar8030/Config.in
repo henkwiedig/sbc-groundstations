@@ -60,10 +60,16 @@ config BR2_PACKAGE_AR8030_INIT
 config BR2_PACKAGE_AR8030_PAIR_TOOL
 	bool "bb_pair binding tool"
 	default y
+	select BR2_PACKAGE_CJSON
 	help
 	  Installs bb_pair as /usr/bin/ar8030-pair: the vendor's
 	  pair/bind utility. Talks to ar8030d over the local RPC socket,
 	  so the daemon has to be running.
+
+	  On a successful pair, also writes the peer's MAC into the
+	  on-disk baseband config (see 0005-*.patch) so it survives the
+	  next reboot's firmware push instead of needing to be re-paired
+	  every time.
 
 config BR2_PACKAGE_AR8030_USB_LOADER
 	bool "USB rom-code firmware loader"

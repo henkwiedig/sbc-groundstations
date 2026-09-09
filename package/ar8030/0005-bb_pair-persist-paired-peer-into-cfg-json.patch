@@ -1,0 +1,310 @@
+bb_pair: persist the paired peer into the on-disk baseband config
+
+bb_pair's pairing dispatch (PRJ_CMD_EVENT_PAIR via BB_SET_PRJ_DISPATCH)
+only ever changes the chip's live/RAM state. S60ar8030/S97ar8030 push
+the on-disk fw_name=/cfg_name= config fresh into the chip at every
+modprobe, unconditionally -- so a successful pair is silently undone
+on the very next reboot, and has to be redone from scratch every time.
+
+After the existing pairing dispatch completes, poll BB_GET_STATUS (same
+"is this slot real" check ar8030-status.c already uses: valid
+bb_link_state_e, non-zero peer MAC) for the resulting peer, then:
+
+  - write it into the on-disk config so it survives the next reboot's
+    firmware push -- AP role gets a single-entry candidate allowlist at
+    baseband.basic.ap.candidate.{slot,slotN} (matches whichever form the
+    file already uses -- see usr_master.json/usr_slave.json/
+    bb_config_director.json for the slotN form), DEV role gets
+    baseband.basic.dev.ap_mac. Same AP/DEV split upstream's own (unused)
+    dev_helper/bb_pair/bb_pair.cpp reference already uses for the
+    equivalent live-only BB_SET_CANDIDATES/BB_SET_AP_MAC calls.
+  - best-effort apply the same change live via BB_SET_CANDIDATES/
+    BB_SET_AP_MAC too, so the current session doesn't itself need a
+    reboot -- not fatal if the running firmware ignores it, since the
+    file is what actually matters after a reboot.
+
+-c/--cfg overrides the config path (default: /lib/firmware/ar8030/
+bb_config_gnd_pro.json, matching this package's default RF-board
+variant -- see files/etc/default/ar8030's own BB_CFG for the same
+"hardcoded to the reference unit, override if yours differs" caveat);
+--no-persist keeps the old pair-only behavior.
+
+Needs a JSON library that doesn't otherwise exist in this SDK (the
+config file is pushed as an opaque blob to the chip's own RTOS, which
+does its own parsing) -- added via pkg-config against buildroot's cjson
+package rather than vendoring one.
+
+Ported verbatim from the OpenIPC/builder air-side ar8030 package's
+identical patch -- keep the two in sync.
+
+Not yet verified against real hardware: whether the peer MAC actually
+appears in BB_GET_STATUS within the polling window in practice, and
+whether the running firmware acts on the live BB_SET_CANDIDATES/
+BB_SET_AP_MAC calls at all (best-effort, not required for the on-disk
+persistence to work).
+
+--- a/dev_helper/bb_pair/CMakeLists.txt
++++ b/dev_helper/bb_pair/CMakeLists.txt
+@@ -1,8 +1,11 @@
+ ﻿
++find_package(PkgConfig REQUIRED)
++pkg_check_modules(CJSON REQUIRED IMPORTED_TARGET libcjson)
++
+ add_executable(bb_pair)
+ target_sources(bb_pair PRIVATE txg_bb_pair.cpp)
+ 
+-target_link_libraries(bb_pair PRIVATE ar8030_client com)
++target_link_libraries(bb_pair PRIVATE ar8030_client com PkgConfig::CJSON)
+ target_include_directories(bb_pair PRIVATE ./ ../../app/ar8030)
+ 
+ INSTALL(TARGETS bb_pair
+--- a/dev_helper/bb_pair/txg_bb_pair.cpp
++++ b/dev_helper/bb_pair/txg_bb_pair.cpp
+@@ -6,10 +6,20 @@
+ #include <string.h>
+ #include <cstdio>
+ #include <unistd.h>
++#include <errno.h>
++#include <cjson/cJSON.h>
+ #include "bb_dev.h"
++#include "bb_api.h"
+ #include "prj_rpc.h"
+ #include "ar8030.h"
+ 
++// Default on-disk baseband config: the same file pushed into the chip via
++// cfg_name= at every modprobe (see S60ar8030/S97ar8030). A successful pair
++// only updates the chip's live/RAM state (BB_SET_PRJ_DISPATCH below) --
++// without also rewriting this file, the next reboot re-pushes the stale
++// config and the pairing has to be redone from scratch. Override with -c.
++static const char* g_default_cfg_path = "/lib/firmware/ar8030/bb_config_gnd_pro.json";
++
+ struct AR8030Helper
+ {
+     int slot;
+@@ -197,8 +207,179 @@
+     return my_bb_ioctl(helper->bb_handle, BB_SET_PRJ_DISPATCH, &set_prj, NULL);
+ }
+ 
+-int main()
++static void mac_to_hex(const bb_mac_t* mac, char* out /* needs 2*BB_MAC_LEN+1 bytes */)
++{
++    for (int i = 0; i < BB_MAC_LEN; i++) {
++        sprintf(out + i * 2, "%02x", mac->addr[i]);
++    }
++}
++
++// The dispatch in _pair_thread_run runs synchronously (asyn=0) and only
++// returns once the chip's own pairing dance has finished or timed out, so
++// by the time AR8030Helper_startPair's wait loop exits, a successful pair
++// should already show up here -- this loop is just a short-timeout safety
++// margin for that state to propagate, not a re-implementation of pairing.
++// Reuses the exact same "is this slot real" check as ar8030-status (see
++// package/ar8030/files/ar8030-status.c): state must be a valid
++// bb_link_state_e and the peer MAC non-zero.
++static int wait_for_paired_peer(bb_dev_handle_t* bb_handle, int timeout_s, uint8_t* out_role, bb_mac_t* out_mac)
++{
++    for (int elapsed = 0; elapsed < timeout_s; elapsed++) {
++        bb_get_status_in_t  in  = { 0xffff };
++        bb_get_status_out_t out;
++        memset(&out, 0, sizeof(out));
++        if (bb_ioctl(bb_handle, BB_GET_STATUS, &in, &out) == 0) {
++            *out_role = out.role;
++            for (int s = 0; s < BB_SLOT_MAX; s++) {
++                bb_link_status_t* ls = &out.link_status[s];
++                if (ls->state != BB_LINK_STATE_CONNECT) {
++                    continue;
++                }
++                bool mac_zero = true;
++                for (int b = 0; b < BB_MAC_LEN; b++) {
++                    if (ls->peer_mac.addr[b]) {
++                        mac_zero = false;
++                        break;
++                    }
++                }
++                if (!mac_zero) {
++                    *out_mac = ls->peer_mac;
++                    return s;
++                }
++            }
++        }
++        sleep(1);
++    }
++    return -1;
++}
++
++// Writes the paired peer's MAC into the on-disk config so it survives the
++// next boot's firmware push. Mirrors upstream's own (unused, see
++// dev_helper/bb_pair/bb_pair.cpp) reference split: an AP keeps a candidate
++// allowlist per slot (baseband.basic.ap.candidate.slot, or .slotN when the
++// file already uses the multi-slot form -- see usr_master.json/
++// usr_slave.json/bb_config_director.json for that shape), a DEV just points
++// at one AP MAC (baseband.basic.dev.ap_mac). Returns 0 on success.
++static int persist_paired_peer(const char* cfg_path, int slot, uint8_t role, const char* mac_hex)
+ {
++    FILE* f = fopen(cfg_path, "rb");
++    if (!f) {
++        printf("persist: can't open %s for reading: %s\n", cfg_path, strerror(errno));
++        return -1;
++    }
++    fseek(f, 0, SEEK_END);
++    long len = ftell(f);
++    fseek(f, 0, SEEK_SET);
++    char* buf = (char*)malloc(len + 1);
++    if (!buf || fread(buf, 1, len, f) != (size_t)len) {
++        printf("persist: read of %s failed\n", cfg_path);
++        fclose(f);
++        free(buf);
++        return -1;
++    }
++    buf[len] = 0;
++    fclose(f);
++
++    cJSON* root = cJSON_Parse(buf);
++    free(buf);
++    if (!root) {
++        printf("persist: %s is not valid JSON\n", cfg_path);
++        return -1;
++    }
++
++    int ret = -1;
++    cJSON* baseband = cJSON_GetObjectItem(root, "baseband");
++    cJSON* basic = baseband ? cJSON_GetObjectItem(baseband, "basic") : NULL;
++    cJSON* section = basic ? cJSON_GetObjectItem(basic, role == BB_ROLE_AP ? "ap" : "dev") : NULL;
++    if (!section) {
++        printf("persist: %s has no baseband.basic.%s section\n", cfg_path, role == BB_ROLE_AP ? "ap" : "dev");
++        cJSON_Delete(root);
++        return -1;
++    }
++
++    if (role == BB_ROLE_AP) {
++        cJSON* candidate = cJSON_GetObjectItem(section, "candidate");
++        if (!candidate) {
++            candidate = cJSON_AddObjectToObject(section, "candidate");
++        }
++        // cJSON_ReplaceItemViaPointer only splices the linked list -- it does
++        // NOT copy the object key onto the replacement, so it has to be
++        // cJSON_ReplaceItemInObject (which strdup()s the key itself) instead,
++        // or the entry silently loses its "slot"/"slotN" key on the very
++        // first pair.
++        char slot_key[8];
++        snprintf(slot_key, sizeof(slot_key), "slot%d", slot);
++        const char* key = cJSON_GetObjectItem(candidate, "slot") ? "slot" : slot_key;
++
++        cJSON* new_arr = cJSON_CreateArray();
++        cJSON_AddItemToArray(new_arr, cJSON_CreateString(mac_hex));
++        if (cJSON_GetObjectItem(candidate, key)) {
++            cJSON_ReplaceItemInObject(candidate, key, new_arr);
++        } else {
++            cJSON_AddItemToObject(candidate, key, new_arr);
++        }
++    } else {
++        cJSON* apmac_str = cJSON_CreateString(mac_hex);
++        if (cJSON_GetObjectItem(section, "ap_mac")) {
++            cJSON_ReplaceItemInObject(section, "ap_mac", apmac_str);
++        } else {
++            cJSON_AddItemToObject(section, "ap_mac", apmac_str);
++        }
++    }
++
++    char* text = cJSON_Print(root);
++    if (!text) {
++        printf("persist: failed to serialize updated config\n");
++        cJSON_Delete(root);
++        return -1;
++    }
++    char tmp_path[512];
++    snprintf(tmp_path, sizeof(tmp_path), "%s.tmp", cfg_path);
++    FILE* wf = fopen(tmp_path, "wb");
++    if (!wf) {
++        printf("persist: can't open %s for writing: %s\n", tmp_path, strerror(errno));
++        free(text);
++        cJSON_Delete(root);
++        return -1;
++    }
++    fwrite(text, 1, strlen(text), wf);
++    fclose(wf);
++    free(text);
++    if (rename(tmp_path, cfg_path) == 0) {
++        ret = 0;
++    } else {
++        printf("persist: rename %s -> %s failed: %s\n", tmp_path, cfg_path, strerror(errno));
++    }
++
++    cJSON_Delete(root);
++    return ret;
++}
++
++static void print_usage(const char* argv0)
++{
++    printf("usage: %s [-c|--cfg <path>] [--no-persist]\n"
++           "  -c, --cfg <path>  baseband config file to update after a successful pair\n"
++           "                    (default: %s)\n"
++           "  --no-persist      pair only, don't touch the config file\n",
++           argv0, g_default_cfg_path);
++}
++
++int main(int argc, char** argv)
++{
++    const char* cfg_path = g_default_cfg_path;
++    bool persist = true;
++
++    for (int i = 1; i < argc; i++) {
++        if ((!strcmp(argv[i], "-c") || !strcmp(argv[i], "--cfg")) && i + 1 < argc) {
++            cfg_path = argv[++i];
++        } else if (!strcmp(argv[i], "--no-persist")) {
++            persist = false;
++        } else if (!strcmp(argv[i], "-h") || !strcmp(argv[i], "--help")) {
++            print_usage(argv[0]);
++            return 0;
++        }
++    }
++
+     AR8030Helper* helper = NULL;
+     AR8030Helper_init(&helper, 0, 0);
+     if (AR8030Helper_connectToDaemon(helper) == 0) {
+@@ -210,6 +391,45 @@
+             sleep(1);
+         }
+         // AR8030Helper_disconnectDaemon(helper);
++
++        if (persist) {
++            uint8_t role = 0;
++            bb_mac_t peer_mac;
++            memset(&peer_mac, 0, sizeof(peer_mac));
++            int slot = wait_for_paired_peer(helper->bb_handle, 5, &role, &peer_mac);
++            if (slot < 0) {
++                printf("pair: no connected peer found, leaving %s untouched\n", cfg_path);
++            } else {
++                char mac_hex[2 * BB_MAC_LEN + 1];
++                mac_to_hex(&peer_mac, mac_hex);
++                printf("pair: peer %s connected on slot %d\n", mac_hex, slot);
++
++                if (persist_paired_peer(cfg_path, slot, role, mac_hex) == 0) {
++                    printf("pair: %s updated -- takes effect on next chip reboot\n", cfg_path);
++                } else {
++                    printf("pair: failed to update %s\n", cfg_path);
++                }
++
++                // Best-effort live update too, so this session doesn't
++                // itself need a reboot to lock onto the new peer. Mirrors
++                // upstream's own bb_pair.cpp reference (BB_SET_CANDIDATES
++                // for AP, BB_SET_AP_MAC for DEV) -- not fatal if the
++                // running firmware doesn't act on it, since the file
++                // above is what actually matters after a reboot.
++                if (role == BB_ROLE_AP) {
++                    bb_set_candidate_t candi;
++                    memset(&candi, 0, sizeof(candi));
++                    candi.slot = slot;
++                    candi.mac_num = 1;
++                    memcpy(&candi.mac_tab[0], &peer_mac, sizeof(bb_mac_t));
++                    bb_ioctl(helper->bb_handle, BB_SET_CANDIDATES, &candi, NULL);
++                } else {
++                    bb_set_ap_mac_t ap_mac;
++                    memcpy(&ap_mac.mac, &peer_mac, sizeof(bb_mac_t));
++                    bb_ioctl(helper->bb_handle, BB_SET_AP_MAC, &ap_mac, NULL);
++                }
++            }
++        }
+     } else {
+         printf("Failed to connect to daemon.\n");
+     }
