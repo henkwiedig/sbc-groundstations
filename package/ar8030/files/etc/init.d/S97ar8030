@@ -95,12 +95,52 @@ start() {
 	start-stop-daemon -S -b -q -m -p /var/run/ar8030d.pid \
 		-x /usr/bin/ar8030d -- -i 0 -l 2
 	[ $? = 0 ] && echo "OK" || echo "FAIL"
+
+	autoreconnect
+}
+
+# Bring the RF link back up after a normal reboot without needing
+# ar8030-pair run by hand again. PRJ_CMD_EVENT_PAIR (see
+# 0009-bb_pair-auto-reconnect-on-boot.patch) is the only mechanism that
+# moves the chip from BB_LINK_STATE_IDLE to CONNECT -- a persisted
+# ap_mac in $BB_CFG only tells the chip who it's *allowed* to link with,
+# it does not make the chip attempt the link on its own at boot, so
+# without this every reboot would otherwise need a manual re-pair
+# (confirmed on real hardware).
+#
+# Gated on the "$BB_CFG.paired" marker, written only by a successful
+# `ar8030-pair` run: a unit that has never been paired keeps the
+# factory-default ap_mac/candidate pair (see the AP side's own "slot
+# match all" help text for what an empty candidate list means) --
+# looping this unconditionally would have a never-paired unit silently
+# re-broadcast PRJ_CMD_EVENT_PAIR at whatever AR8030 happens to be in
+# range. Runs detached so an air unit that isn't powered on yet doesn't
+# delay boot; --skip-if-connected keeps it from re-triggering pairing
+# against a link that's already up once it succeeds.
+#
+# restart funnels through start() again -- guard against piling up
+# duplicate loops (stop() kills whatever this pidfile points at, if it
+# still exists).
+AUTORECONNECT_PIDFILE=/tmp/ar8030-autoreconnect.pid
+
+autoreconnect() {
+	[ -x /usr/bin/ar8030-pair ] || return 0
+	[ -f "/lib/firmware/$BB_CFG.paired" ] || return 0
+	(
+		while ! ar8030-pair --no-persist --skip-if-connected -c "/lib/firmware/$BB_CFG" \
+				>>/tmp/ar8030-autoreconnect.log 2>&1; do
+			sleep 10
+		done
+	) &
+	echo $! > "$AUTORECONNECT_PIDFILE"
 }
 
 stop() {
 	printf "Stopping ar8030... "
 	start-stop-daemon -K -p /var/run/ar8030d.pid
 	[ $? = 0 ] && echo "OK" || echo "FAIL"
+	[ -f "$AUTORECONNECT_PIDFILE" ] && kill "$(cat "$AUTORECONNECT_PIDFILE")" 2>/dev/null
+	rm -f "$AUTORECONNECT_PIDFILE"
 }
 
 case "$1" in

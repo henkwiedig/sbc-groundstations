@@ -1,0 +1,236 @@
+bb_pair: reconnect to the persisted peer automatically at boot
+
+0005-*.patch persists a paired peer's MAC into the on-disk baseband
+config so it survives the next boot's cfg_name= push -- but that alone
+turns out not to be enough (confirmed on real hardware, both ground and
+air units): the persisted candidate/ap_mac only tells the chip who it
+is *allowed* to link with, it never makes the chip attempt the link by
+itself. PRJ_CMD_EVENT_PAIR (BB_SET_PRJ_DISPATCH, same dispatch
+_pair_thread_run already sends) is the only mechanism in this SDK that
+moves a slot from BB_LINK_STATE_IDLE to LOCK/CONNECT. Nothing on the
+firmware side re-issues it after a plain reboot, so every reboot still
+needed ar8030-pair run by hand again, defeating the point of persisting
+the peer in the first place.
+
+Ported verbatim from the OpenIPC/builder air-side ar8030 package's
+identical patch -- keep the two in sync.
+
+Fix: S97ar8030 now spawns a detached background loop after the daemon
+starts that keeps calling this tool (new --skip-if-connected
+--no-persist flags below) until the link comes up, instead of blocking
+boot on it (an air unit that isn't powered on yet must not delay the
+rest of boot). It only runs at all when "<cfg>.paired" exists -- a new
+marker file this patch has persist_paired_peer() write next to the
+config on a successful pair. That gate matters: a never-paired unit
+still carries the factory-default ap_mac, and on an AP-role config an
+empty candidate list means "accept anyone" per the shipped config's own
+"slot match all" help text, so looping this unconditionally from a
+factory-default boot would have the unit silently re-broadcast
+PRJ_CMD_EVENT_PAIR at whatever AR8030 happens to be in range -- pairing
+for the first time has to stay the deliberate, manual ar8030-pair a
+person runs once.
+
+New flags on the tool itself:
+  --skip-if-connected  do one immediate BB_GET_STATUS poll first; if a
+                        peer is already connected, exit 0 without
+                        touching pairing at all. Keeps the retry loop
+                        from re-triggering PRJ_CMD_EVENT_PAIR against a
+                        link that's already up (a manual ar8030-pair
+                        run to bind to a *different* device still works
+                        alongside it -- the daemon serializes dispatch
+                        calls onto the one RPC connection, so the two
+                        can't corrupt state, just queue).
+Also: exit status now actually reflects whether a peer ended up
+connected (0 connected / 1 not) instead of always 0, since the retry
+loop's `while ! ar8030-pair ...; do sleep; done` depends on it -- this
+changes interactively invoked runs too (previously a failed pair still
+exited 0).
+
+Not yet verified against real hardware: whether repeated
+PRJ_CMD_EVENT_PAIR calls every ~10s indefinitely while a peer is absent
+have any adverse effect on the chip (thermal, or upsetting a concurrent
+manual pair attempt against a different peer); whether the "accept
+anyone" reading of an empty AP candidate list is actually correct
+instead of just "match all *already-known* slots" (in which case the
+promiscuous-pairing concern above wouldn't apply, but the marker-file
+gate is cheap enough to keep either way).
+
+--- a/dev_helper/bb_pair/txg_bb_pair.cpp
++++ b/dev_helper/bb_pair/txg_bb_pair.cpp
+@@ -351,16 +351,40 @@
+         printf("persist: rename %s -> %s failed: %s\n", tmp_path, cfg_path, strerror(errno));
+     }
+
++    // Marker for the boot-time auto-reconnect loop (see S60ar8030/S97ar8030):
++    // its whole point is to skip itself on a factory-default unit that has
++    // never been through a deliberate pair -- the default candidate/ap_mac
++    // is the placeholder 66000000/66000001 pair, and on the AP side an empty
++    // candidate list means "accept anyone" (see the config's own "slot
++    // match all" help text), so blindly auto-pairing before this file exists
++    // would let the loop silently bind to any nearby AR8030 in pairing
++    // range. Existence alone is enough for that check; content is just for
++    // a human reading it over ssh. Best-effort -- a failure here shouldn't
++    // undo an otherwise-successful persist.
++    if (ret == 0) {
++        char marker_path[520];
++        snprintf(marker_path, sizeof(marker_path), "%s.paired", cfg_path);
++        FILE* mf = fopen(marker_path, "w");
++        if (mf) {
++            fprintf(mf, "%s\n", mac_hex);
++            fclose(mf);
++        }
++    }
++
+     cJSON_Delete(root);
+     return ret;
+ }
+
+ static void print_usage(const char* argv0)
+ {
+-    printf("usage: %s [-c|--cfg <path>] [--no-persist]\n"
+-           "  -c, --cfg <path>  baseband config file to update after a successful pair\n"
+-           "                    (default: %s)\n"
+-           "  --no-persist      pair only, don't touch the config file\n",
++    printf("usage: %s [-c|--cfg <path>] [--no-persist] [--skip-if-connected]\n"
++           "  -c, --cfg <path>      baseband config file to update after a successful pair\n"
++           "                        (default: %s)\n"
++           "  --no-persist          pair only, don't touch the config file\n"
++           "  --skip-if-connected   if a peer is already connected, exit 0 without\n"
++           "                        (re-)pairing -- for the boot-time auto-reconnect\n"
++           "                        loop, so it doesn't re-trigger PRJ_CMD_EVENT_PAIR\n"
++           "                        against a link that's already up\n",
+            argv0, g_default_cfg_path);
+ }
+
+@@ -368,65 +392,92 @@
+ {
+     const char* cfg_path = g_default_cfg_path;
+     bool persist = true;
++    bool skip_if_connected = false;
+
+     for (int i = 1; i < argc; i++) {
+         if ((!strcmp(argv[i], "-c") || !strcmp(argv[i], "--cfg")) && i + 1 < argc) {
+             cfg_path = argv[++i];
+         } else if (!strcmp(argv[i], "--no-persist")) {
+             persist = false;
++        } else if (!strcmp(argv[i], "--skip-if-connected")) {
++            skip_if_connected = true;
+         } else if (!strcmp(argv[i], "-h") || !strcmp(argv[i], "--help")) {
+             print_usage(argv[0]);
+             return 0;
+         }
+     }
+
++    // Exit status drives the boot-time auto-reconnect retry loop (see
++    // S60ar8030/S97ar8030): 0 means a peer is connected (already was, or
++    // freshly paired), non-zero means keep retrying.
++    bool connected = false;
++
+     AR8030Helper* helper = NULL;
+     AR8030Helper_init(&helper, 0, 0);
+     if (AR8030Helper_connectToDaemon(helper) == 0) {
+         printf("Connected to daemon successfully!\n");
+-        AR8030Helper_startPair(helper);
+-        // Do other operations...
+-        while (helper->pair_status) {
+-            printf("pairing.\n");
+-            sleep(1);
++
++        bool already_connected = false;
++        if (skip_if_connected) {
++            uint8_t cur_role = 0;
++            bb_mac_t cur_mac;
++            memset(&cur_mac, 0, sizeof(cur_mac));
++            // Single immediate poll, not a wait -- timeout_s=1 makes
++            // wait_for_paired_peer check BB_GET_STATUS once before its
++            // first sleep.
++            if (wait_for_paired_peer(helper->bb_handle, 1, &cur_role, &cur_mac) >= 0) {
++                already_connected = true;
++                connected = true;
++                printf("pair: already connected, nothing to do\n");
++            }
+         }
+-        // AR8030Helper_disconnectDaemon(helper);
+
+-        if (persist) {
++        if (!already_connected) {
++            AR8030Helper_startPair(helper);
++            // Do other operations...
++            while (helper->pair_status) {
++                printf("pairing.\n");
++                sleep(1);
++            }
++            // AR8030Helper_disconnectDaemon(helper);
++
+             uint8_t role = 0;
+             bb_mac_t peer_mac;
+             memset(&peer_mac, 0, sizeof(peer_mac));
+             int slot = wait_for_paired_peer(helper->bb_handle, 5, &role, &peer_mac);
+             if (slot < 0) {
+-                printf("pair: no connected peer found, leaving %s untouched\n", cfg_path);
++                printf("pair: no connected peer found%s\n", persist ? ", leaving config untouched" : "");
+             } else {
++                connected = true;
+                 char mac_hex[2 * BB_MAC_LEN + 1];
+                 mac_to_hex(&peer_mac, mac_hex);
+                 printf("pair: peer %s connected on slot %d\n", mac_hex, slot);
+
+-                if (persist_paired_peer(cfg_path, slot, role, mac_hex) == 0) {
+-                    printf("pair: %s updated -- takes effect on next chip reboot\n", cfg_path);
+-                } else {
+-                    printf("pair: failed to update %s\n", cfg_path);
+-                }
+-
+-                // Best-effort live update too, so this session doesn't
+-                // itself need a reboot to lock onto the new peer. Mirrors
+-                // upstream's own bb_pair.cpp reference (BB_SET_CANDIDATES
+-                // for AP, BB_SET_AP_MAC for DEV) -- not fatal if the
+-                // running firmware doesn't act on it, since the file
+-                // above is what actually matters after a reboot.
+-                if (role == BB_ROLE_AP) {
+-                    bb_set_candidate_t candi;
+-                    memset(&candi, 0, sizeof(candi));
+-                    candi.slot = slot;
+-                    candi.mac_num = 1;
+-                    memcpy(&candi.mac_tab[0], &peer_mac, sizeof(bb_mac_t));
+-                    bb_ioctl(helper->bb_handle, BB_SET_CANDIDATES, &candi, NULL);
+-                } else {
+-                    bb_set_ap_mac_t ap_mac;
+-                    memcpy(&ap_mac.mac, &peer_mac, sizeof(bb_mac_t));
+-                    bb_ioctl(helper->bb_handle, BB_SET_AP_MAC, &ap_mac, NULL);
++                if (persist) {
++                    if (persist_paired_peer(cfg_path, slot, role, mac_hex) == 0) {
++                        printf("pair: %s updated -- takes effect on next chip reboot\n", cfg_path);
++                    } else {
++                        printf("pair: failed to update %s\n", cfg_path);
++                    }
++
++                    // Best-effort live update too, so this session doesn't
++                    // itself need a reboot to lock onto the new peer. Mirrors
++                    // upstream's own bb_pair.cpp reference (BB_SET_CANDIDATES
++                    // for AP, BB_SET_AP_MAC for DEV) -- not fatal if the
++                    // running firmware doesn't act on it, since the file
++                    // above is what actually matters after a reboot.
++                    if (role == BB_ROLE_AP) {
++                        bb_set_candidate_t candi;
++                        memset(&candi, 0, sizeof(candi));
++                        candi.slot = slot;
++                        candi.mac_num = 1;
++                        memcpy(&candi.mac_tab[0], &peer_mac, sizeof(bb_mac_t));
++                        bb_ioctl(helper->bb_handle, BB_SET_CANDIDATES, &candi, NULL);
++                    } else {
++                        bb_set_ap_mac_t ap_mac;
++                        memcpy(&ap_mac.mac, &peer_mac, sizeof(bb_mac_t));
++                        bb_ioctl(helper->bb_handle, BB_SET_AP_MAC, &ap_mac, NULL);
++                    }
+                 }
+             }
+         }
+@@ -436,5 +487,5 @@
+     // AR8030Helper_stopPair(helper);
+     AR8030Helper_release(helper);
+     printf("release.\n");
+-    return 0;
++    return connected ? 0 : 1;
+ }
+\ No newline at end of file

@@ -68,8 +68,10 @@ config BR2_PACKAGE_AR8030_PAIR_TOOL
 
 	  On a successful pair, also writes the peer's MAC into the
 	  on-disk baseband config (see 0005-*.patch) so it survives the
-	  next reboot's firmware push instead of needing to be re-paired
-	  every time.
+	  next reboot's firmware push, and S97ar8030 spawns a background
+	  loop (see 0009-*.patch) that keeps reconnecting to it at every
+	  boot -- so a paired unit no longer needs to be re-paired by
+	  hand every time.
 
 config BR2_PACKAGE_AR8030_USB_LOADER
 	bool "USB rom-code firmware loader"
