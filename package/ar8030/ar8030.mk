@@ -12,7 +12,9 @@ AR8030_SITE_METHOD = git
 AR8030_LICENSE = GPL-2.0 (kernel driver), PROPRIETARY (host SDK)
 AR8030_INSTALL_STAGING = YES
 
-AR8030_DEPENDENCIES = host-pkgconf libusb
+# cjson: bb_pair (0005-*.patch) links libcjson via pkg-config to persist a
+# paired peer into the on-disk baseband config.
+AR8030_DEPENDENCIES = host-pkgconf libusb $(if $(BR2_PACKAGE_AR8030_PAIR_TOOL),cjson)
 
 #
 # Kernel driver (driver/linux, out-of-tree, built by the kernel's own kbuild).
