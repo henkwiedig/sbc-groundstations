@@ -6,6 +6,6 @@ AR8030_ENABLED=true
 # we don't replicate that yet, so this is hardcoded to the variant
 # confirmed on the reference unit (CX486-RF-2PA / "pro", stock's own
 # fallback case). Override here if your unit has a different RF board --
-# matching files must exist in /lib/firmware.
-BB_FW=bb_demo_cx485_2PA.img
-BB_CFG=bb_config_gnd_pro.json
+# matching files must exist under /lib/firmware/ar8030.
+BB_FW=ar8030/bb_demo_cx485_2PA.img
+BB_CFG=ar8030/bb_config_gnd_pro.json

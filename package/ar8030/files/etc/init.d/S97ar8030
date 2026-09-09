@@ -6,8 +6,8 @@
 # Allow a few customizations from a config file
 test -r /etc/default/ar8030 && . /etc/default/ar8030
 
-BB_FW=${BB_FW:-bb_demo_cx485_2PA.img}
-BB_CFG=${BB_CFG:-bb_config_gnd_pro.json}
+BB_FW=${BB_FW:-ar8030/bb_demo_cx485_2PA.img}
+BB_CFG=${BB_CFG:-ar8030/bb_config_gnd_pro.json}
 
 if [ x$AR8030_ENABLED = x"false" ]; then
 	echo "Starting ar8030... skipped (disabled)"
@@ -92,14 +92,14 @@ start() {
 	rmmod artosyn_drv
 	usleep 100000
 
-	start-stop-daemon -S -b -q -m -p /var/run/ar8030-daemon.pid \
-		-x /usr/bin/ar8030-daemon -- -i 0 -l 2
+	start-stop-daemon -S -b -q -m -p /var/run/ar8030d.pid \
+		-x /usr/bin/ar8030d -- -i 0 -l 2
 	[ $? = 0 ] && echo "OK" || echo "FAIL"
 }
 
 stop() {
 	printf "Stopping ar8030... "
-	start-stop-daemon -K -p /var/run/ar8030-daemon.pid
+	start-stop-daemon -K -p /var/run/ar8030d.pid
 	[ $? = 0 ] && echo "OK" || echo "FAIL"
 }
 
