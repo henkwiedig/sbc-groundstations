@@ -1,40 +1,174 @@
 ################################################################################
-# AR8030 package (external kernel module)
+#
+# ar8030
+#
 ################################################################################
 
+# No releases and no tags upstream, so pin the commit. Same commit as
+# OpenIPC/builder's air-side ar8030 package -- keep the two in sync.
 AR8030_VERSION = 3bb948de118b94d2ede751d55f1b28b7e0b9ab62
 AR8030_SITE = http://git.topxgun.com/czdu/yz_host_drv.git
 AR8030_SITE_METHOD = git
-AR8030_LICENSE = GPL-2.0+
+AR8030_LICENSE = GPL-2.0 (kernel driver), PROPRIETARY (host SDK)
+AR8030_INSTALL_STAGING = YES
 
+AR8030_DEPENDENCIES = host-pkgconf libusb
+
+#
+# Kernel driver (driver/linux, out-of-tree, built by the kernel's own kbuild).
+#
+# This board's AR8030 is USB-attached only -- no SDIO wiring exists or is
+# planned, so this is hardcoded rather than exposed as a choice.
 AR8030_MODULE_SUBDIRS = driver/linux
-# driver/linux/Makefile's KERNELRELEASE-set branch (the one kbuild actually
-# uses when invoked the standard buildroot way, M=<dir> modules) does
-# "include $(DRV_DIR)/config.mk" but only ever sets/exports DRV_DIR from
-# its OWN "else" branch -- the one taken when its Makefile is run directly
-# by hand, which buildroot's kernel-module infra doesn't do. Pass it
-# explicitly so config.mk resolves; $(AR8030_DIR) is the same path
-# pkg-kernel-module.mk itself passes as M=.
-# SDIO bus support is unused on this board (USB-attached module) -- drop it
-# rather than carry an unbuilt/untested code path.
-AR8030_MODULE_MAKE_OPTS = DRV_DIR=$(AR8030_DIR)/driver/linux CONFIG_BUS_SDIO=n
 
-$(eval $(kernel-module))
+AR8030_MODULE_MAKE_OPTS = \
+	DRV_DIR=$(@D)/driver/linux \
+	CONFIG_BUS_USB=y \
+	CONFIG_BUS_SDIO=n
 
-define AR8030_INSTALL_FIRMWARE
-	mkdir -p $(TARGET_DIR)/lib/firmware
-	$(INSTALL) -D -m 0644 $(BR2_EXTERNAL_OPENIPC_SBC_GS_PATH)/package/ar8030/files/bb_demo_cx485_2PA.img \
-		$(TARGET_DIR)/lib/firmware/bb_demo_cx485_2PA.img
-	$(INSTALL) -D -m 0644 $(BR2_EXTERNAL_OPENIPC_SBC_GS_PATH)/package/ar8030/files/bb_config_gnd_pro.json \
-		$(TARGET_DIR)/lib/firmware/bb_config_gnd_pro.json
+# Everything the driver links against has to be built *in*, not modular --
+# request_firmware()/release_firmware() are called unconditionally, and a
+# =m CONFIG_FW_LOADER means those symbols are missing from the kernel's
+# Module.symvers (modpost only warns; the failure surfaces later as an
+# insmod-time "Unknown symbol").
+define AR8030_LINUX_CONFIG_FIXUPS
+	$(call KCONFIG_SET_OPT,CONFIG_FW_LOADER,y)
+	$(call KCONFIG_SET_OPT,CONFIG_PROC_FS,y)
+	$(call KCONFIG_SET_OPT,CONFIG_NET,y)
+	$(call KCONFIG_SET_OPT,CONFIG_USB,y)
 endef
-AR8030_POST_INSTALL_TARGET_HOOKS += AR8030_INSTALL_FIRMWARE
 
-define AR8030_INSTALL_INIT_SYSV
-	$(INSTALL) -D -m 0755 $(BR2_EXTERNAL_OPENIPC_SBC_GS_PATH)/package/ar8030/files/S97ar8030 \
+#
+# Userspace (CMake).
+#
+# USING_8030USB is this board's real runtime transport: once artosyn_drv.ko
+# has pushed firmware+config into the chip over USB and it re-enumerates
+# with its real firmware running, the module is unloaded (see
+# files/etc/init.d/S97ar8030) and ar8030d talks to it directly over USB.
+# USING_8030DRV stays on too -- daemon/main.c's /dev/ar_mdev0 path is what
+# the driver-push handshake itself rides on before that unload -- so both
+# have to be compiled in (0002-*.patch and 0003-*.patch fix build failures
+# specific to having USING_8030DRV alongside USING_8030USB).
+#
+AR8030_CONF_OPTS = \
+	-DCMAKE_EXE_LINKER_FLAGS="-static-libstdc++" \
+	-DUSING_8030USB=ON \
+	-DUSING_8030SDIO=OFF \
+	-DUSING_8030UART=OFF \
+	-DUSING_8030DRV=ON \
+	-DUSING_XDS_HDR=ON \
+	-DENABLE_UDS=ON \
+	-DENABLE_PYTHON=OFF \
+	-DENABLE_JAVA=OFF \
+	-DDAEMON_STATIC_LIB=OFF \
+	-DAPP_STATIC_LIB=OFF \
+	-DBUILD_ARTOSYN_EXAMPLE=OFF \
+	-DBUILD_RAM_INIT=ON \
+	-DBUILD_TUNTAP=OFF \
+	-DBUILD_BW_UPDATE_DEMO=OFF \
+	-DBUILD_IMG_UPGRADE=OFF \
+	-DBUILD_XDATA_TEST=OFF \
+	-DBUILD_REPEATER_TEST=OFF \
+	-DBUILD_BB_TEST=OFF \
+	-DBUILD_WORK_MODE_CFG=OFF \
+	-DBUILD_UART_CFG_TEST=OFF \
+	-DBUILD_BB_PAIR=$(if $(BR2_PACKAGE_AR8030_PAIR_TOOL),ON,OFF) \
+	-DBUILD_USB_TEST_TOOL=$(if $(BR2_PACKAGE_AR8030_USB_LOADER),ON,OFF) \
+	-DBUILD_CMD_DBG=$(if $(BR2_PACKAGE_AR8030_TOOLS),ON,OFF) \
+	-DBUILD_OTA_UPGRADE=$(if $(BR2_PACKAGE_AR8030_TOOLS),ON,OFF) \
+	-DBUILD_TEST_APP=$(if $(BR2_PACKAGE_AR8030_TOOLS),ON,OFF) \
+	-DBUILD_NET_DEV_DEMO=$(if $(BR2_PACKAGE_AR8030_TOOLS),ON,OFF)
+
+# Upstream's install rules scatter binaries over bin/ and a dev_helper/ prefix
+# and call them "daemon", "app" and "ota", so pick the artifacts out of the
+# build tree by hand instead.
+define AR8030_INSTALL_STAGING_CMDS
+	$(INSTALL) -d -m 0755 $(STAGING_DIR)/usr/include/ar8030
+	$(INSTALL) -m 0644 $(@D)/com/bb_api.h $(@D)/com/bb_config.h \
+		$(@D)/com/list.h $(STAGING_DIR)/usr/include/ar8030
+	$(INSTALL) -m 0644 $(@D)/app/ar8030/*.h $(STAGING_DIR)/usr/include/ar8030
+	$(INSTALL) -D -m 0755 $(AR8030_BUILDDIR)/app/ar8030/libar8030_client.so \
+		$(STAGING_DIR)/usr/lib/libar8030_client.so
+endef
+
+ifeq ($(BR2_PACKAGE_AR8030_PAIR_TOOL),y)
+define AR8030_INSTALL_PAIR_TOOL
+	$(INSTALL) -D -m 0755 $(AR8030_BUILDDIR)/dev_helper/bb_pair/bb_pair \
+		$(TARGET_DIR)/usr/bin/ar8030-pair
+endef
+endif
+
+ifeq ($(BR2_PACKAGE_AR8030_USB_LOADER),y)
+define AR8030_INSTALL_USB_LOADER
+	$(INSTALL) -D -m 0755 \
+		$(AR8030_BUILDDIR)/dev_helper/ar8030_usb_test_tool/ar8030_usb_test_tool \
+		$(TARGET_DIR)/usr/bin/ar8030-usb-loader
+endef
+endif
+
+ifeq ($(BR2_PACKAGE_AR8030_TOOLS),y)
+define AR8030_INSTALL_TOOLS
+	$(INSTALL) -D -m 0755 $(AR8030_BUILDDIR)/dev_helper/cmd_dbg/cmd_dbg \
+		$(TARGET_DIR)/usr/bin/ar8030-cmd-dbg
+	$(INSTALL) -D -m 0755 $(AR8030_BUILDDIR)/dev_helper/ota_upgrade/ota \
+		$(TARGET_DIR)/usr/bin/ar8030-ota
+	$(INSTALL) -D -m 0755 $(AR8030_BUILDDIR)/app/test/app \
+		$(TARGET_DIR)/usr/bin/ar8030-test
+	$(INSTALL) -D -m 0755 $(AR8030_BUILDDIR)/app/net_dev_demo/net_dev_demo \
+		$(TARGET_DIR)/usr/bin/ar8030-netdev-demo
+endef
+endif
+
+ifeq ($(BR2_PACKAGE_AR8030_FIRMWARE),y)
+define AR8030_INSTALL_FIRMWARE
+	$(INSTALL) -d -m 0755 $(TARGET_DIR)/lib/firmware/ar8030
+	$(INSTALL) -m 0644 $(AR8030_PKGDIR)/files/lib/firmware/ar8030/bb_demo_cx485_2PA.img \
+		$(AR8030_PKGDIR)/files/lib/firmware/ar8030/bb_config_gnd_pro.json \
+		$(TARGET_DIR)/lib/firmware/ar8030
+endef
+endif
+
+ifeq ($(BR2_PACKAGE_AR8030_INIT),y)
+define AR8030_INSTALL_INIT
+	$(INSTALL) -D -m 0755 $(AR8030_PKGDIR)/files/etc/init.d/S97ar8030 \
 		$(TARGET_DIR)/etc/init.d/S97ar8030
-	$(INSTALL) -D -m 0644 $(BR2_EXTERNAL_OPENIPC_SBC_GS_PATH)/package/ar8030/files/ar8030.default \
+	$(INSTALL) -D -m 0644 $(AR8030_PKGDIR)/files/etc/default/ar8030 \
 		$(TARGET_DIR)/etc/default/ar8030
 endef
+endif
 
-$(eval $(generic-package))
+# ar8030-status: this project's own addition (files/ar8030-status.c, not part
+# of upstream) -- upstream ships pairing (bb_pair) and an AT-style firmware
+# debug console (cmd_dbg), but nothing that reports live link/data-channel
+# quality. Built directly against the already-built libar8030_client.so and
+# headers in the CMake build tree rather than folding it into the CMake
+# graph itself, since it's a standalone one-file addition.
+define AR8030_BUILD_STATUS_TOOL
+	$(TARGET_CC) $(TARGET_CFLAGS) \
+		-I$(@D)/com -I$(@D)/app/ar8030 \
+		$(AR8030_PKGDIR)/files/ar8030-status.c \
+		-L$(AR8030_BUILDDIR)/app/ar8030 -lar8030_client -lpthread -lm \
+		$(TARGET_LDFLAGS) \
+		-o $(@D)/ar8030-status
+endef
+AR8030_POST_BUILD_HOOKS += AR8030_BUILD_STATUS_TOOL
+
+define AR8030_INSTALL_STATUS_TOOL
+	$(INSTALL) -D -m 0755 $(@D)/ar8030-status $(TARGET_DIR)/usr/bin/ar8030-status
+endef
+
+define AR8030_INSTALL_TARGET_CMDS
+	$(INSTALL) -D -m 0755 $(AR8030_BUILDDIR)/app/ar8030/libar8030_client.so \
+		$(TARGET_DIR)/usr/lib/libar8030_client.so
+	$(INSTALL) -D -m 0755 $(AR8030_BUILDDIR)/daemon/daemon \
+		$(TARGET_DIR)/usr/bin/ar8030d
+	$(AR8030_INSTALL_PAIR_TOOL)
+	$(AR8030_INSTALL_USB_LOADER)
+	$(AR8030_INSTALL_TOOLS)
+	$(AR8030_INSTALL_FIRMWARE)
+	$(AR8030_INSTALL_INIT)
+	$(AR8030_INSTALL_STATUS_TOOL)
+endef
+
+$(eval $(kernel-module))
+$(eval $(cmake-package))

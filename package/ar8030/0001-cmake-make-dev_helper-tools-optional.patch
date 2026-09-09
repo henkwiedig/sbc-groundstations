@@ -1,0 +1,40 @@
+dev_helper: gate ar8030_usb_test_tool/ota_upgrade/bb_pair/cmd_dbg behind options
+
+Upstream builds all four unconditionally. bb_pair is genuinely needed
+(pairing with the air unit); the other three are debug/demo tools this
+project ships only optionally (see BR2_PACKAGE_AR8030_TOOLS), same as
+the OpenIPC/builder air-side package that carries this identical patch
+against the same pinned commit.
+
+diff --git a/dev_helper/CMakeLists.txt b/dev_helper/CMakeLists.txt
+--- a/dev_helper/CMakeLists.txt
++++ b/dev_helper/CMakeLists.txt
+@@ -9,13 +9,24 @@ if(NOT WIN32)
+     endif()
+ endif()
+
+-add_subdirectory(ar8030_usb_test_tool)
+-add_subdirectory(ota_upgrade)
++if(BUILD_USB_TEST_TOOL)
++    add_subdirectory(ar8030_usb_test_tool)
++endif()
++
++if(BUILD_OTA_UPGRADE)
++    add_subdirectory(ota_upgrade)
++endif()
+
+ if(BUILD_TUNTAP)
+     add_subdirectory(tuntap_bb)
+ endif()
+
+-add_subdirectory(bb_pair)
+-add_subdirectory(./cmd_dbg)
++if(BUILD_BB_PAIR)
++    add_subdirectory(bb_pair)
++endif()
++
++if(BUILD_CMD_DBG)
++    add_subdirectory(./cmd_dbg)
++endif()
++
+ add_subdirectory(./misc_test)

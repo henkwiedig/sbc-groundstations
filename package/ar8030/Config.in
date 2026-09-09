@@ -1,10 +1,90 @@
 config BR2_PACKAGE_AR8030
 	bool "ar8030"
+	select BR2_PACKAGE_LIBUSB
 	help
-	  Artosyn AR8030 baseband/RF-link kernel driver (artosyn_drv.ko)
-	  for the Caddx VRX Pro's internal USB-attached RF module.
+	  Artosyn AR8030 baseband/RF-link host support for the Caddx VRX
+	  Pro's internal USB-attached RF module — the vendor "yz_host_drv"
+	  SDK (kernel driver + userspace RPC daemon + client library), same
+	  source as the OpenIPC/builder air-side ar8030 package (pinned to
+	  the same commit).
 
-	  Includes the GPIO power-on sequence, firmware+config for the
-	  CX486-RF-2PA RF board, and the init script that brings the link
-	  up on boot. See package/ar8030-tools for the userspace daemon
-	  and pairing/diagnostic tools that talk to it.
+	  Always installed:
+	  - artosyn_drv.ko: out-of-tree host driver. Only used transiently
+	    at boot to push firmware+config into the AR8030 over USB while
+	    it is in boot-ROM mode; the module is unloaded once the chip
+	    re-enumerates with its real firmware running (unlike the air
+	    side, where the chip is SDIO-attached and the driver stays
+	    resident as the daemon's transport).
+	  - ar8030d: the SDK "daemon". Owns the AR8030 once its real
+	    firmware is running and talks to it directly over USB, and
+	    serves the RPC that clients talk to (TCP on 127.0.0.1 plus a
+	    unix socket).
+	  - libar8030_client.so: the bb_* client API. Headers are installed
+	    into <staging>/usr/include/ar8030.
+	  - ar8030-status: link/data-channel quality monitor (this
+	    project's own addition, not part of upstream).
+
+	  Includes the GPIO power-on sequence for the CX486-RF-2PA RF board
+	  and the init script that brings the link up on boot.
+
+	  Upstream calls the daemon and demo/debug tools "daemon", "app",
+	  "ota", etc; they are installed with an ar8030 prefix here so they
+	  can share /usr/bin with the rest of the rootfs.
+
+	  The SDK is only published as source on a vendor Gitea instance
+	  (no releases, no tags), so the package is pinned to a commit.
+
+	  http://git.topxgun.com/czdu/yz_host_drv
+
+if BR2_PACKAGE_AR8030
+
+config BR2_PACKAGE_AR8030_FIRMWARE
+	bool "install the CX486-RF-2PA baseband firmware"
+	default y
+	help
+	  Installs the RF daughterboard's baseband image and config to
+	  /lib/firmware/ar8030 (bb_demo_cx485_2PA.img, bb_config_gnd_pro.json),
+	  so the driver can push them into the chip via fw_name=/cfg_name=
+	  module parameters. Override the filenames in /etc/default/ar8030
+	  if a unit has a different RF board fitted.
+
+config BR2_PACKAGE_AR8030_INIT
+	bool "install /etc/init.d/S97ar8030"
+	default y
+	help
+	  Boot script: runs the RF board's GPIO power-on sequence, loads
+	  artosyn_drv (with fw_name/cfg_name) to push firmware over USB,
+	  waits for /dev/ar_mdev0 (the driver's "push done" signal), unloads
+	  the module, then starts ar8030d.
+
+config BR2_PACKAGE_AR8030_PAIR_TOOL
+	bool "bb_pair binding tool"
+	default y
+	help
+	  Installs bb_pair as /usr/bin/ar8030-pair: the vendor's
+	  pair/bind utility. Talks to ar8030d over the local RPC socket,
+	  so the daemon has to be running.
+
+config BR2_PACKAGE_AR8030_USB_LOADER
+	bool "USB rom-code firmware loader"
+	default y
+	help
+	  Installs ar8030_usb_test_tool as /usr/bin/ar8030-usb-loader,
+	  for USB-level diagnostics against an AR8030 sitting in USB
+	  rom-code mode (VID:PID 4152:8030). Links against buildroot's own
+	  libusb via pkg-config rather than the SDK's bundled/vendored copy
+	  (see 0004-use-system-libusb-via-pkgconfig.patch).
+
+config BR2_PACKAGE_AR8030_TOOLS
+	bool "extra debug tools"
+	default n
+	help
+	  Installs the SDK's demo and debug programs:
+	    ar8030-cmd-dbg      interactive command console (cmd_dbg)
+	    ar8030-ota          OTA image upgrade tool (ota)
+	    ar8030-test         the generic API demo (app)
+	    ar8030-netdev-demo  network-interface configuration demo
+
+	  These are vendor test programs, not production tooling.
+
+endif
