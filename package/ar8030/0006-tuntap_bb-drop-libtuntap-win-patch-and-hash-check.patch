@@ -1,0 +1,44 @@
+tuntap_bb: drop the Windows patch step and the tarball hash check
+
+Two problems in dev_helper/tuntap_bb/CMakeLists.txt's FetchContent_Declare
+for the vendored libtuntap, neither Windows-specific despite appearances:
+
+- PATCH_COMMAND unconditionally runs `git apply ... libtuntap-win.patch`
+  against the populated source, not gated behind `if(WIN32)` at all. On
+  Linux that patch doesn't match anything, `git apply` (even with
+  --reject) exits non-zero on a rejected hunk, and FetchContent treats
+  that as a hard failure of the whole populate step.
+- URL_HASH pins an MD5 of third_package/libtuntap.tar as originally
+  shipped. This package's own AR8030_FIX_LIBTUNTAP_TARBALL pre-configure
+  hook (ar8030.mk) rewrites that tarball to drop two hardcoded
+  /usr/include, /usr/local/include entries that Buildroot's cross
+  compiler wrapper refuses outright -- which changes its hash, so the
+  pinned one no longer matches and FetchContent_Populate aborts with
+  "MD5 hash ... does not match expected value" before ever reaching the
+  patch step above.
+
+Both only matter for a real multi-platform release process (verifying
+the tarball hasn't drifted, patching Windows-only quirks) that this
+project doesn't do for a third-party vendored dependency -- drop them
+rather than try to keep either in sync with a tarball this package
+already has to rewrite for cross-compilation.
+
+diff --git a/dev_helper/tuntap_bb/CMakeLists.txt b/dev_helper/tuntap_bb/CMakeLists.txt
+--- a/dev_helper/tuntap_bb/CMakeLists.txt
++++ b/dev_helper/tuntap_bb/CMakeLists.txt
+@@ -3,15 +3,11 @@
+
+ include(FetchContent)
+
+-set(winpatch git apply --ignore-whitespace --reject ${PROJECT_SOURCE_DIR}/third_package/libtuntap-win.patch)
+-
+ FetchContent_Declare(
+     libtuntap
+     DOWNLOAD_EXTRACT_TIMESTAMP YES
+     URL ${PROJECT_SOURCE_DIR}/third_package/libtuntap.tar
+-    URL_HASH MD5=a045bdf3199e3f185c7917f25eeeed5c
+-    PATCH_COMMAND ${winpatch}
+     UPDATE_DISCONNECTED 1
+ )
+
+ FetchContent_GetProperties(libtuntap)

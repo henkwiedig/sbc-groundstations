@@ -93,4 +93,34 @@ config BR2_PACKAGE_AR8030_TOOLS
 
 	  These are vendor test programs, not production tooling.
 
+	  ar8030-netdev-demo will not work on this board: it opens
+	  /dev/ar_net<N>, a char device the kernel driver only creates while
+	  it is loaded -- and this package's own S97ar8030 rmmods the driver
+	  right after the firmware push, once ar8030d takes over talking to
+	  the chip directly over USB (see BR2_PACKAGE_AR8030_TUNTAP for the
+	  transport-agnostic way to get an IP-routable interface over the
+	  RF link instead).
+
+config BR2_PACKAGE_AR8030_TUNTAP
+	bool "TUN bridge over the RF link"
+	default n
+	help
+	  Installs tuntap_bb as /usr/bin/ar8030-tun: bridges a normal Linux
+	  TUN interface to a raw baseband socket (bb_socket_open/read/write
+	  in libar8030_client, com/bb_api.h) opened over the RPC connection
+	  to ar8030d -- unlike ar8030-netdev-demo (see BR2_PACKAGE_AR8030_TOOLS),
+	  this only needs the daemon's RPC socket, not the kernel driver
+	  itself, so it works with this board's rmmod-after-firmware-push
+	  transport. Gives an IP-routable interface over the RF link once
+	  both ends run a matching bridge at the same slot/port.
+
+	  Needs CONFIG_TUN (modprobe tun first if it's built =m).
+
+	  Links a vendored copy of libtuntap (dev_helper/tuntap_bb/
+	  third_package/libtuntap.tar) -- there is no standalone Buildroot
+	  package for it to use instead, unlike the libusb case
+	  (0004-*.patch); see AR8030_INSTALL_TARGET_CMDS in ar8030.mk for
+	  how its shared libs get shipped since this package's own
+	  AR8030_INSTALL_TARGET_CMDS override skips CMake's install() step.
+
 endif
