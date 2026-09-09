@@ -1,0 +1,16 @@
+# Manual interface: brings up the AR8030 TUN bridge over the RF link
+# (dev_helper/tuntap_bb/test_bb_tun.cpp). ar8030-tun assigns the IP itself
+# (-i, tuntap::tap::ip()) and never returns on its own -- it pumps packets
+# between the TUN device and the bb socket in two threads for as long as
+# it runs -- so it's started detached via start-stop-daemon instead of as
+# a synchronous pre-up command, and torn down the same way in post-down.
+# "manual", not "static", so ifupdown doesn't also try to assign the
+# address itself.
+#
+# slot 0 / port 2 has to match the peer's ar8030-netdev-demo invocation
+# exactly; see OpenIPC/builder's
+# devices/hi3516cv6xx_fpv_caddx-ascent-lite/general/overlay/etc/network/interfaces.d/ar_net0.
+iface ar_net0 inet manual
+	pre-up modprobe tun
+	pre-up start-stop-daemon -S -b -q -m -p /var/run/ar8030-tun.pid -x /usr/bin/ar8030-tun -- -d ar_net0 -i 192.168.100.2 -u 0 -p 2
+	post-down start-stop-daemon -K -q -p /var/run/ar8030-tun.pid

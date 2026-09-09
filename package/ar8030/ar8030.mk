@@ -170,6 +170,8 @@ define AR8030_INSTALL_TUNTAP
 	$(INSTALL) -D -m 0755 $(AR8030_BUILDDIR)/_deps/libtuntap-build/lib/libtuntap++.so.2.1 \
 		$(TARGET_DIR)/usr/lib/libtuntap++.so.2.1
 	ln -sf libtuntap++.so.2.1 $(TARGET_DIR)/usr/lib/libtuntap++.so
+	$(INSTALL) -D -m 0644 $(AR8030_PKGDIR)/files/etc/network/interfaces.d/ar_net0 \
+		$(TARGET_DIR)/etc/network/interfaces.d/ar_net0
 endef
 endif
 
