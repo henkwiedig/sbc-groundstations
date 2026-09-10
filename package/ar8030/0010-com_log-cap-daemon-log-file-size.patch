@@ -1,0 +1,61 @@
+com_log: cap the daemon log file size instead of growing it forever
+
+com_log_init() opens DAEMON_LOG_PATH/<timestamp>.log with fopen(..., "w")
+and log_write() fwrite+fflush's every buffered log line to it for the
+whole life of the process -- there is no rotation and no size cap
+anywhere in this SDK. ar8030d runs with no CLI flag to reduce log
+verbosity (`getopt_long(argc, argv, "p:hU:i:B:P:S:D:", ...)` in
+daemon/main.c has no log-level option), and every module defaults to at
+least COM_LOG_INFO, so this file grows continuously from ordinary
+per-RPC/per-socket-event tracing (nod_read_thread, dev_send_thread,
+cb-dat, ...).
+
+On a real Hi3516CV610 air unit this filled a 28.5MB tmpfs-backed /tmp in
+well under an hour under ar8030-transport's traffic pattern (much higher
+RPC call volume than the plain IP/RNDIS path this SDK was originally
+tuned against: per-chunk bb_socket_write, per-poll BB_GET_MCS). Once
+/tmp hit 100% the extra tmpfs page usage showed up as system-wide memory
+pressure with no single process's RSS looking abnormal, and the kernel
+OOM-killer picked essentially arbitrary victims -- in the observed case,
+waybeam, which has nothing to do with the actual growth and previously
+ran for hours unattended over the IP link before ar8030-transport
+existed.
+
+This patch truncates the log file back to empty once it crosses
+DAEMON_LOG_MAX_BYTES (2MB) rather than adding rotation/multiple files,
+since the log's only real use here is a recent-activity debug trace, not
+a persisted history, and a single bounded file is the smallest change
+that fixes the unbounded growth.
+
+diff --git a/com/com_log.h b/com/com_log.h
+--- a/com/com_log.h
++++ b/com/com_log.h
+@@ -6,6 +6,12 @@
+ extern "C" {
+ #endif
+ #define DAEMON_LOG_PATH "daemon_log"
++/* log_write() truncates the log file back to empty once it crosses this
++ * size, since com_log_init() never rotates it: left alone it grows for
++ * the whole life of the daemon and can fill a small tmpfs-backed /tmp
++ * (28.5MB on a Hi3516CV610 air unit), which starves unrelated processes
++ * of memory and gets them OOM-killed instead of ar8030d itself. */
++#define DAEMON_LOG_MAX_BYTES (2 * 1024 * 1024)
+ typedef enum {
+     COM_LOG_DEBUG = 0,
+     COM_LOG_INFO,
+diff --git a/com/com_log.c b/com/com_log.c
+--- a/com/com_log.c
++++ b/com/com_log.c
+@@ -121,6 +121,12 @@ static int log_write(void* pri, void* buff, int len)
+     if (log_fp) {
+         fwrite(buff, sizeof(char), len, log_fp);
+         fflush(log_fp);
++#if !defined(_WIN32)
++        if (ftell(log_fp) > DAEMON_LOG_MAX_BYTES) {
++            rewind(log_fp);
++            ftruncate(fileno(log_fp), 0);
++        }
++#endif
+     }
+     return len;
+ }
