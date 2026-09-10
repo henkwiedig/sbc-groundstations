@@ -1,0 +1,52 @@
+#!/bin/sh
+#
+# ar8030-transport-rx: bridges the AR8030's non-IP baseband data channel
+# (bb_socket) to PixelPilot_rk over RTP/UDP. Retries the ar8030d
+# connection on its own and opens its UDP socket to PixelPilot
+# immediately regardless of whether PixelPilot is listening yet (see
+# ar8030-transport's README "Runtime deployment"), so strict ordering
+# against S97ar8030/S99pixelpilot isn't required -- numbered between them
+# here purely so ar8030d is at least installed first.
+#
+
+test -r /etc/default/ar8030-transport-rx && . /etc/default/ar8030-transport-rx
+
+DAEMON="/usr/bin/ar8030-transport-rx"
+PIDFILE="/var/run/ar8030-transport-rx.pid"
+
+if [ "x$AR8030_TRANSPORT_RX_ENABLED" = "xfalse" ]; then
+	echo "Starting ar8030-transport-rx... skipped (disabled)"
+	exit 0
+fi
+
+start() {
+	echo "Starting ar8030-transport-rx..."
+	start-stop-daemon -S -q -b -m -p "$PIDFILE" -x "$DAEMON" -- $AR8030_TRANSPORT_RX_ARGS
+}
+
+stop() {
+	echo "Stopping ar8030-transport-rx..."
+	start-stop-daemon -K -q -p "$PIDFILE"
+	rm -f "$PIDFILE"
+}
+
+case "$1" in
+	start)
+		start
+		;;
+
+	stop)
+		stop
+		;;
+
+	restart|reload)
+		stop
+		sleep 1
+		start
+		;;
+
+	*)
+		echo "Usage: $0 {start|stop|restart}"
+		exit 1
+		;;
+esac
