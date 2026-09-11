@@ -21,7 +21,7 @@ source "$BR2_EXTERNAL_OPENIPC_SBC_GS_PATH/package/ar8030-transport-rx/Config.in"
 choice
     prompt "GPIO configuration method"
     help
-      Select how to configure the gadget mode GPIO detection.
+      Select how to configure the gadget mode / factory reset detection.
 
 config BR2_BOARD_GPIO_CONFIG_CHIP_LINE
     bool "Use GPIO chip and line"
@@ -32,6 +32,14 @@ config BR2_BOARD_GPIO_CONFIG_PIN_NAME
     bool "Use GPIO pin name"
     help
       Specify GPIO using pin name.
+
+config BR2_BOARD_GPIO_CONFIG_ADC_VOLTAGE
+    bool "Use ADC voltage divider"
+    help
+      Boards without dedicated GPIOs for these buttons (e.g. a
+      resistor-ladder button network read off a single SARADC channel)
+      instead detect a held button by matching the channel's millivolt
+      reading against a target value during boot (initrd phase).
 
 endchoice
 
@@ -76,6 +84,41 @@ config BR2_GADGET_MODE_GPIO_PIN_NAME
     depends on BR2_BOARD_GPIO_CONFIG_PIN_NAME
     help
       Starts gadget mode when detected high during boot (initrd phase).
+
+config BR2_FACTORY_RESET_ADC_DEVICE
+    string "Factory reset ADC sysfs device"
+    default ""
+    depends on BR2_BOARD_GPIO_CONFIG_ADC_VOLTAGE
+    help
+      iio sysfs raw ADC node, e.g.
+      /sys/bus/iio/devices/iio:device0/in_voltage6_raw. When its reading
+      matches BR2_FACTORY_RESET_ADC_MV (within a fixed tolerance) during
+      boot (initrd phase) issue a factory reset.
+
+config BR2_FACTORY_RESET_ADC_MV
+    string "Factory reset ADC target millivolts"
+    default ""
+    depends on BR2_BOARD_GPIO_CONFIG_ADC_VOLTAGE
+    help
+      Target millivolt reading (10-bit SARADC against a 1.8V reference)
+      identifying the held button that triggers a factory reset.
+
+config BR2_GADGET_MODE_ADC_DEVICE
+    string "Gadget mode ADC sysfs device"
+    default ""
+    depends on BR2_BOARD_GPIO_CONFIG_ADC_VOLTAGE
+    help
+      iio sysfs raw ADC node. When its reading matches
+      BR2_GADGET_MODE_ADC_MV (within a fixed tolerance) during boot
+      (initrd phase) gadget mode is started.
+
+config BR2_GADGET_MODE_ADC_MV
+    string "Gadget mode ADC target millivolts"
+    default ""
+    depends on BR2_BOARD_GPIO_CONFIG_ADC_VOLTAGE
+    help
+      Target millivolt reading identifying the held button that starts
+      gadget mode.
 
 config BR2_BOARD_HOST
 	string "Host/IP of your vrx in your local network"

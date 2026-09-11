@@ -119,6 +119,23 @@ fi
 
 . /etc/default/br-config 2> /dev/null
 
+# ADC voltage-divider boards (no dedicated GPIO for these buttons): a held
+# button is a millivolt reading on a shared SARADC channel, so "high" is
+# replaced by "reading matches the configured target within tolerance".
+# Same 10-bit-against-1.8V-reference conversion and +/-80mV window
+# PixelPilot's own adc_input.cpp uses for these boards' physical buttons.
+adc_match_mv() {
+  dev=$1
+  target=$2
+  [ -n "$dev" ] && [ -n "$target" ] || return 1
+  raw=$(cat "$dev" 2>/dev/null)
+  [ -n "$raw" ] || return 1
+  mv=$(( raw * 1800 / 1024 ))
+  diff=$(( mv - target ))
+  [ $diff -lt 0 ] && diff=$(( 0 - diff ))
+  [ $diff -le 80 ]
+}
+
 if [ x$BR2_BOARD_GPIO_CONFIG_PIN_NAME = x"y" ] ; then
   FACTORY_RESET_GPIO=$(gpiofind $BR2_FACTORY_RESET_GPIO_PIN_NAME)
   GADGET_MODE_GPIO=$(gpiofind $BR2_GADGET_MODE_GPIO_PIN_NAME)
@@ -132,6 +149,12 @@ if [ -n "$FACTORY_RESET_GPIO" ]; then
   if [ "$(gpioget $FACTORY_RESET_GPIO)" = "1" ]; then
     sleep 1
     FACTORY_RESET_GPIO_STATE=$(gpioget $FACTORY_RESET_GPIO)
+  fi
+fi
+if [ x$BR2_BOARD_GPIO_CONFIG_ADC_VOLTAGE = x"y" ] ; then
+  if adc_match_mv "$BR2_FACTORY_RESET_ADC_DEVICE" "$BR2_FACTORY_RESET_ADC_MV"; then
+    sleep 1
+    adc_match_mv "$BR2_FACTORY_RESET_ADC_DEVICE" "$BR2_FACTORY_RESET_ADC_MV" && FACTORY_RESET_GPIO_STATE=1
   fi
 fi
 if [ -f /overlay/.firstboot -o "$FACTORY_RESET_GPIO_STATE" = "1" ]
@@ -150,6 +173,12 @@ if [ -n "$GADGET_MODE_GPIO" ]; then
   if [ "$(gpioget $GADGET_MODE_GPIO)" = "1" ]; then
     sleep 1
     GADGET_MODE_GPIO_STATE=$(gpioget $GADGET_MODE_GPIO)
+  fi
+fi
+if [ x$BR2_BOARD_GPIO_CONFIG_ADC_VOLTAGE = x"y" ] ; then
+  if adc_match_mv "$BR2_GADGET_MODE_ADC_DEVICE" "$BR2_GADGET_MODE_ADC_MV"; then
+    sleep 1
+    adc_match_mv "$BR2_GADGET_MODE_ADC_DEVICE" "$BR2_GADGET_MODE_ADC_MV" && GADGET_MODE_GPIO_STATE=1
   fi
 fi
 if [ "$GADGET_MODE_GPIO_STATE" = "1" ]
