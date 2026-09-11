@@ -1,0 +1,71 @@
+sdio: fix double-free when sdio_artosyn_probe() fails
+
+sdio_artosyn_probe() calls sdio_set_drvdata(func, dev) unconditionally
+near the top, well before any of its failure paths, but the "fail:"
+cleanup at the bottom never clears that back to NULL before kfree()ing
+dev. Before 0005-dnld-retry-firmware-chunks-instead-of-faking-success
+existed, oal_add_card() failing this way was effectively unreachable (a
+failed firmware chunk was silently treated as success instead, so probe
+always "succeeded"), so this path was never really exercised. With that
+patch correctly propagating a real download failure, this became
+reachable, and the kernel still calls sdio_artosyn_remove() for that
+same func later (module unload, or the daemon's own rmmod on shutdown)
+-- which calls sdio_get_drvdata(func), gets back the already-freed dev,
+and eventually double-frees it.
+
+Confirmed on real hardware: kernel BUG at mm/slub.c (double free) inside
+kfree(), called from sdio_artosyn_remove(), triggered by rmmod during a
+normal `reboot`'s shutdown sequence -- a full kernel panic, not a
+recoverable userspace error.
+
+Fix: clear drvdata back to NULL in the fail path (matching what a
+successful probe implicitly guarantees for remove() to find), and add a
+defensive NULL check at the top of sdio_artosyn_remove() itself, since
+dev being NULL there is now an expected, not exceptional, case -- covers
+this specific path and any other way remove() could end up called for a
+func this driver never finished binding to.
+
+This is a pure safety net: neither change does anything on the normal
+(probe succeeds) path, only on cleanup after a failure remove() would
+otherwise have no safe way to handle.
+
+diff --git a/driver/linux/bus/sdio.c b/driver/linux/bus/sdio.c
+--- a/driver/linux/bus/sdio.c
++++ b/driver/linux/bus/sdio.c
+@@ -1462,6 +1462,20 @@ static int sdio_artosyn_probe(struct sdio_func *func,
+     return 0;
+
+ fail:
++    /* dev was already published via sdio_set_drvdata(func, dev) earlier in
++     * this function, and nothing clears it back to NULL on this path.
++     * Before the 0005 dnld-retry patch, oal_add_card() failing this way
++     * was effectively unreachable (a failed firmware chunk was silently
++     * treated as success instead), so this path was never really
++     * exercised. With that fix correctly propagating a real download
++     * failure, this became reachable, and the kernel still calls
++     * sdio_artosyn_remove() for func later (module unload, shutdown) --
++     * which calls sdio_get_drvdata(func) and gets back this already-freed
++     * dev, eventually double-freeing it. Confirmed live: kernel BUG at
++     * mm/slub.c (double free) in kfree(), called from
++     * sdio_artosyn_remove(), triggered by rmmod during shutdown. */
++    sdio_set_drvdata(func, NULL);
++
+     sdio_claim_host(func);
+     sdio_disable_func(func);
+     sdio_release_irq(func);
+@@ -1476,6 +1490,15 @@ static void sdio_artosyn_remove(struct sdio_func *func)
+     int ret = -1;
+     struct artosyn_sdio_device *dev = sdio_get_drvdata(func);
+
++    /* dev is NULL if probe() for this func failed before reaching the
++     * fail path's matching clear above, or in general for any func this
++     * driver never finished binding to -- nothing below is safe to run
++     * without a real dev. */
++    if (!dev) {
++        AR_DBG(DM_SDIO, DL_MSG, "artosyn sdio remove: no drvdata for this func, nothing to do\n");
++        return;
++    }
++
+     mutex_lock(&artosyn_mutex);
+     removed = 1;
+     mutex_unlock(&artosyn_mutex);

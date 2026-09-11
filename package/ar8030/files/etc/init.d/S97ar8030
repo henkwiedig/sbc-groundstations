@@ -123,13 +123,35 @@ start() {
 # still exists).
 AUTORECONNECT_PIDFILE=/tmp/ar8030-autoreconnect.pid
 
+# Keeps supervising after the link comes up, not just until the first
+# success: ar8030-pair --skip-if-connected only ever confirmed the link
+# WAS up at the moment it ran, and the RF link has been observed on real
+# hardware to connect once after boot and then drop again on its own --
+# a plain "retry until the first success" loop declares victory right
+# before that drop and never notices, leaving the link down until a
+# human re-runs ar8030-pair by hand. Poll BB_GET_STATUS ourselves in
+# between attempts instead of just re-running ar8030-pair on a fixed
+# timer, so a still-connected link doesn't get needlessly re-paired.
+link_is_connected() {
+	ar8030-linkctl status 2>/dev/null | grep -q ' CONNECT '
+}
+
 autoreconnect() {
 	[ -x /usr/bin/ar8030-pair ] || return 0
 	[ -f "/lib/firmware/$BB_CFG.paired" ] || return 0
 	(
-		while ! ar8030-pair --no-persist --skip-if-connected -c "/lib/firmware/$BB_CFG" \
-				>>/tmp/ar8030-autoreconnect.log 2>&1; do
-			sleep 10
+		while true; do
+			while ! ar8030-pair --no-persist --skip-if-connected -c "/lib/firmware/$BB_CFG" \
+					>>/tmp/ar8030-autoreconnect.log 2>&1; do
+				sleep 10
+			done
+
+			# Now watch for a later drop instead of exiting -- re-enter the
+			# pairing retry loop above if the link ever leaves CONNECT.
+			while link_is_connected; do
+				sleep 10
+			done
+			echo "link dropped, re-pairing" >>/tmp/ar8030-autoreconnect.log
 		done
 	) &
 	echo $! > "$AUTORECONNECT_PIDFILE"
