@@ -15,6 +15,7 @@ source "$BR2_EXTERNAL_OPENIPC_SBC_GS_PATH/package/msposd/Config.in"
 source "$BR2_EXTERNAL_OPENIPC_SBC_GS_PATH/package/yq/Config.in"
 source "$BR2_EXTERNAL_OPENIPC_SBC_GS_PATH/package/drm_info/Config.in"
 source "$BR2_EXTERNAL_OPENIPC_SBC_GS_PATH/package/dvrui/Config.in"
+source "$BR2_EXTERNAL_OPENIPC_SBC_GS_PATH/package/ascent-vendor-firmware/Config.in"
 source "$BR2_EXTERNAL_OPENIPC_SBC_GS_PATH/package/ar8030/Config.in"
 source "$BR2_EXTERNAL_OPENIPC_SBC_GS_PATH/package/ar8030-transport-rx/Config.in"
 
