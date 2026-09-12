@@ -41,12 +41,24 @@ if BR2_PACKAGE_AR8030
 config BR2_PACKAGE_AR8030_FIRMWARE
 	bool "install the CX486-RF-2PA baseband firmware"
 	default y
+	select BR2_PACKAGE_ASCENT_VENDOR_FIRMWARE
 	help
 	  Installs the RF daughterboard's baseband image and config to
 	  /lib/firmware/ar8030 (bb_demo_cx485_2PA.img, bb_config_gnd_pro.json),
 	  so the driver can push them into the chip via fw_name=/cfg_name=
 	  module parameters. Override the filenames in /etc/default/ar8030
 	  if a unit has a different RF board fitted.
+
+	  bb_config_gnd_pro.json (plain baseband tuning config) is
+	  committed. bb_demo_cx485_2PA.img is an unlicensed vendor binary
+	  blob -- not committed -- so it's fetched fresh at build time
+	  instead, from CADDX's own Ascent VRX Pro OTA image (see the
+	  ascent-vendor-firmware package this selects). Best-effort: a
+	  failed fetch just means the image ships without it, not a build
+	  failure -- but unlike an AR8030 board that boots its RF chip from
+	  its own flash, THIS board's S97ar8030 pushes bb_demo_cx485_2PA.img
+	  over USB on every boot with no fallback, so a unit built without
+	  it has no downlink at all until rebuilt with the file present.
 
 config BR2_PACKAGE_AR8030_INIT
 	bool "install /etc/init.d/S97ar8030"

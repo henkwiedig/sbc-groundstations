@@ -1,0 +1,18 @@
+config BR2_PACKAGE_ASCENT_VENDOR_FIRMWARE
+	bool "ascent-vendor-firmware"
+	help
+	  Fetches CADDX's stock "Ascent VRX Pro" OTA image and extracts
+	  this board's baseband demo firmware out of it -- straight into
+	  BINARIES_DIR (images/bb_demo_cx485_2PA.img) -- for the ar8030
+	  package's own AR8030_INSTALL_FIRMWARE to copy out of and install.
+	  See extract.py's docstring for the full unpack story (RKFW ->
+	  RKAF update.img -> rootfs UBI volume).
+
+	  Best-effort throughout: no network, Google Drive's scrape
+	  breaking, or ubireader_extract_files missing from PATH (pip
+	  install --user ubi_reader) just leaves BINARIES_DIR without
+	  bb_demo_cx485_2PA.img and prints a warning -- it must never fail
+	  the build.
+
+	  Not meant to be enabled by hand: ar8030's own
+	  BR2_PACKAGE_AR8030_FIRMWARE selects this automatically.

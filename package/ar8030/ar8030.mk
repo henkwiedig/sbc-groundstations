@@ -13,8 +13,13 @@ AR8030_LICENSE = GPL-2.0 (kernel driver), PROPRIETARY (host SDK)
 AR8030_INSTALL_STAGING = YES
 
 # cjson: bb_pair (0005-*.patch) links libcjson via pkg-config to persist a
-# paired peer into the on-disk baseband config.
-AR8030_DEPENDENCIES = host-pkgconf libusb $(if $(BR2_PACKAGE_AR8030_PAIR_TOOL),cjson)
+# paired peer into the on-disk baseband config. ascent-vendor-firmware:
+# fetches+extracts bb_demo_cx485_2PA.img into BINARIES_DIR before this
+# package's own AR8030_FETCH_VENDOR_FIRMWARE hook (below) runs -- see that
+# package's extract.py for the full unpack story.
+AR8030_DEPENDENCIES = host-pkgconf libusb \
+	$(if $(BR2_PACKAGE_AR8030_PAIR_TOOL),cjson) \
+	$(if $(BR2_PACKAGE_AR8030_FIRMWARE),ascent-vendor-firmware)
 
 ifeq ($(BR2_PACKAGE_AR8030_TUNTAP),y)
 # tuntap_bb's vendored libtuntap (FetchContent'd from a tarball at
@@ -176,11 +181,38 @@ endef
 endif
 
 ifeq ($(BR2_PACKAGE_AR8030_FIRMWARE),y)
+# ascent-vendor-firmware's own BUILD_CMDS (a real dependency edge, see
+# AR8030_DEPENDENCIES above) has already written bb_demo_cx485_2PA.img
+# into BINARIES_DIR by the time this package builds -- copy it into this
+# package's own build dir here rather than reading BINARIES_DIR directly
+# from AR8030_INSTALL_FIRMWARE below, so a build re-run after BINARIES_DIR
+# gets cleaned doesn't silently change this package's install output.
+define AR8030_FETCH_VENDOR_FIRMWARE
+	mkdir -p $(@D)/vendor-firmware
+	if [ -f $(BINARIES_DIR)/bb_demo_cx485_2PA.img ]; then \
+		cp $(BINARIES_DIR)/bb_demo_cx485_2PA.img $(@D)/vendor-firmware/; \
+	fi
+endef
+AR8030_PRE_BUILD_HOOKS += AR8030_FETCH_VENDOR_FIRMWARE
+
+# bb_config_gnd_pro.json (plain baseband tuning config) is committed and
+# always installed. bb_demo_cx485_2PA.img is an unlicensed vendor binary
+# blob -- not committed -- so it's only installed when
+# AR8030_FETCH_VENDOR_FIRMWARE (above) managed to fetch one this build;
+# see BR2_PACKAGE_AR8030_FIRMWARE's own Config.in help for why a missing
+# fetch means no downlink at all on THIS board (unlike a from-flash
+# AR8030), not just a soft degradation -- warn loudly rather than
+# failing the build outright, so a flaky vendor download doesn't block
+# every unrelated change.
 define AR8030_INSTALL_FIRMWARE
 	$(INSTALL) -d -m 0755 $(TARGET_DIR)/lib/firmware/ar8030
-	$(INSTALL) -m 0644 $(AR8030_PKGDIR)/files/lib/firmware/ar8030/bb_demo_cx485_2PA.img \
-		$(AR8030_PKGDIR)/files/lib/firmware/ar8030/bb_config_gnd_pro.json \
+	$(INSTALL) -m 0644 $(AR8030_PKGDIR)/files/lib/firmware/ar8030/bb_config_gnd_pro.json \
 		$(TARGET_DIR)/lib/firmware/ar8030
+	if [ -f $(@D)/vendor-firmware/bb_demo_cx485_2PA.img ]; then \
+		$(INSTALL) -m 0644 $(@D)/vendor-firmware/bb_demo_cx485_2PA.img $(TARGET_DIR)/lib/firmware/ar8030; \
+	else \
+		echo "ar8030: WARNING -- no vendor bb_demo_cx485_2PA.img fetched this build -- this unit will have NO RF downlink until rebuilt with it present" >&2; \
+	fi
 endef
 endif
 
