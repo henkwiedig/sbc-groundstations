@@ -7,10 +7,15 @@
 # "manual", not "static", so ifupdown doesn't also try to assign the
 # address itself.
 #
-# slot 0 / port 2 has to match the peer's ar8030-netdev-demo invocation
-# exactly; see OpenIPC/builder's
+# slot 0 / port 3 has to match the peer's ar8030-tun invocation exactly;
+# see OpenIPC/builder's
 # devices/hi3516cv6xx_fpv_caddx-ascent-lite/general/overlay/etc/network/interfaces.d/ar_net0.
+# Port 3, not 2: air used to run the vendor's kernel-netdev demo
+# (ar8030-netdev-demo) here instead of ar8030-tun, hence the old port 2 --
+# now both ends run ar8030-tun, and port 2 belongs to ar8030-transport-tx/
+# -rx's own video socket (ar8030-transport/tx/main.c's DEFAULT_VIDEO_PORT),
+# which has to coexist with this on the same slot.
 iface ar_net0 inet manual
 	pre-up modprobe tun
-	pre-up start-stop-daemon -S -b -q -m -p /var/run/ar8030-tun.pid -x /usr/bin/ar8030-tun -- -d ar_net0 -i 192.168.100.2 -u 0 -p 2
+	pre-up start-stop-daemon -S -b -q -m -p /var/run/ar8030-tun.pid -x /usr/bin/ar8030-tun -- -d ar_net0 -i 192.168.100.2 -u 0 -p 3
 	post-down start-stop-daemon -K -q -p /var/run/ar8030-tun.pid
