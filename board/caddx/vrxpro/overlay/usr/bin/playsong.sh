@@ -39,8 +39,8 @@ if [ ! -e "${PWM}" ]; then
 	exit 1
 fi
 
-echo 0 > "${PWM}/duty_cycle"
-echo 1 > "${PWM}/enable"
+echo 0 > "${PWM}/enable" 2>/dev/null
+echo 0 > "${PWM}/duty_cycle" 2>/dev/null
 
 cleanup() {
 	echo 0 > "${PWM}/duty_cycle" 2>/dev/null
@@ -69,9 +69,11 @@ play_note() {
 		duty=$((period / 2))
 		# duty_cycle must never exceed the current period, so clear it
 		# before switching to a new (possibly shorter) period.
-		echo 0 > "${PWM}/duty_cycle"
+		echo 0 > "${PWM}/enable"  2>/dev/null
+		echo 0 > "${PWM}/duty_cycle" 2>/dev/null
 		echo "${period}" > "${PWM}/period"
 		echo "${duty}" > "${PWM}/duty_cycle"
+		echo 1 > "${PWM}/enable"
 	fi
 	on_ms=$(( dur_ms * (100 - GAP_PERCENT) / 100 ))
 	off_ms=$(( dur_ms - on_ms ))
