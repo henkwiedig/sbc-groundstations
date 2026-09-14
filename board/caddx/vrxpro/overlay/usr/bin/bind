@@ -1,0 +1,21 @@
+#!/bin/sh
+
+/usr/bin/ar8030-pair &
+PAIR_PID=$!
+
+while kill -0 "$PAIR_PID" 2>/dev/null
+do
+    beep.sh 1 5
+    sleep 1
+done
+
+wait "$PAIR_PID"
+PAIR_STATUS=$?
+
+if [ "$PAIR_STATUS" -eq 0 ]
+then
+    playsong.sh /usr/share/sounds/success.rtttl
+else
+    playsong.sh /usr/share/sounds/error.rtttl
+fi
+exit $PAIR_STATUS
