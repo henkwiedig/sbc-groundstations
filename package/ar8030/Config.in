@@ -21,8 +21,9 @@ config BR2_PACKAGE_AR8030
 	    unix socket).
 	  - libar8030_client.so: the bb_* client API. Headers are installed
 	    into <staging>/usr/include/ar8030.
-	  - ar8030-status: link/data-channel quality monitor (this
-	    project's own addition, not part of upstream).
+
+	  Live link/data-channel quality is reported by ar8030-linkctl
+	  status (package/ar8030-transport-rx), not by this package.
 
 	  Includes the GPIO power-on sequence for the CX486-RF-2PA RF board
 	  and the init script that brings the link up on boot.
