@@ -225,26 +225,6 @@ define AR8030_INSTALL_INIT
 endef
 endif
 
-# ar8030-status: this project's own addition (files/ar8030-status.c, not part
-# of upstream) -- upstream ships pairing (bb_pair) and an AT-style firmware
-# debug console (cmd_dbg), but nothing that reports live link/data-channel
-# quality. Built directly against the already-built libar8030_client.so and
-# headers in the CMake build tree rather than folding it into the CMake
-# graph itself, since it's a standalone one-file addition.
-define AR8030_BUILD_STATUS_TOOL
-	$(TARGET_CC) $(TARGET_CFLAGS) \
-		-I$(@D)/com -I$(@D)/app/ar8030 \
-		$(AR8030_PKGDIR)/files/ar8030-status.c \
-		-L$(AR8030_BUILDDIR)/app/ar8030 -lar8030_client -lpthread -lm \
-		$(TARGET_LDFLAGS) \
-		-o $(@D)/ar8030-status
-endef
-AR8030_POST_BUILD_HOOKS += AR8030_BUILD_STATUS_TOOL
-
-define AR8030_INSTALL_STATUS_TOOL
-	$(INSTALL) -D -m 0755 $(@D)/ar8030-status $(TARGET_DIR)/usr/bin/ar8030-status
-endef
-
 define AR8030_INSTALL_TARGET_CMDS
 	$(INSTALL) -D -m 0755 $(AR8030_BUILDDIR)/app/ar8030/libar8030_client.so \
 		$(TARGET_DIR)/usr/lib/libar8030_client.so
@@ -256,7 +236,6 @@ define AR8030_INSTALL_TARGET_CMDS
 	$(AR8030_INSTALL_TUNTAP)
 	$(AR8030_INSTALL_FIRMWARE)
 	$(AR8030_INSTALL_INIT)
-	$(AR8030_INSTALL_STATUS_TOOL)
 endef
 
 $(eval $(kernel-module))
