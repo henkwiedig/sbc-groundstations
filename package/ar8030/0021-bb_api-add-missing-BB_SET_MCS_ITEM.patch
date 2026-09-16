@@ -1,0 +1,111 @@
+com: add BB_SET_MCS_ITEM, missing from this SDK build entirely
+
+Chasing a real throughput gap against stock (36688 kbps vs our own
+25933 kbps at the identical reported mcs=12/bandwidth=20M, confirmed
+live not to depend on channel, antenna gain, or live SNR -- all varied
+independently with zero effect on the number) led to Ghidra decompile
+of stock's ar_ldy_gnd binary: its "reload mcs tab %d" routine, driven
+by fpv_config.json's own "video_strategy" setting, pushes a whole MCS
+policy table to the chip via BB_SET_MCS_ITEM (SNR thresholds and LDPC
+error-count gates per MCS level) as a side effect of configuring the
+video pipeline.
+
+BB_SET_MCS_ITEM does not exist anywhere in this SDK build: the
+BB_REQ_SET numbering in bb_api.h jumps from order 33
+(BB_SET_LOCAL_MAC) straight to order 50 (BB_SET_RETX_COUNT) with
+nothing in between, and it is absent from ioctl_tab.c's dispatch table
+too (the *other* way to reach the same table, BB_CFG_SLOT_RX_MCS, is
+declared but was already confirmed elsewhere in this project to be
+similarly unregistered in ioctl_tab.c -- "req not found" -- so neither
+path was ever usable here). This is a host-side gap only, not a
+firmware one: daemon/normal_node.c's rpc_normal_read() forwards
+reqid+payload from client to chip completely generically, with no
+ioctl_tab.c involvement on that path, so the unmodified stock RTOS
+firmware already understands request 0x2000024 -- this SDK's client
+library just never learned to send it. Confirmed live: with this
+patch, ar8030-linkctl's new "mcs-table" command successfully writes
+multiple table entries (ret=0, chip accepts them) against the exact
+same unmodified firmware, immediately after being rejected outright
+("req not found") without it.
+
+bb_set_mcs_item_t's wire layout was reconstructed by decompiling every
+call site (7 entries, 2 distinct table variants) and cross-checking
+the field set/types against this file's own existing bb_mcs_para_t --
+the field order differs from bb_mcs_para_t (ldpc_up_num sits right
+after mcs, before snr_up/snr_dw) and consequently packs with zero
+padding, which bb_mcs_para_t's own natural-alignment layout does not;
+this is evidently a separate, hand-ordered wire struct. sizeof() is
+16 bytes (confirmed against the decompiled stack layout byte for
+byte).
+
+Not yet fully resolved: 3 of the 7 table entries (mcs 7, 10, 12)
+consistently fail with an undocumented ret=6 -- reproducible even
+pushing that single entry in isolation, and unaffected by first
+widening BB_SET_MCS_RANGE to its full range, so neither a batch-
+ordering interaction nor an MCS-range gate explains it. bb_api.h has
+no bb_errno enum to decode what 6 means. This patch adds the
+capability; using it to actually close the throughput gap is ongoing
+work.
+
+Mirrors builder's own identical patch 0028 (same vendor source).
+
+diff --git a/com/bb_api.h b/com/bb_api.h
+index 0d698f3..cfc6232 100644
+--- a/com/bb_api.h
++++ b/com/bb_api.h
+@@ -160,6 +160,43 @@ extern "C" {
+ #define BB_SET_POWER_RANGE                  BB_REQUEST(BB_REQ_SET, 30)  /**<@note 设置power范围*/
+ #define BB_FORCE_CLS_SOCKET                 BB_REQUEST(BB_REQ_SET, 31) /**<@note 强制关闭一个socket 可能会造成socket信息不同步*/
+ #define BB_SET_LOCAL_MAC                    BB_REQUEST(BB_REQ_SET, 33)  /**<@note 设置本机运行时MAC*/
++/**<@note Set one MCS policy table entry directly on the chip's live state
++ * -- reverse-engineered from stock's ar_ldy_gnd binary (Ghidra decompile
++ * of its "reload mcs tab %d" routine, itself driven by fpv_config.json's
++ * own "video_strategy" setting), not present in this SDK build's own
++ * header/dispatch table at all (order 36 -- the BB_REQ_SET numbering here
++ * jumps 33 -> 50 with nothing between). Confirmed this is purely a
++ * host-side gap, not a firmware one: the daemon's own client<->chip
++ * forwarding (daemon/normal_node.c's rpc_normal_read()) is a generic
++ * reqid+payload passthrough with no ioctl_tab.c involvement, so the
++ * unmodified stock RTOS firmware already understands this request
++ * number -- it's this SDK's client library that never learned to send
++ * it. See bb_set_mcs_item_t for the wire struct. */
++#define BB_SET_MCS_ITEM                     BB_REQUEST(BB_REQ_SET, 36)
++
++/**Define input parameter structure for set command BB_SET_MCS_ITEM.
++ * Reconstructed by decompiling every call site (7 entries, 2 distinct
++ * table variants) and cross-checking the field set/types against this
++ * file's own bb_mcs_para_t -- the value ordering differs from
++ * bb_mcs_para_t (ldpc_up_num sits right after mcs, before snr_up/snr_dw)
++ * and packs with zero padding as a result, which bb_mcs_para_t's own
++ * natural-alignment layout does not; this is evidently a separate,
++ * hand-ordered wire struct, not a reuse of that one. sizeof() must stay
++ * 16 bytes (offsets 0-15) -- confirmed against the decompiled stack
++ * layout exactly, byte for byte. */
++typedef struct {
++    uint8_t  slot;                                              /**<@note bb_slot_e -- observed always 0 in every reverse-engineered call (single-slot/1V1 mode); position/analogy to BB_CFG_SLOT_RX_MCS's own leading "slot" field, not from an explicit doc string*/
++    uint8_t  rsv[3];                                            /**<@note reserved -- only byte 0 of this header was ever explicitly zeroed in the decompiled source (the other 3 were left as whatever the stack already held); this SDK zeroes all 4 rather than rely on that*/
++    uint8_t  mcs;                                                /**<@note MCS level type: bb_phy_mcs_e*/
++    uint8_t  ldpc_up_num;                                        /**<@note LDPC error point count that should be less than or equal to enter this MCS level*/
++    uint16_t snr_up;                                             /**<@note SNR linear value that should be greater than or equal to enter this MCS level*/
++    uint16_t snr_dw;                                             /**<@note SNR linear value that should be below to exit this MCS level*/
++    uint8_t  rsv2;                                               /**<@note reserved, observed always zero in every decompiled call*/
++    uint8_t  ldpc_dw_num;                                        /**<@note LDPC error point count that should be greater than to exit this MCS level*/
++    uint16_t up_keep_time;                                       /**<@note milliseconds*/
++    uint16_t dw_keep_time;                                       /**<@note milliseconds*/
++} bb_set_mcs_item_t;
++
+ #define BB_SET_RETX_COUNT                   BB_REQUEST(BB_REQ_SET, 50)  /**<@note 设置重传次数*/
+
+ // 以下为调试诊断类命令字
+diff --git a/com/ioctl_tab.c b/com/ioctl_tab.c
+index 186fec0..2ccc2e1 100644
+--- a/com/ioctl_tab.c
++++ b/com/ioctl_tab.c
+@@ -104,6 +104,7 @@ static const BBIOCTL_TAB cmdtab[] = {
+     { BB_SET_RETX_COUNT,        sizeof(bb_set_retx_count_t),           0                                     },
+     { BB_SET_POWER_RANGE,       sizeof(bb_set_power_range_in_t),       0                                     },
+     { BB_SET_LOCAL_MAC,         sizeof(bb_set_local_mac_t),            0,                                    },
++    { BB_SET_MCS_ITEM,          sizeof(bb_set_mcs_item_t),             0                                     },
+
+     //remote ioctl
+     { BB_REMOTE_IOCTL_REQ,      sizeof(bb_remote_ioctl_in_t),          sizeof(bb_remote_ioctl_out_t)         },
