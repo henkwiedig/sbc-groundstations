@@ -140,6 +140,10 @@ ifeq ($(BR2_PACKAGE_AR8030_LIFECYCLED),y)
 define AR8030_INSTALL_LIFECYCLED
 	$(INSTALL) -D -m 0755 $(AR8030_BUILDDIR)/dev_helper/ar8030-lifecycled/ar8030-lifecycled \
 		$(TARGET_DIR)/usr/bin/ar8030-lifecycled
+	$(INSTALL) -D -m 0755 $(AR8030_PKGDIR)/files/etc/ar8030/hooks.d/connected/30-ifup.sh \
+		$(TARGET_DIR)/etc/ar8030/hooks.d/connected/30-ifup.sh
+	$(INSTALL) -D -m 0755 $(AR8030_PKGDIR)/files/etc/ar8030/hooks.d/dropped/30-ifdown.sh \
+		$(TARGET_DIR)/etc/ar8030/hooks.d/dropped/30-ifdown.sh
 endef
 endif
 
