@@ -2,12 +2,48 @@
 #
 # Starts the Artosyn AR8030 baseband/RF link.
 #
+# ar8030-lifecycled (see OpenIPC/builder's own ar8030-transport-tx S65
+# script for the fuller story of why a dedicated process replaces shell
+# watchdogs) owns pairing, reconnect-on-drop, link-state tracking,
+# tuning, and hook-script dispatch here too -- but NOT hardware reset
+# (--reset-method none, unlike air's --reset-method devmem): this
+# board's chip goes through a one-time boot-ROM firmware push over USB
+# (enable_rf() -> modprobe -> wait for /dev/ar_mdev0 -> rmmod, below),
+# not a "module stays loaded, chip can be re-pulsed anytime" model like
+# air's SDIO transport. ar8030-lifecycled only starts once that whole
+# dance is already done and the daemon is talking to the chip directly
+# over USB; pulsing enable_rf()'s GPIOs again at that point would reset
+# a chip already running its real firmware, right as the daemon expects
+# to keep talking to it -- so enable_rf() stays exactly where it is,
+# not folded into ar8030-lifecycled's own reset backends.
+#
+# Deliberately not yet done, matching air-side ar8030-lifecycled's own
+# scope: tying ar8030-transport-rx's own start/stop to hook dispatch
+# (see BR2_PACKAGE_AR8030_LIFECYCLED's Config.in help) -- rx already
+# tolerates no link on its own (see its own S98 script's header
+# comment), and air's own tx/hook wiring hasn't finished a full clean
+# validation pass yet, so bringing that same pattern here too is left
+# for its own dedicated verification.
 
 # Allow a few customizations from a config file
 test -r /etc/default/ar8030 && . /etc/default/ar8030
 
 BB_FW=${BB_FW:-ar8030/bb_demo_cx485_2PA.img}
 BB_CFG=${BB_CFG:-ar8030/bb_config_gnd_pro.json}
+
+LIFECYCLED="/usr/bin/ar8030-lifecycled"
+LIFECYCLED_PIDFILE="/var/run/ar8030-lifecycled.pid"
+
+# Both ar8030d (DAEMON_LOG_PATH, "daemon_log") and ar8030-lifecycled
+# (AR8030_LIFECYCLED_LOG_PATH, "lifecycle_log") write their own logs
+# under a directory *relative to their current working directory* --
+# neither takes a log-path flag. This script never cd'd anywhere before
+# starting either one, so both landed wherever rcS happened to invoke
+# this script from (confirmed live: /root, and even bare / from some
+# earlier boot) instead of somewhere predictable. cd into a fixed rundir
+# before starting each, matching OpenIPC/builder's own S65
+# ar8030-transport-tx script.
+RUNDIR="/tmp/ar8030"
 
 if [ x$AR8030_ENABLED = x"false" ]; then
 	echo "Starting ar8030... skipped (disabled)"
@@ -71,6 +107,18 @@ wait_flag_file() {
 	done
 }
 
+start_lifecycled() {
+	[ -x "$LIFECYCLED" ] || return 0
+	mkdir -p "$RUNDIR"
+	cd "$RUNDIR" || return 1
+	start-stop-daemon -S -q -b -m -p "$LIFECYCLED_PIDFILE" -x "$LIFECYCLED" -- \
+		--role dev \
+		--reset-method none \
+		--hook-dir /etc/ar8030/hooks.d \
+		--cfg-path "/lib/firmware/$BB_CFG" \
+		--default-bandwidth 20
+}
+
 start() {
 	printf "Starting ar8030... "
 
@@ -92,112 +140,21 @@ start() {
 	rmmod artosyn_drv
 	usleep 100000
 
+	mkdir -p "$RUNDIR"
+	cd "$RUNDIR" || return 1
 	start-stop-daemon -S -b -q -m -p /var/run/ar8030d.pid \
 		-x /usr/bin/ar8030d -- -i 0 -l 2
 	[ $? = 0 ] && echo "OK" || echo "FAIL"
 
-	autoreconnect
-}
-
-# Bring the RF link back up after a normal reboot without needing
-# ar8030-pair run by hand again. PRJ_CMD_EVENT_PAIR (see
-# 0009-bb_pair-auto-reconnect-on-boot.patch) is the only mechanism that
-# moves the chip from BB_LINK_STATE_IDLE to CONNECT -- a persisted
-# ap_mac in $BB_CFG only tells the chip who it's *allowed* to link with,
-# it does not make the chip attempt the link on its own at boot, so
-# without this every reboot would otherwise need a manual re-pair
-# (confirmed on real hardware).
-#
-# Gated on the "$BB_CFG.paired" marker, written only by a successful
-# `ar8030-pair` run: a unit that has never been paired keeps the
-# factory-default ap_mac/candidate pair (see the AP side's own "slot
-# match all" help text for what an empty candidate list means) --
-# looping this unconditionally would have a never-paired unit silently
-# re-broadcast PRJ_CMD_EVENT_PAIR at whatever AR8030 happens to be in
-# range. Runs detached so an air unit that isn't powered on yet doesn't
-# delay boot; --skip-if-connected keeps it from re-triggering pairing
-# against a link that's already up once it succeeds.
-#
-# restart funnels through start() again -- guard against piling up
-# duplicate loops (stop() kills whatever this pidfile points at, if it
-# still exists).
-AUTORECONNECT_PIDFILE=/tmp/ar8030-autoreconnect.pid
-
-# Keeps supervising after the link comes up, not just until the first
-# success: ar8030-pair --skip-if-connected only ever confirmed the link
-# WAS up at the moment it ran, and the RF link has been observed on real
-# hardware to connect once after boot and then drop again on its own --
-# a plain "retry until the first success" loop declares victory right
-# before that drop and never notices, leaving the link down until a
-# human re-runs ar8030-pair by hand. Poll BB_GET_STATUS ourselves in
-# between attempts instead of just re-running ar8030-pair on a fixed
-# timer, so a still-connected link doesn't get needlessly re-paired.
-link_is_connected() {
-	ar8030-linkctl status 2>/dev/null | grep -q ' CONNECT '
-}
-
-# Debounces the "is it still connected" check instead of trusting one
-# ar8030-linkctl snapshot -- mirrors the same fix on the air side
-# (builder/package/ar8030-transport-tx's S65 script). Decompiling the
-# vendor's own real streamer (ar_ldyhs_sky, ghidra-mcp) found its link-state
-# machine never acts on a single reading either: pairing only commits to a
-# candidate peer after several consecutive positive scans, and a drop is
-# only declared "real" once a timer callback confirms it, not immediately.
-# A single 10s poll declaring a drop was confirmed live to fire on
-# transient blips during the chip's post-boot settle window and re-trigger
-# a full ar8030-pair cycle on each one -- the actual source of "air and
-# ground disagree on connect status" and repeated connect/idle flapping
-# after a power cycle, not just slow RF settling by itself.
-LINK_POLL_INTERVAL_S=2
-LINK_LOSS_CONFIRM_POLLS=3
-wait_while_connected() {
-	miss=0
-	while true; do
-		if link_is_connected; then
-			miss=0
-		else
-			miss=$((miss + 1))
-			[ "$miss" -ge "$LINK_LOSS_CONFIRM_POLLS" ] && return 0
-		fi
-		sleep "$LINK_POLL_INTERVAL_S"
-	done
-}
-
-# Guards a single ar8030-pair invocation, not just the retry loop around
-# it -- mirrors the same fix on the air side (S65ar8030-transport-tx).
-# Confirmed live there that ar8030-pair can hang indefinitely mid-attempt
-# (its own connectToDaemon() call blocking forever, no output, no exit)
-# rather than failing fast, right after a real link drop re-triggered it
-# -- nothing about the retry loop below protects against that since it
-# only reacts once the command actually returns. Every successful attempt
-# seen on real hardware finishes in well under this.
-PAIR_TIMEOUT_S=20
-
-autoreconnect() {
-	[ -x /usr/bin/ar8030-pair ] || return 0
-	[ -f "/lib/firmware/$BB_CFG.paired" ] || return 0
-	(
-		while true; do
-			while ! timeout "$PAIR_TIMEOUT_S" ar8030-pair --no-persist --skip-if-connected -c "/lib/firmware/$BB_CFG" \
-					>>/tmp/ar8030-autoreconnect.log 2>&1; do
-				sleep 10
-			done
-
-			# Now watch for a later drop instead of exiting -- re-enter the
-			# pairing retry loop above if the link ever leaves CONNECT.
-			wait_while_connected
-			echo "link dropped, re-pairing" >>/tmp/ar8030-autoreconnect.log
-		done
-	) &
-	echo $! > "$AUTORECONNECT_PIDFILE"
+	start_lifecycled
 }
 
 stop() {
 	printf "Stopping ar8030... "
 	start-stop-daemon -K -p /var/run/ar8030d.pid
 	[ $? = 0 ] && echo "OK" || echo "FAIL"
-	[ -f "$AUTORECONNECT_PIDFILE" ] && kill "$(cat "$AUTORECONNECT_PIDFILE")" 2>/dev/null
-	rm -f "$AUTORECONNECT_PIDFILE"
+	[ -f "$LIFECYCLED_PIDFILE" ] && kill "$(cat "$LIFECYCLED_PIDFILE")" 2>/dev/null
+	rm -f "$LIFECYCLED_PIDFILE"
 }
 
 case "$1" in
