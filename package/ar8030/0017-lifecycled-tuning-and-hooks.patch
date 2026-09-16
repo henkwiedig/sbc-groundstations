@@ -1,0 +1,628 @@
+daemon: ar8030-lifecycled tuning re-apply and hook-script dispatch
+
+Fills in the two gaps 0023's own patch called out as deliberately
+deferred: bandwidth tuning across reconnects, and hook-script dispatch
+on state transitions (so LED control and similar can react without a
+resident poller).
+
+Bandwidth, not bandwidth+channel: S65ar8030-transport-tx's own former
+apply_link_tuning() only ever managed bandwidth, matching parity rather
+than growing scope. Channel is additionally a hard no for now: this
+project's own ar8030-linkctl found BB_GET_CHAN_INFO segfaults
+deterministically on this device's 42-channel config, so there is no
+safe way to read the chip's current channel at all -- and reading it is
+exactly what detecting a live change would need.
+
+The tuning design itself changed once during live testing. The first
+version read the chip's current bandwidth periodically and persisted it
+whenever it differed from what was last applied, meant to capture a
+live `ar8030-linkctl bandwidth` change. Confirmed live that this is
+unsafe: a fresh CONNECT can report a narrow bandwidth (e.g. 2.5M) for a
+moment before the two sides finish negotiating up to what was actually
+requested -- the same "bandwidth-plateau" behavior the old
+apply_link_tuning() fought by re-issuing its own fixed value every 30s
+-- and a mid-negotiation reading is indistinguishable from a genuine
+operator change by value alone. It self-inflicted proof of that: it
+persisted a transient 2MHz plateau reading over a real 20MHz default
+within one second of connecting, which would have silently degraded
+every future reconnect. Replaced with periodic re-assertion of the
+intended value instead (BB_SET_BANDWIDTH is a fast, idempotent
+override, safe to reissue on an already-correct link) -- simpler, and
+matches the one behavior already proven to work rather than trying to
+be clever about detecting intent from a noisy reading.
+
+Hooks: settled on run-parts-style dispatch over udev (no existing
+infrastructure, needs new kernel-side plumbing and a resident listener)
+and status-file-plus-watchers (needs a resident poller per consumer --
+recreates the exact "pile of watchdogs" problem this daemon exists to
+fix) back when this was first designed. lc_hooks_dispatch() fork()+
+exec()s every executable under <hook_dir>/<event>/ in lexical order
+with argv[1]/env vars carrying the event, fire-and-forget (SIGCHLD
+ignored at startup) so a slow or hung hook can never stall the
+lifecycle thread. Wired into every real transition: "pairing" before a
+(re-)pair attempt, "connected" on reaching CONNECT (both an
+internally-triggered pair and an externally-observed one, e.g. the bind
+button), "dropped" on a real disconnect, "idle" once for a unit that
+has never been paired.
+
+Confirmed live end-to-end (fresh reboot, uninterrupted): pairing/
+connected hooks fired at the right transitions, bandwidth applied at
+20MHz consistently on every check with the fix in place, and the link
+settled into a stable, high-bitrate (18+ Mbit/s) stream sustained over
+tens of minutes with zero further intervention.
+
+diff --git a/dev_helper/ar8030-lifecycled/CMakeLists.txt b/dev_helper/ar8030-lifecycled/CMakeLists.txt
+index f0d4a3c..4f25819 100644
+--- a/dev_helper/ar8030-lifecycled/CMakeLists.txt
++++ b/dev_helper/ar8030-lifecycled/CMakeLists.txt
+@@ -8,6 +8,8 @@ target_sources(ar8030-lifecycled PRIVATE
+     lifecycle_gpio.c
+     lifecycle_client.c
+     lifecycle_pair.c
++    lifecycle_tuning.c
++    lifecycle_hooks.c
+ )
+ 
+ target_link_libraries(ar8030-lifecycled PRIVATE ar8030_client com PkgConfig::CJSON -lpthread)
+diff --git a/dev_helper/ar8030-lifecycled/lifecycle.c b/dev_helper/ar8030-lifecycled/lifecycle.c
+index ab8dfa9..6a63cc1 100644
+--- a/dev_helper/ar8030-lifecycled/lifecycle.c
++++ b/dev_helper/ar8030-lifecycled/lifecycle.c
+@@ -4,7 +4,9 @@
+ #include "com_log.h"
+ #include "lifecycle_client.h"
+ #include "lifecycle_gpio.h"
++#include "lifecycle_hooks.h"
+ #include "lifecycle_pair.h"
++#include "lifecycle_tuning.h"
+ #include <pthread.h>
+ #include <signal.h>
+ #include <stdlib.h>
+@@ -41,6 +43,23 @@ struct lifecycle_ctx {
+     lc_config_t cfg;
+     lc_client_t client;
+     lc_state_e  state;
++
++    /* Set whenever ctx->state transitions to LC_STATE_CONNECTED -- reused
++     * both by the drop-detection hook dispatch (which slot dropped) and
++     * the periodic tuning re-check below (which slot to apply to). */
++    int connected_slot;
++
++    /* Last bandwidth (MHz) this process itself either applied or
++     * persisted -- -1 means "not known yet", not "no tuning wanted".
++     * Compared against a fresh BB_GET_STATUS reading every fallback-poll
++     * tick while connected so a live `ar8030-linkctl bandwidth` change
++     * gets captured without needing its own resident watcher. */
++    int last_bandwidth;
++
++    /* Fires the "idle" hook (this unit has never been paired) once per
++     * process instead of once per second -- the branch that wants it is
++     * otherwise checked on every 1s loop iteration. */
++    int idle_hook_fired;
+ };
+ 
+ static volatile sig_atomic_t g_shutdown_requested = 0;
+@@ -109,8 +128,12 @@ lifecycle_ctx* lifecycle_init(const lc_config_t* cfg)
+         com_log(COM_INIT, "lifecycle: calloc failed");
+         return NULL;
+     }
+-    ctx->cfg   = *cfg;
+-    ctx->state = LC_STATE_INIT;
++    ctx->cfg            = *cfg;
++    ctx->state          = LC_STATE_INIT;
++    ctx->connected_slot = -1;
++    ctx->last_bandwidth = -1;
++
++    lc_hooks_init();
+ 
+     if (lifecycle_gpio_reset(&ctx->cfg) != 0) {
+         com_log(COM_INIT, "lifecycle: initial hardware reset failed, continuing anyway (chip may already be up)");
+@@ -141,27 +164,47 @@ static int lc_poll_link_state(lifecycle_ctx* ctx, bb_link_state_e* out_state)
+  * daemon's *own* triggered pairing; an externally-triggered pair (bind
+  * button, still the standalone ar8030-pair tool per design) persists
+  * itself and is picked up here only via the resulting CONNECT transition,
+- * never re-persisted. */
+-static int lc_attempt_pairing(lifecycle_ctx* ctx)
++ * never re-persisted. On success, fills *out_slot/*out_mac for the
++ * caller's own hook dispatch -- this function has no reason to know
++ * about hooks itself. */
++static int lc_attempt_pairing(lifecycle_ctx* ctx, int* out_slot, bb_mac_t* out_mac)
+ {
+     lc_pair_trigger(ctx->client.handle, ctx->cfg.role, 0);
+ 
+-    uint8_t  role;
+-    bb_mac_t mac;
+-    memset(&mac, 0, sizeof(mac));
+-    int slot = lc_pair_wait_for_peer(ctx->client.handle, LC_PAIR_PEER_TIMEOUT_S, &role, &mac);
++    uint8_t role;
++    memset(out_mac, 0, sizeof(*out_mac));
++    int slot = lc_pair_wait_for_peer(ctx->client.handle, LC_PAIR_PEER_TIMEOUT_S, &role, out_mac);
+     if (slot < 0) {
+         com_log(COM_INIT, "lifecycle: pair: no connected peer found");
+         return -1;
+     }
+ 
+     com_log(COM_INIT, "lifecycle: pair: peer connected on slot %d", slot);
+-    if (ctx->cfg.cfg_path[0] && lc_pair_persist(ctx->client.handle, ctx->cfg.cfg_path, slot, role, &mac) != 0) {
++    if (ctx->cfg.cfg_path[0] && lc_pair_persist(ctx->client.handle, ctx->cfg.cfg_path, slot, role, out_mac) != 0) {
+         com_log(COM_INIT, "lifecycle: pair: failed to persist %s", ctx->cfg.cfg_path);
+     }
++    *out_slot = slot;
+     return 0;
+ }
+ 
++/* Applies persisted (or, absent that, this process's --default-bandwidth)
++ * tuning to a freshly-connected slot, and seeds ctx->last_bandwidth so the
++ * periodic re-check below has a baseline to compare fresh readings
++ * against instead of re-persisting its own just-applied value back to
++ * itself on the very next tick. Best-effort throughout: a tuning failure
++ * is logged, never treated as a reason to tear the connection back down. */
++static void lc_apply_tuning_on_connect(lifecycle_ctx* ctx, int slot)
++{
++    int bandwidth = ctx->cfg.cfg_path[0] ? lc_tuning_load(ctx->cfg.cfg_path) : -1;
++    if (bandwidth < 0) {
++        bandwidth = ctx->cfg.default_bandwidth;
++    }
++    if (bandwidth > 0) {
++        lc_tuning_apply(ctx->client.handle, slot, bandwidth);
++    }
++    ctx->last_bandwidth = bandwidth;
++}
++
+ void* lifecycle_thread_main(void* arg)
+ {
+     lifecycle_ctx* ctx = (lifecycle_ctx*)arg;
+@@ -198,7 +241,8 @@ void* lifecycle_thread_main(void* arg)
+     time_t last_fallback_poll = 0;
+ 
+     while (!lifecycle_shutdown_requested()) {
+-        time_t now = time(NULL);
++        time_t now              = time(NULL);
++        int    did_fallback_poll = 0;
+         if (now - last_fallback_poll >= LC_POLL_FALLBACK_S) {
+             bb_link_state_e polled;
+             if (lc_poll_link_state(ctx, &polled) == 0) {
+@@ -207,6 +251,7 @@ void* lifecycle_thread_main(void* arg)
+                 com_log(COM_INIT, "lifecycle: BB_GET_STATUS fallback poll failed");
+             }
+             last_fallback_poll = now;
++            did_fallback_poll  = 1;
+         }
+ 
+         bb_link_state_e state;
+@@ -221,7 +266,11 @@ void* lifecycle_thread_main(void* arg)
+                  * observing a link that was already up. Either way, don't
+                  * re-persist; just follow the transition. */
+                 com_log(COM_INIT, "lifecycle: observed CONNECT, following");
+-                ctx->state = LC_STATE_CONNECTED;
++                int slot            = lc_tuning_resolve_connected_slot(ctx->client.handle);
++                ctx->connected_slot = slot >= 0 ? slot : 0;
++                ctx->state          = LC_STATE_CONNECTED;
++                lc_hooks_dispatch(ctx->cfg.hook_dir, "connected", ctx->cfg.role, ctx->connected_slot, NULL);
++                lc_apply_tuning_on_connect(ctx, ctx->connected_slot);
+                 break;
+             }
+             if (!lc_pair_has_been_paired(ctx->cfg.cfg_path)) {
+@@ -229,19 +278,58 @@ void* lifecycle_thread_main(void* arg)
+                  * pair has ever happened would silently bind to whatever
+                  * AR8030 happens to be in range (see lc_pair_persist()'s
+                  * own comment on the "accept anyone" candidate list). */
++                if (!ctx->idle_hook_fired) {
++                    lc_hooks_dispatch(ctx->cfg.hook_dir, "idle", ctx->cfg.role, -1, NULL);
++                    ctx->idle_hook_fired = 1;
++                }
+                 break;
+             }
+-            if (lc_attempt_pairing(ctx) == 0) {
+-                ctx->state = LC_STATE_CONNECTED;
+-            } else {
+-                sleep(LC_PAIR_RETRY_DELAY_S);
++            {
++                lc_hooks_dispatch(ctx->cfg.hook_dir, "pairing", ctx->cfg.role, -1, NULL);
++                int      slot;
++                bb_mac_t mac;
++                if (lc_attempt_pairing(ctx, &slot, &mac) == 0) {
++                    ctx->connected_slot = slot;
++                    ctx->state          = LC_STATE_CONNECTED;
++                    lc_hooks_dispatch(ctx->cfg.hook_dir, "connected", ctx->cfg.role, slot, &mac);
++                    lc_apply_tuning_on_connect(ctx, slot);
++                } else {
++                    sleep(LC_PAIR_RETRY_DELAY_S);
++                }
+             }
+             break;
+ 
+         case LC_STATE_CONNECTED:
+             if (have_state && state != BB_LINK_STATE_CONNECT) {
+                 com_log(COM_INIT, "lifecycle: link dropped (state=%d), re-pairing", (int)state);
+-                ctx->state = LC_STATE_IDLE;
++                lc_hooks_dispatch(ctx->cfg.hook_dir, "dropped", ctx->cfg.role, ctx->connected_slot, NULL);
++                ctx->state          = LC_STATE_IDLE;
++                ctx->connected_slot = -1;
++                ctx->last_bandwidth = -1;
++                break;
++            }
++            /* Re-apply (not "detect and persist a live change"): confirmed
++             * live, tonight, that a fresh CONNECT can report a narrow
++             * bandwidth (e.g. 2.5M) for a while before the two sides
++             * finish negotiating up to what was actually just requested --
++             * this is exactly the "bandwidth-plateau" behavior
++             * S65ar8030-transport-tx's own former apply_link_tuning()
++             * fought by re-issuing its fixed BB_SET_BANDWIDTH every 30s
++             * regardless of what the last reading showed. An earlier
++             * version of this code tried to be cleverer -- read the
++             * current value, and if it differed from what was last
++             * applied, treat that as an operator's own live
++             * `ar8030-linkctl bandwidth` change and persist it -- but a
++             * mid-negotiation narrow reading is indistinguishable from a
++             * genuine operator change by value alone, and got
++             * self-inflicted proof of that live: it persisted a transient
++             * 2MHz plateau reading over a real 20MHz default within one
++             * second of connecting. Re-asserting the intended value
++             * periodically (BB_SET_BANDWIDTH is a fast, idempotent
++             * override, safe to reissue on an already-correct link) is
++             * simpler and matches the one thing already proven to work. */
++            if (did_fallback_poll && ctx->last_bandwidth > 0) {
++                lc_tuning_apply(ctx->client.handle, ctx->connected_slot, ctx->last_bandwidth);
+             }
+             break;
+ 
+diff --git a/dev_helper/ar8030-lifecycled/lifecycle_hooks.c b/dev_helper/ar8030-lifecycled/lifecycle_hooks.c
+new file mode 100644
+index 0000000..e220786
+--- /dev/null
++++ b/dev_helper/ar8030-lifecycled/lifecycle_hooks.c
+@@ -0,0 +1,92 @@
++#include "lifecycle_hooks.h"
++#include "com_log.h"
++#include <dirent.h>
++#include <signal.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <sys/stat.h>
++#include <sys/wait.h>
++#include <unistd.h>
++
++void lc_hooks_init(void)
++{
++    /* Fire-and-forget: a forked hook script is reaped by the kernel the
++     * moment it exits, with no waitpid() call ever needed on this side --
++     * exactly what "never block the lifecycle thread on a hook" requires. */
++    signal(SIGCHLD, SIG_IGN);
++}
++
++static int name_cmp(const void* a, const void* b)
++{
++    return strcmp(*(const char* const*)a, *(const char* const*)b);
++}
++
++static void format_mac(const bb_mac_t* mac, char* out, size_t out_sz)
++{
++    if (!mac) {
++        snprintf(out, out_sz, "00:00:00:00");
++        return;
++    }
++    snprintf(out, out_sz, "%02x:%02x:%02x:%02x", mac->addr[0], mac->addr[1], mac->addr[2], mac->addr[3]);
++}
++
++void lc_hooks_dispatch(const char* hook_dir, const char* event, lc_role_e role, int slot, const bb_mac_t* peer_mac)
++{
++    char dir_path[512];
++    snprintf(dir_path, sizeof(dir_path), "%s/%s", hook_dir, event);
++
++    DIR* d = opendir(dir_path);
++    if (!d) {
++        /* No hooks configured for this event -- not an error, most
++         * boards will have none at all. */
++        return;
++    }
++
++    /* Collect names first, then sort, so scripts run in a predictable
++     * (lexical) order regardless of what readdir()'s own order happens
++     * to be -- matches run-parts convention. */
++    char* names[256];
++    int   count = 0;
++    struct dirent* ent;
++    while (count < 256 && (ent = readdir(d)) != NULL) {
++        if (ent->d_name[0] == '.') {
++            continue;
++        }
++        names[count++] = strdup(ent->d_name);
++    }
++    closedir(d);
++    qsort(names, count, sizeof(names[0]), name_cmp);
++
++    char slot_str[16];
++    snprintf(slot_str, sizeof(slot_str), "%d", slot);
++    char mac_str[16];
++    format_mac(peer_mac, mac_str, sizeof(mac_str));
++    const char* role_str = role == LC_ROLE_AP ? "ap" : "dev";
++
++    for (int i = 0; i < count; i++) {
++        char script_path[768];
++        snprintf(script_path, sizeof(script_path), "%s/%s", dir_path, names[i]);
++
++        struct stat st;
++        if (stat(script_path, &st) != 0 || !S_ISREG(st.st_mode) || !(st.st_mode & S_IXUSR)) {
++            free(names[i]);
++            continue;
++        }
++
++        pid_t pid = fork();
++        if (pid == 0) {
++            setenv("AR8030_EVENT", event, 1);
++            setenv("AR8030_ROLE", role_str, 1);
++            setenv("AR8030_SLOT", slot_str, 1);
++            setenv("AR8030_PEER_MAC", mac_str, 1);
++            execl(script_path, script_path, event, (char*)NULL);
++            _exit(127);
++        } else if (pid > 0) {
++            com_log(COM_INIT, "lifecycle: hooks: ran %s (pid %d)", script_path, (int)pid);
++        } else {
++            com_log(COM_INIT, "lifecycle: hooks: fork failed for %s", script_path);
++        }
++        free(names[i]);
++    }
++}
+diff --git a/dev_helper/ar8030-lifecycled/lifecycle_hooks.h b/dev_helper/ar8030-lifecycled/lifecycle_hooks.h
+new file mode 100644
+index 0000000..f92795b
+--- /dev/null
++++ b/dev_helper/ar8030-lifecycled/lifecycle_hooks.h
+@@ -0,0 +1,41 @@
++#ifndef LIFECYCLE_HOOKS_H
++#define LIFECYCLE_HOOKS_H
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++#include "bb_api.h"
++#include "lifecycle.h"
++
++/*
++ * run-parts-style hook dispatch, settled on over udev (no existing
++ * infrastructure, would need new kernel-side sysfs/uevent plumbing and a
++ * resident listener) and status-file-plus-watchers (needs a resident
++ * poller per consumer -- recreates the exact "pile of watchdogs" problem
++ * this whole daemon exists to fix). The daemon directly executes hook
++ * scripts on each real state transition: zero steady-state cost, paid
++ * only when something actually changes.
++ */
++
++/* Call once at process startup, before any dispatch: installs SIGCHLD as
++ * SIG_IGN so forked hook scripts are auto-reaped without this process
++ * ever having to wait() for them. */
++void lc_hooks_init(void);
++
++/* Runs every executable, regular file directly under <hook_dir>/<event>/
++ * in lexical order (run-parts convention) -- e.g. "connected", "dropped",
++ * "pairing", "idle". Each one is fork()+exec()'d with argv[1] = event and
++ * environment variables AR8030_EVENT, AR8030_ROLE ("ap"/"dev"),
++ * AR8030_SLOT, and AR8030_PEER_MAC (colon-hex, BB_MAC_LEN=4 bytes --
++ * this chip's own MAC is not a real 6-byte Ethernet address -- or
++ * "00:00:00:00" if peer_mac is NULL) set, so a one-line hook can use whichever's
++ * convenient. Never blocks on the scripts themselves -- SIGCHLD is
++ * ignored (see lc_hooks_init()), so a slow or hung hook can never stall
++ * the lifecycle thread. Missing <hook_dir>/<event>/ is not an error:
++ * hooks are entirely optional, most boards will have none at all. */
++void lc_hooks_dispatch(const char* hook_dir, const char* event, lc_role_e role, int slot, const bb_mac_t* peer_mac);
++
++#ifdef __cplusplus
++}
++#endif
++#endif
+diff --git a/dev_helper/ar8030-lifecycled/lifecycle_tuning.c b/dev_helper/ar8030-lifecycled/lifecycle_tuning.c
+new file mode 100644
+index 0000000..43d6496
+--- /dev/null
++++ b/dev_helper/ar8030-lifecycled/lifecycle_tuning.c
+@@ -0,0 +1,144 @@
++#include "lifecycle_tuning.h"
++#include "com_log.h"
++#include <errno.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++
++/* Same MHz<->bb_bandwidth_e mapping ar8030-transport's own ar8030-linkctl
++ * uses (its parse_bandwidth()/bandwidth_name()) -- kept as one table here
++ * since this file only ever needs the round trip, not string parsing. */
++static const int BW_MHZ_BY_ENUM[BB_BW_MAX] = {
++    [BB_BW_1_25M] = 1, /* rounded down from 1.25 -- there is no fractional
++                        * MHz CLI value elsewhere in this project either
++                        * (--default-bandwidth takes a plain int). */
++    [BB_BW_2_5M]  = 2,
++    [BB_BW_5M]    = 5,
++    [BB_BW_10M]   = 10,
++    [BB_BW_20M]   = 20,
++    [BB_BW_40M]   = 40,
++};
++
++static int mhz_to_bw_enum(int mhz)
++{
++    for (int e = 0; e < BB_BW_MAX; e++) {
++        if (BW_MHZ_BY_ENUM[e] == mhz) {
++            return e;
++        }
++    }
++    return -1;
++}
++
++static void tuning_sidecar_path(const char* cfg_path, char* out, size_t out_sz)
++{
++    const char* slash = strrchr(cfg_path, '/');
++    if (slash) {
++        size_t dirlen = (size_t)(slash - cfg_path) + 1;
++        if (dirlen >= out_sz) {
++            dirlen = out_sz - 1;
++        }
++        memcpy(out, cfg_path, dirlen);
++        snprintf(out + dirlen, out_sz - dirlen, "ar8030.tuning");
++    } else {
++        snprintf(out, out_sz, "ar8030.tuning");
++    }
++}
++
++int lc_tuning_load(const char* cfg_path)
++{
++    char path[512];
++    tuning_sidecar_path(cfg_path, path, sizeof(path));
++
++    FILE* f = fopen(path, "r");
++    if (!f) {
++        return -1;
++    }
++    int mhz = -1;
++    int ok  = fscanf(f, "%d", &mhz) == 1;
++    fclose(f);
++    if (!ok || mhz_to_bw_enum(mhz) < 0) {
++        com_log(COM_INIT, "lifecycle: tuning: %s has no valid bandwidth, ignoring", path);
++        return -1;
++    }
++    return mhz;
++}
++
++int lc_tuning_save(const char* cfg_path, int bandwidth_mhz)
++{
++    if (mhz_to_bw_enum(bandwidth_mhz) < 0) {
++        com_log(COM_INIT, "lifecycle: tuning: refusing to persist invalid bandwidth %d", bandwidth_mhz);
++        return -1;
++    }
++
++    char path[512];
++    tuning_sidecar_path(cfg_path, path, sizeof(path));
++    char tmp_path[520];
++    snprintf(tmp_path, sizeof(tmp_path), "%s.tmp", path);
++
++    FILE* f = fopen(tmp_path, "w");
++    if (!f) {
++        com_log(COM_INIT, "lifecycle: tuning: can't open %s for writing: %s", tmp_path, strerror(errno));
++        return -1;
++    }
++    fprintf(f, "%d\n", bandwidth_mhz);
++    fclose(f);
++
++    if (rename(tmp_path, path) != 0) {
++        com_log(COM_INIT, "lifecycle: tuning: rename %s -> %s failed: %s", tmp_path, path, strerror(errno));
++        return -1;
++    }
++    return 0;
++}
++
++int lc_tuning_read_current(bb_dev_handle_t* handle)
++{
++    bb_get_status_in_t  in = {0xffff};
++    bb_get_status_out_t out;
++    memset(&out, 0, sizeof(out));
++
++    if (bb_ioctl(handle, BB_GET_STATUS, &in, &out) != 0) {
++        return -1;
++    }
++    /* This project only ever runs single-user mode -- see
++     * lifecycle_pair.c's own slot-scan comment for the equivalent
++     * reasoning on the slot side; user 0 is always the real data user. */
++    int bw = out.user_status[0].tx_status.bandwidth;
++    if (bw < 0 || bw >= BB_BW_MAX) {
++        return -1;
++    }
++    return BW_MHZ_BY_ENUM[bw];
++}
++
++int lc_tuning_apply(bb_dev_handle_t* handle, int slot, int bandwidth_mhz)
++{
++    int bw_enum = mhz_to_bw_enum(bandwidth_mhz);
++    if (bw_enum < 0) {
++        com_log(COM_INIT, "lifecycle: tuning: %d MHz is not a valid AR8030 bandwidth, not applying", bandwidth_mhz);
++        return -1;
++    }
++    bb_set_bandwidth_t sb = {
++        .slot      = (uint8_t)slot,
++        .dir       = BB_DIR_TX,
++        .bandwidth = (uint8_t)bw_enum,
++    };
++    int ret = bb_ioctl(handle, BB_SET_BANDWIDTH, &sb, NULL);
++    com_log(COM_INIT, "lifecycle: tuning: BB_SET_BANDWIDTH(slot=%d, tx, %dMHz) ret=%d", slot, bandwidth_mhz, ret);
++    return ret;
++}
++
++int lc_tuning_resolve_connected_slot(bb_dev_handle_t* handle)
++{
++    bb_get_status_in_t  in = {0xffff};
++    bb_get_status_out_t out;
++    memset(&out, 0, sizeof(out));
++
++    if (bb_ioctl(handle, BB_GET_STATUS, &in, &out) != 0) {
++        return -1;
++    }
++    for (int s = 0; s < BB_SLOT_MAX; s++) {
++        if (out.link_status[s].state == BB_LINK_STATE_CONNECT) {
++            return s;
++        }
++    }
++    return -1;
++}
+diff --git a/dev_helper/ar8030-lifecycled/lifecycle_tuning.h b/dev_helper/ar8030-lifecycled/lifecycle_tuning.h
+new file mode 100644
+index 0000000..e86211e
+--- /dev/null
++++ b/dev_helper/ar8030-lifecycled/lifecycle_tuning.h
+@@ -0,0 +1,58 @@
++#ifndef LIFECYCLE_TUNING_H
++#define LIFECYCLE_TUNING_H
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++#include "ar8030.h"
++#include "bb_api.h"
++
++/*
++ * Bandwidth-only, deliberately: the shell logic this replaces
++ * (S65ar8030-transport-tx's own apply_link_tuning()) only ever managed
++ * bandwidth, never channel -- this matches that scope rather than
++ * growing it. Channel is additionally a harder no for now: this
++ * project's own ar8030-linkctl found BB_GET_CHAN_INFO segfaults
++ * deterministically on this device's 42-channel config (its output
++ * struct's fixed 32-slot arrays overflow), so there is no safe way to
++ * read the chip's current channel at all right now -- and reading the
++ * current value is exactly what re-persisting a live operator change
++ * needs. Setting a channel blind (no readback) also means coordinating
++ * a live push to the connected peer to keep both sides in sync, real
++ * complexity with no working way to verify it landed -- not something
++ * to take on without dedicated hardware time.
++ */
++
++/* Reads the persisted bandwidth (MHz: 1/2/5/10/20/40) from the sidecar
++ * file next to cfg_path (same directory, fixed name "ar8030.tuning").
++ * Returns the bandwidth in MHz on success, -1 if no sidecar exists yet
++ * or it's unreadable/invalid -- callers fall back to their own
++ * configured default in that case. */
++int lc_tuning_load(const char* cfg_path);
++
++/* Atomically persists bandwidth_mhz to the sidecar file next to
++ * cfg_path. Returns 0 on success. */
++int lc_tuning_save(const char* cfg_path, int bandwidth_mhz);
++
++/* Reads the AR8030's own currently-active TX bandwidth (MHz) for user 0
++ * via BB_GET_STATUS. Returns -1 on ioctl failure or an out-of-range
++ * reading. */
++int lc_tuning_read_current(bb_dev_handle_t* handle);
++
++/* Applies bandwidth_mhz (TX direction) to the given slot via
++ * BB_SET_BANDWIDTH. slot must be the slot actually reporting CONNECT
++ * (see lc_tuning_resolve_connected_slot()) -- which slot a peer lands
++ * on isn't fixed across reboots, confirmed by this project's own
++ * ar8030-linkctl (`bandwidth ... -s auto`). Returns the ioctl's own
++ * return code (0 on success). */
++int lc_tuning_apply(bb_dev_handle_t* handle, int slot, int bandwidth_mhz);
++
++/* Scans BB_GET_STATUS for whichever slot is actually reporting
++ * BB_LINK_STATE_CONNECT right now. Returns the slot index, or -1 if
++ * none are connected. */
++int lc_tuning_resolve_connected_slot(bb_dev_handle_t* handle);
++
++#ifdef __cplusplus
++}
++#endif
++#endif
