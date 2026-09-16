@@ -1,0 +1,71 @@
+app/ar8030: clamp ioctl reply length to the expected struct size
+
+Found while chasing why BB_GET_1V1_INFO crashed ar8030-linkctl outright
+on air (SDIO-attached chip) but worked fine on ground (USB-attached
+chip) with the identical call. Root cause: session_ioctl.c's own
+io_rpc_cb() copied the daemon's reply pack->datalen straight into the
+caller's fixed-size output buffer with no check that it actually fits
+-- on air, the daemon's reply for this one command came back 216
+bytes against an expected (sizeof(bb_get_1v1_info_out_t)) 208, and
+that 8-byte overrun was enough to corrupt the client process's own
+stack and crash it on return.
+
+This is a client-side bug in libar8030_client.so (app/ar8030/ isn't
+part of the daemon's own file list -- confirmed via CMakeLists.txt --
+so this affects every client of the library: ar8030-linkctl,
+ar8030-pair, and the lifecycle daemon's own loopback client), and the
+same unchecked-copy pattern is also the real cause of the
+already-documented BB_GET_CHAN_INFO crash (see ar8030-linkctl/main.c's
+own comment) when this device's 42-channel config exceeds that
+command's fixed 32-slot arrays -- same bug, different trigger.
+
+Fix: clamp the copy length to get_bb_ioctl_cmdoutlen(reqid) --
+already-existing table lookup in ioctl_tab.c, computed from the same
+struct the caller's buffer was sized from -- and log when a reply
+actually needed clamping, rather than silently swallowing the
+size mismatch or continuing to trust the wire unconditionally.
+
+Verified live: air now prints "io: req 0x100006b reply datalen=216
+exceeds expected 208, truncating" and returns cleanly instead of
+crashing; ground (unaffected daemon) shows no truncation for the
+same call, confirming the size mismatch really is transport/
+daemon-specific, not a client-side miscalculation.
+
+Mirrors builder's own identical patch 0027 (same vendor source).
+
+diff --git a/app/ar8030/session_ioctl.c b/app/ar8030/session_ioctl.c
+index 5b90893..444978c 100644
+--- a/app/ar8030/session_ioctl.c
++++ b/app/ar8030/session_ioctl.c
+@@ -21,7 +21,30 @@ static int io_rpc_cb(struct BB_HANDLE* phd, struct usbpack* pack, struct BASE_SE
+     IOCTL_SESSION* iose = container_of(psess, IOCTL_SESSION, base);
+     iose->sta           = pack->sta;
+     if (iose->pbuf && pack->datalen) {
+-        memcpy(iose->pbuf, pack->datapack, pack->datalen);
++        /* pack->datalen is whatever the daemon (and, upstream of it, the
++         * chip's own RTOS firmware over whichever physical transport)
++         * claims to have sent back -- nothing here previously checked it
++         * against the caller's actual output buffer size (ioctl_tab.c's
++         * own get_bb_ioctl_cmdoutlen(), computed from the SAME struct the
++         * caller's stack buffer was sized from), so any reply larger than
++         * expected overflowed straight into this client process's stack.
++         * Confirmed live: BB_GET_1V1_INFO reliably does this on air's
++         * SDIO-attached chip (crashes ar8030-linkctl outright) while the
++         * identical call is fine on ground's USB-attached chip -- some
++         * transport/firmware-specific difference in what actually comes
++         * back, not a bug in the calling code. Also the same root cause
++         * as BB_GET_CHAN_INFO's own already-documented crash (ar8030-
++         * linkctl/main.c) when a channel table exceeds bb_get_chan_info_
++         * out_t's fixed 32-slot arrays -- same unchecked copy, different
++         * trigger. Clamp and log instead of trusting the wire. */
++        int expected = get_bb_ioctl_cmdoutlen(iose->reqid);
++        int copylen  = pack->datalen;
++        if (expected >= 0 && copylen > expected) {
++            printf("io: req %#x reply datalen=%d exceeds expected %d, truncating\n", iose->reqid, pack->datalen,
++                   expected);
++            copylen = expected;
++        }
++        memcpy(iose->pbuf, pack->datapack, copylen);
+     }
+     bs_weakup(psess);
+     return 0;
