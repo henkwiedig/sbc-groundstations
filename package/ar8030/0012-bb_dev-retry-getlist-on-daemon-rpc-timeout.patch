@@ -1,0 +1,135 @@
+bb_dev: retry BB_RPC_GET_LIST instead of one 100ms shot
+
+bb_dev_getlist() -- the RPC call every client tool (ar8030-linkctl,
+ar8030-pair, ar8030-status, this project's own transport binaries) goes
+through first, before it can do anything else, to find the AR8030 device
+at all -- opened one fresh TCP connection to ar8030d, gave it a flat
+100ms to answer BB_RPC_GET_LIST, and gave up for good on anything less
+than a clean reply.
+
+Confirmed on real hardware (S65ar8030-transport-tx/S97ar8030's own
+autoreconnect loops, power-cycle testing): ar8030d can take longer than
+100ms to answer this under its own entirely ordinary transient load --
+several worker threads, a concurrent ar8030-pair session, a burst of
+status polling -- even though the device is registered and healthy, and
+the exact same query succeeds if just retried a moment later. Every
+caller had no way to tell that apart from the device genuinely never
+having registered, so a single missed 100ms window here surfaced
+identically as "no AR8030 device known to the daemon" and drove
+disproportionate reactions further up the stack: full re-pairing, or (in
+this project's own boot scripts) an automatic hardware reset of the
+whole chip. Retrying with a longer per-attempt timeout fixes the false
+negative once, in the one function every tool already funnels through,
+instead of every caller growing its own guess at a recovery timeout on
+top of it.
+
+Worst case (the device is genuinely absent) now takes under 2 seconds to
+report that instead of 100ms -- a non-issue for a CLI tool, and far
+cheaper than the reactions a false negative used to trigger.
+
+diff --git a/app/ar8030/bb_dev.c b/app/ar8030/bb_dev.c
+index 8ac7578..b04064a 100644
+--- a/app/ar8030/bb_dev.c
++++ b/app/ar8030/bb_dev.c
+@@ -10,10 +10,34 @@
+ #include <stdio.h>
+ #include <stdlib.h>
+ #include <string.h>
++#include <unistd.h>
+
+ int set_recv_timeout(SOCKETFD sockfd, int ms);
+ int create_tcp_connect(const char* addr, int port, SOCKETFD* listenfd);
+
++/*
++ * bb_dev_getlist()'s RPC round-trip (BB_RPC_GET_LIST) used to get a flat
++ * 100ms and exactly one attempt -- confirmed on real hardware that
++ * ar8030d can take longer than 100ms to answer under its own transient
++ * load (many worker threads, a concurrent bb_pair session, a burst of
++ * client polling) even though the device is registered fine and the
++ * exact same query succeeds moments later. Every caller (ar8030-linkctl,
++ * ar8030-pair, ar8030-status) funnels through this one function to find
++ * the device at all, so a single missed window here was surfacing as "no
++ * AR8030 device known to the daemon" -- indistinguishable from the
++ * device genuinely never having registered -- and driving disproportionate
++ * recovery elsewhere (full re-pairing, or worse, a hardware reset) for
++ * what was actually just a slow reply. Retrying with a longer per-attempt
++ * timeout fixes this once for every tool instead of every caller growing
++ * its own guess at a recovery timeout. Worst case (device genuinely
++ * absent) adds under 2s before reporting that -- a non-issue for a CLI
++ * tool, and still far cheaper than the reactions a false negative used to
++ * trigger.
++ */
++#define BB_DEV_GETLIST_RETRIES 4
++#define BB_DEV_GETLIST_TIMEOUT_MS 300
++#define BB_DEV_GETLIST_RETRY_DELAY_MS 150
++
+ int get_workid_list(SOCKETFD sockfd, uint32_t* ids)
+ {
+     uint8_t buff[1024];
+@@ -218,36 +242,44 @@ AR8030_API bb_dev_t* bb_dev_getlist_index(bb_dev_list_t* plist, int index)
+
+ AR8030_API int bb_dev_getlist(bb_host_t* phost, bb_dev_list_t** devs)
+ {
+-    SOCKETFD sockfd;
+-    int      ret = create_tcp_connect(phost->remote_addr, phost->port, &sockfd);
+-    if (ret) {
+-        printf("connect failed\n");
+-        return -1;
+-    }
+-    set_recv_timeout(sockfd, 100);
++    int sz = -1;
++
++    for (int attempt = 0; attempt < BB_DEV_GETLIST_RETRIES; attempt++) {
++        SOCKETFD sockfd;
++        int      ret = create_tcp_connect(phost->remote_addr, phost->port, &sockfd);
++        if (ret) {
++            printf("connect failed\n");
++            return -1;
++        }
++        set_recv_timeout(sockfd, BB_DEV_GETLIST_TIMEOUT_MS);
+
+-    uint32_t tmpdev[100];
+-    int      sz = get_workid_list(sockfd, tmpdev);
+-    socke_close(sockfd);
++        uint32_t tmpdev[100];
++        sz = get_workid_list(sockfd, tmpdev);
++        socke_close(sockfd);
+
+-    if (sz <= 0) {
+-        return sz;
+-    }
++        if (sz > 0) {
++            struct bb_dev_list* tmplist = malloc(sizeof(struct bb_dev_list) + sz * sizeof(bb_dev_tmp_t));
+
+-    struct bb_dev_list* tmplist = malloc(sizeof(struct bb_dev_list) + sz * sizeof(bb_dev_tmp_t));
++            tmplist->dev_num   = sz;
++            bb_dev_t** devlist = (bb_dev_t**)tmplist->dev_list;
++            bb_dev_t*  realdat = (bb_dev_t*)(((char*)devlist) + sz * sizeof(void*));
+
+-    tmplist->dev_num   = sz;
+-    bb_dev_t** devlist = (bb_dev_t**)tmplist->dev_list;
+-    bb_dev_t*  realdat = (bb_dev_t*)(((char*)devlist) + sz * sizeof(void*));
++            for (int i = 0; i < sz; i++) {
++                devlist[i] = &realdat[i];
+
+-    for (int i = 0; i < sz; i++) {
+-        devlist[i] = &realdat[i];
++                realdat[i].id    = tmpdev[i];
++                realdat[i].phost = phost;
++            }
+
+-        realdat[i].id    = tmpdev[i];
+-        realdat[i].phost = phost;
++            *devs = devlist;
++            return sz;
++        }
++
++        if (attempt + 1 < BB_DEV_GETLIST_RETRIES) {
++            usleep(BB_DEV_GETLIST_RETRY_DELAY_MS * 1000);
++        }
+     }
+
+-    *devs = devlist;
+     return sz;
+ }
+
