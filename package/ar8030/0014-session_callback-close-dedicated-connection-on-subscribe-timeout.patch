@@ -1,0 +1,49 @@
+session_callback: close the dedicated connection on a subscribe timeout
+
+create_new_cb() opens a brand new loopback connection (bb_gethandle())
+for every BB_SET_EVENT_SUBSCRIBE call, then sends the subscribe request
+and waits for the daemon's reply. Every other session type that does
+this same send-and-wait dance -- session_debug.c, session_socket.c,
+session_hotplug.c, session_platform_ctrl.c -- calls bs_trig_close() on
+a failure/timeout to close that dedicated connection and let its reader
+thread exit. This one didn't: it just returned -1, leaving the
+connection, its reader thread, and (server-side) its cb_dev/cb_rpc
+registration running forever.
+
+Confirmed live: a caller retrying an event-subscribe with a bounded
+timeout (needed so a transient daemon-side fault, e.g. an SDIO
+transport hiccup mid-request, doesn't wedge it forever -- see the
+sibling fix to bs_deinit()'s lost-wakeup race) leaked one connection +
+thread + server-side registration per timed-out attempt. Under
+sustained retries during an extended fault, these accumulated until a
+later transport-fault cleanup had to wait on dozens of them and got
+stuck on an unresponsive one -- the mechanism behind an apparent 100+
+thread pileup and a permanently frozen daemon.
+
+bs_trig_close() is exactly what every sibling call site already relies
+on for this case; this makes create_new_cb() do the same.
+
+diff --git a/app/ar8030/session_callback.c b/app/ar8030/session_callback.c
+index 3010a9e..440e0f6 100644
+--- a/app/ar8030/session_callback.c
++++ b/app/ar8030/session_callback.c
+@@ -139,6 +139,20 @@ static int create_new_cb(bb_dev_handle_t* pdev, bb_set_event_callback_t* pcb, in
+     int ret = bs_send_usbpack_and_wait(&cbsession->base, &pack, timeout);
+     if (ret) {
+         printf("callback init err , remote exit\n");
++        /* Every other session type (session_debug.c, session_socket.c,
++         * session_hotplug.c, session_platform_ctrl.c) calls bs_trig_close()
++         * here to close the dedicated connection bb_gethandle() opened for
++         * this call and let its reader thread exit -- this one didn't.
++         * Confirmed live: repeated timed-out subscribe attempts (e.g. a
++         * caller retrying with a bounded timeout after the daemon's SDIO
++         * transport faults) leaked one connection + reader thread + a
++         * matching server-side cb_dev/cb_rpc registration per attempt,
++         * until a later transport fault's cleanup had to wait on dozens of
++         * them and stuck forever on an unresponsive one -- the mechanism
++         * behind an apparent 100+ thread pileup and permanent daemon
++         * freeze. bs_trig_close() is what every sibling call site already
++         * relies on for this exact case. */
++        bs_trig_close(&cbsession->base);
+         return -1;
+     }

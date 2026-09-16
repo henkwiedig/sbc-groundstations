@@ -12,13 +12,14 @@ AR8030_SITE_METHOD = git
 AR8030_LICENSE = GPL-2.0 (kernel driver), PROPRIETARY (host SDK)
 AR8030_INSTALL_STAGING = YES
 
-# cjson: bb_pair (0005-*.patch) links libcjson via pkg-config to persist a
-# paired peer into the on-disk baseband config. ascent-vendor-firmware:
-# fetches+extracts bb_demo_cx485_2PA.img into BINARIES_DIR before this
-# package's own AR8030_FETCH_VENDOR_FIRMWARE hook (below) runs -- see that
-# package's extract.py for the full unpack story.
+# cjson: bb_pair (0005-*.patch) and ar8030-lifecycled (0016-*.patch, its own
+# pairing dispatch + on-disk config persistence) both link libcjson via
+# pkg-config. ascent-vendor-firmware: fetches+extracts bb_demo_cx485_2PA.img
+# into BINARIES_DIR before this package's own AR8030_FETCH_VENDOR_FIRMWARE
+# hook (below) runs -- see that package's extract.py for the full unpack
+# story.
 AR8030_DEPENDENCIES = host-pkgconf libusb \
-	$(if $(BR2_PACKAGE_AR8030_PAIR_TOOL),cjson) \
+	$(if $(BR2_PACKAGE_AR8030_PAIR_TOOL)$(BR2_PACKAGE_AR8030_LIFECYCLED),cjson) \
 	$(if $(BR2_PACKAGE_AR8030_FIRMWARE),ascent-vendor-firmware)
 
 ifeq ($(BR2_PACKAGE_AR8030_TUNTAP),y)
@@ -101,6 +102,7 @@ AR8030_CONF_OPTS = \
 	-DBUILD_ARTOSYN_EXAMPLE=OFF \
 	-DBUILD_RAM_INIT=ON \
 	-DBUILD_TUNTAP=$(if $(BR2_PACKAGE_AR8030_TUNTAP),ON,OFF) \
+	-DBUILD_LIFECYCLED=$(if $(BR2_PACKAGE_AR8030_LIFECYCLED),ON,OFF) \
 	-DBUILD_BW_UPDATE_DEMO=OFF \
 	-DBUILD_IMG_UPGRADE=OFF \
 	-DBUILD_XDATA_TEST=OFF \
@@ -131,6 +133,13 @@ ifeq ($(BR2_PACKAGE_AR8030_PAIR_TOOL),y)
 define AR8030_INSTALL_PAIR_TOOL
 	$(INSTALL) -D -m 0755 $(AR8030_BUILDDIR)/dev_helper/bb_pair/bb_pair \
 		$(TARGET_DIR)/usr/bin/ar8030-pair
+endef
+endif
+
+ifeq ($(BR2_PACKAGE_AR8030_LIFECYCLED),y)
+define AR8030_INSTALL_LIFECYCLED
+	$(INSTALL) -D -m 0755 $(AR8030_BUILDDIR)/dev_helper/ar8030-lifecycled/ar8030-lifecycled \
+		$(TARGET_DIR)/usr/bin/ar8030-lifecycled
 endef
 endif
 
@@ -231,6 +240,7 @@ define AR8030_INSTALL_TARGET_CMDS
 	$(INSTALL) -D -m 0755 $(AR8030_BUILDDIR)/daemon/daemon \
 		$(TARGET_DIR)/usr/bin/ar8030d
 	$(AR8030_INSTALL_PAIR_TOOL)
+	$(AR8030_INSTALL_LIFECYCLED)
 	$(AR8030_INSTALL_USB_LOADER)
 	$(AR8030_INSTALL_TOOLS)
 	$(AR8030_INSTALL_TUNTAP)

@@ -1,0 +1,57 @@
+session: lock psess->mtx in bs_deinit, closing a lost-wakeup race
+
+Every other function touching a BASE_SESSION's exit_flg/wakeup_set/cv
+(bs_weakup, bs_send_usbpack_and_wait) does so under psess->mtx.
+bs_deinit() didn't: it read/wrote exit_flg, called
+pthread_cond_signal(&psess->cv), and called
+pthread_cond_wait(&psess->exitcv, &psess->mtx) all without ever
+locking that mutex.
+
+Confirmed live: bs_deinit() runs from the reader thread's own cleanup
+path when the daemon force-closes a connection (e.g. its SDIO
+transport to the physical chip faults while a session on that same
+transport is mid-request). If that races a caller sitting in
+bs_send_usbpack_and_wait()'s predicate-check-then-wait sequence on the
+same session -- both are ordinary, expected occurrences, just not
+normally concurrent -- the signal here can fire before the waiter is
+registered on the condvar. Since it's one-shot, the caller then blocks
+forever: reproduced as an event-subscribe call (BB_SET_EVENT_SUBSCRIBE)
+wedging permanently, immortalizing its thread, right after a real SDIO
+fault on the daemon side.
+
+Locking psess->mtx for the same span bs_weakup() already uses closes
+the race: the waiter's own predicate check and this function's
+exit_flg write can no longer interleave without one blocking on the
+other's release.
+
+diff --git a/app/ar8030/session.c b/app/ar8030/session.c
+index b66f87f..1ff5761 100644
+--- a/app/ar8030/session.c
++++ b/app/ar8030/session.c
+@@ -74,6 +74,18 @@ void bs_init(BASE_SESSION* psess, struct BB_HANDLE* phd, BASE_FUN const* fun)
+
+ static void bs_deinit(BASE_SESSION* psess)
+ {
++    /* Every other session function (bs_weakup, bs_send_usbpack_and_wait)
++     * touches exit_flg/wakeup_set/cv under psess->mtx -- this one didn't,
++     * which opened a lost-wakeup race: if this runs (e.g. from the reader
++     * thread tearing a session down after the daemon force-closes the
++     * connection) concurrently with a caller in bs_send_usbpack_and_wait's
++     * predicate-check-then-wait sequence, the signal below can fire before
++     * the waiter is registered on the condvar, and since it's one-shot the
++     * caller then blocks forever (confirmed live: an event-subscribe call
++     * with an infinite timeout wedged permanently after the daemon's SDIO
++     * transport hit a transient fault and force-closed the session mid-call).
++     * Locking here serializes it with the waiter exactly like bs_weakup does. */
++    pthread_mutex_lock(&psess->mtx);
+     psess->exit_flg = 1;
+
+     if (psess->wakeup_need) {
+@@ -81,6 +93,7 @@ static void bs_deinit(BASE_SESSION* psess)
+         printf("session wait subprocess exit!\n");
+         pthread_cond_wait(&psess->exitcv, &psess->mtx);
+     }
++    pthread_mutex_unlock(&psess->mtx);
+
+     pthread_cond_destroy(&psess->exitcv);
+     pthread_mutex_destroy(&psess->mtx);

@@ -1,0 +1,42 @@
+ar8030: unlock before the early-exit break in bb_read_thread
+
+bb_read_thread()'s loop locks handle_lk, checks bg_running_flg, and --
+if it's already false -- breaks out of the loop while still holding
+that lock. The code immediately after the loop re-locks the same,
+non-recursive handle_lk. If this early-exit path is ever taken, the
+thread self-deadlocks on its own already-held mutex and never returns:
+never frees its receive buffer, never closes its socket, never exits.
+
+bg_running_flg is exactly what bs_trig_close() (see the sibling fix
+closing a leak in create_new_cb()'s subscribe-timeout path) flips to 0
+from another thread to ask this reader thread to stop. The common case
+-- this thread already blocked inside recv() when that happens -- is
+fine: closing the socket makes recv() return 0, which hits a different,
+already-unlocked break further down. But if bg_running_flg goes false
+in the narrow window between this thread's own read cycles, right as
+it re-checks the flag at the top of the loop, it hits this early-exit
+path instead and deadlocks itself, permanently leaking the connection
+and its thread.
+
+diff --git a/app/ar8030/ar8030.c b/app/ar8030/ar8030.c
+index 3a19b7d..65d7749 100644
+--- a/app/ar8030/ar8030.c
++++ b/app/ar8030/ar8030.c
+@@ -61,6 +61,17 @@ void* bb_read_thread(void* p)
+
+         pthread_mutex_lock(&phandle->handle_lk);
+         if (!phandle->bg_running_flg) {
++            /* Must unlock before breaking: the code right after this loop
++             * (line ~131) re-locks this same non-recursive handle_lk, and
++             * this exact check is what bs_trig_close() flips false from
++             * another thread -- if that happens to land exactly here
++             * (rather than while this thread is blocked in the recv()
++             * below, the far more common case, where closing the socket
++             * just makes recv() return 0 and hit a different, already-
++             * unlocked break path), the thread would self-deadlock on its
++             * own already-held mutex and never exit, permanently leaking
++             * this connection and its thread. */
++            pthread_mutex_unlock(&phandle->handle_lk);
+             break;
+         }
+         pthread_mutex_unlock(&phandle->handle_lk);
