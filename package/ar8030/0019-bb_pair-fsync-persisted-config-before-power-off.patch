@@ -9,12 +9,12 @@ underlying storage -- a rename can land durably (survive a power cut)
 while the file content it points at, or the rename's own directory
 entry, is still sitting in page cache.
 
-Fixes both persist_paired_peer() (dev_helper/bb_pair/txg_bb_pair.cpp --
-the actual code path a real bind-button press runs) and
-lc_pair_persist() (dev_helper/ar8030-lifecycled/lifecycle_pair.c --
-currently unreferenced by the daemon itself, but kept in sync since
-it was ported verbatim from the same source and any future caller
-should get the same guarantee):
+Fixes persist_paired_peer() (dev_helper/bb_pair/txg_bb_pair.cpp -- the
+actual code path a real bind-button press runs). The equivalent fix for
+lc_pair_persist() (ar8030-lifecycled's own copy of this same logic,
+ported verbatim from this same source) now lives directly in
+ar8030-transport/lifecycled/lifecycle_pair.c -- that module moved out of
+this package's patch stack entirely, see its own README section.
 
 - fflush()+fsync() the .tmp file's fd before fclose(), so the rename
   can never end up pointing at unflushed content.
@@ -30,51 +30,6 @@ extra cost is a non-issue.
 
 Mirrors builder's own identical patch 0026 (same vendor source).
 
-diff --git a/dev_helper/ar8030-lifecycled/lifecycle_pair.c b/dev_helper/ar8030-lifecycled/lifecycle_pair.c
-index 6c338ed..0e5d34f 100644
---- a/dev_helper/ar8030-lifecycled/lifecycle_pair.c
-+++ b/dev_helper/ar8030-lifecycled/lifecycle_pair.c
-@@ -160,6 +160,14 @@ int lc_pair_persist(bb_dev_handle_t* handle, const char* cfg_path, int slot, uin
-         return -1;
-     }
-     fwrite(text, 1, strlen(text), wf);
-+    /* fsync the .tmp file's actual data before the rename -- otherwise
-+     * the rename can land durably (survive a power cut) while the
-+     * content it points at is still sitting in page cache, unflushed.
-+     * Confirmed live: powering off the air unit immediately after a
-+     * successful bind left ar8030.json empty on the next boot -- this
-+     * is exactly that race. */
-+    fflush(wf);
-+    fsync(fileno(wf));
-     fclose(wf);
-     free(text);
-     if (rename(tmp_path, cfg_path) == 0) {
-@@ -182,10 +190,25 @@ int lc_pair_persist(bb_dev_handle_t* handle, const char* cfg_path, int slot, uin
-         FILE* mf = fopen(marker_path, "w");
-         if (mf) {
-             fprintf(mf, "%s\n", mac_hex);
-+            fflush(mf);
-+            fsync(fileno(mf));
-             fclose(mf);
-         }
-     }
-
-+    /* Flushes the rename()s themselves (the directory entries), not just
-+     * the file content the fsync() calls above already covered -- a
-+     * rename can itself still be sitting unflushed in the containing
-+     * directory's metadata at power-loss time otherwise. Matches stock's
-+     * own ar_ldy_gnd exactly: its user_cfg.json persist function
-+     * (confirmed via decompile) ends with a bare sync() call too. This
-+     * whole function only runs once per actual pair, so the cost of a
-+     * full sync() (as opposed to fsync()-ing just the parent directory
-+     * fd) is a non-issue. */
-+    if (ret == 0) {
-+        sync();
-+    }
-+
-     cJSON_Delete(root);
-
-     /* Best-effort live update too, so this session doesn't itself need a
 diff --git a/dev_helper/bb_pair/txg_bb_pair.cpp b/dev_helper/bb_pair/txg_bb_pair.cpp
 index ef2d2cd..631dc96 100644
 --- a/dev_helper/bb_pair/txg_bb_pair.cpp
