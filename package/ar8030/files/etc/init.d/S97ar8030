@@ -2,28 +2,18 @@
 #
 # Starts the Artosyn AR8030 baseband/RF link.
 #
-# ar8030-lifecycled (see OpenIPC/builder's own ar8030-transport-tx S65
-# script for the fuller story of why a dedicated process replaces shell
-# watchdogs) owns pairing, reconnect-on-drop, link-state tracking,
-# tuning, and hook-script dispatch here too -- but NOT hardware reset
-# (--reset-method none, unlike air's --reset-method devmem): this
-# board's chip goes through a one-time boot-ROM firmware push over USB
-# (enable_rf() -> modprobe -> wait for /dev/ar_mdev0 -> rmmod, below),
-# not a "module stays loaded, chip can be re-pulsed anytime" model like
-# air's SDIO transport. ar8030-lifecycled only starts once that whole
-# dance is already done and the daemon is talking to the chip directly
-# over USB; pulsing enable_rf()'s GPIOs again at that point would reset
-# a chip already running its real firmware, right as the daemon expects
-# to keep talking to it -- so enable_rf() stays exactly where it is,
-# not folded into ar8030-lifecycled's own reset backends.
-#
-# Deliberately not yet done, matching air-side ar8030-lifecycled's own
-# scope: tying ar8030-transport-rx's own start/stop to hook dispatch
-# (see BR2_PACKAGE_AR8030_LIFECYCLED's Config.in help) -- rx already
-# tolerates no link on its own (see its own S98 script's header
-# comment), and air's own tx/hook wiring hasn't finished a full clean
-# validation pass yet, so bringing that same pattern here too is left
-# for its own dedicated verification.
+# ar8030-lifecycled (owns pairing, reconnect-on-drop, link-state
+# tracking, tuning, and hook-script dispatch -- see OpenIPC/builder's
+# own ar8030-transport-tx S65 script for the fuller story of why a
+# dedicated process replaces shell watchdogs) is started by
+# S98ar8030-transport-rx now, not this script -- it moved out of the
+# ar8030 package entirely into ar8030-transport/lifecycled/ (see that
+# repo's README), and ar8030-transport-rx is the package that now
+# builds+installs it, matching air's own S65ar8030-transport-tx owning
+# lifecycled rather than the (kernel-module-only-again) ar8030 package.
+# This script's own job stays just the boot-ROM firmware push (enable_rf()
+# -> modprobe -> wait for /dev/ar_mdev0 -> rmmod, below) and starting
+# ar8030d itself.
 
 # Allow a few customizations from a config file
 test -r /etc/default/ar8030 && . /etc/default/ar8030
@@ -31,18 +21,13 @@ test -r /etc/default/ar8030 && . /etc/default/ar8030
 BB_FW=${BB_FW:-ar8030/bb_demo_cx485_2PA.img}
 BB_CFG=${BB_CFG:-ar8030/bb_config_gnd_pro.json}
 
-LIFECYCLED="/usr/bin/ar8030-lifecycled"
-LIFECYCLED_PIDFILE="/var/run/ar8030-lifecycled.pid"
-
-# Both ar8030d (DAEMON_LOG_PATH, "daemon_log") and ar8030-lifecycled
-# (AR8030_LIFECYCLED_LOG_PATH, "lifecycle_log") write their own logs
-# under a directory *relative to their current working directory* --
-# neither takes a log-path flag. This script never cd'd anywhere before
-# starting either one, so both landed wherever rcS happened to invoke
-# this script from (confirmed live: /root, and even bare / from some
-# earlier boot) instead of somewhere predictable. cd into a fixed rundir
-# before starting each, matching OpenIPC/builder's own S65
-# ar8030-transport-tx script.
+# ar8030d (DAEMON_LOG_PATH, "daemon_log") writes its own log under a
+# directory *relative to its current working directory* -- it takes no
+# log-path flag. This script never cd'd anywhere before starting it, so
+# it landed wherever rcS happened to invoke this script from (confirmed
+# live: /root, and even bare / from some earlier boot) instead of
+# somewhere predictable. cd into a fixed rundir before starting it,
+# matching OpenIPC/builder's own S65 ar8030-transport-tx script.
 RUNDIR="/tmp/ar8030"
 
 if [ x$AR8030_ENABLED = x"false" ]; then
@@ -107,18 +92,6 @@ wait_flag_file() {
 	done
 }
 
-start_lifecycled() {
-	[ -x "$LIFECYCLED" ] || return 0
-	mkdir -p "$RUNDIR"
-	cd "$RUNDIR" || return 1
-	start-stop-daemon -S -q -b -m -p "$LIFECYCLED_PIDFILE" -x "$LIFECYCLED" -- \
-		--role dev \
-		--reset-method none \
-		--hook-dir /etc/ar8030/hooks.d \
-		--cfg-path "/lib/firmware/$BB_CFG" \
-		--default-bandwidth 20
-}
-
 start() {
 	printf "Starting ar8030... "
 
@@ -145,16 +118,12 @@ start() {
 	start-stop-daemon -S -b -q -m -p /var/run/ar8030d.pid \
 		-x /usr/bin/ar8030d -- -i 0 -l 2
 	[ $? = 0 ] && echo "OK" || echo "FAIL"
-
-	start_lifecycled
 }
 
 stop() {
 	printf "Stopping ar8030... "
 	start-stop-daemon -K -p /var/run/ar8030d.pid
 	[ $? = 0 ] && echo "OK" || echo "FAIL"
-	[ -f "$LIFECYCLED_PIDFILE" ] && kill "$(cat "$LIFECYCLED_PIDFILE")" 2>/dev/null
-	rm -f "$LIFECYCLED_PIDFILE"
 }
 
 case "$1" in

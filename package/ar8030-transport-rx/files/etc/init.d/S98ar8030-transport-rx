@@ -8,26 +8,65 @@
 # against S97ar8030/S99pixelpilot isn't required -- numbered between them
 # here purely so ar8030d is at least installed first.
 #
+# Also starts ar8030-lifecycled (owns pairing, reconnect-on-drop,
+# link-state tracking, tuning, and hook-script dispatch) -- moved here
+# from S97ar8030 (package/ar8030) now that this package is what actually
+# builds+installs the binary (ar8030-lifecycled moved out of the ar8030
+# package entirely into ar8030-transport/lifecycled/, see that repo's
+# README). --reset-method none, unlike air's --reset-method devmem:
+# this board's chip goes through a one-time boot-ROM firmware push over
+# USB (S97ar8030's own enable_rf() -> modprobe -> rmmod), not a "module
+# stays loaded, chip can be re-pulsed anytime" model like air's SDIO
+# transport, so pulsing a reset here would just reset a chip already
+# running its real firmware right as the daemon expects to keep talking
+# to it -- enable_rf() stays exactly where it is, not folded into
+# ar8030-lifecycled's own reset backends. No --bind-gpio: this board has
+# no physical bind button.
 
 test -r /etc/default/ar8030-transport-rx && . /etc/default/ar8030-transport-rx
+# BB_CFG (the baseband cfg lifecycled persists pairing/tuning against) is
+# the ar8030 package's own setting, shared with S97ar8030 -- not
+# duplicated into this package's own default file.
+test -r /etc/default/ar8030 && . /etc/default/ar8030
 
 DAEMON="/usr/bin/ar8030-transport-rx"
 PIDFILE="/var/run/ar8030-transport-rx.pid"
+
+LIFECYCLED="/usr/bin/ar8030-lifecycled"
+LIFECYCLED_PIDFILE="/var/run/ar8030-lifecycled.pid"
+BB_CFG=${BB_CFG:-ar8030/bb_config_gnd_pro.json}
+
+# ar8030-lifecycled writes its own log via syslog now (see
+# ar8030-transport/lifecycled/lc_log.h) -- no RUNDIR/cd needed the way
+# ar8030d's own log still requires (S97ar8030's own RUNDIR comment).
 
 if [ "x$AR8030_TRANSPORT_RX_ENABLED" = "xfalse" ]; then
 	echo "Starting ar8030-transport-rx... skipped (disabled)"
 	exit 0
 fi
 
+start_lifecycled() {
+	[ -x "$LIFECYCLED" ] || return 0
+	start-stop-daemon -S -q -b -m -p "$LIFECYCLED_PIDFILE" -x "$LIFECYCLED" -- \
+		--role dev \
+		--reset-method none \
+		--hook-dir /etc/ar8030/hooks.d \
+		--cfg-path "/lib/firmware/$BB_CFG" \
+		--default-bandwidth 20
+}
+
 start() {
 	echo "Starting ar8030-transport-rx..."
 	start-stop-daemon -S -q -b -m -p "$PIDFILE" -x "$DAEMON" -- $AR8030_TRANSPORT_RX_ARGS
+	start_lifecycled
 }
 
 stop() {
 	echo "Stopping ar8030-transport-rx..."
 	start-stop-daemon -K -q -p "$PIDFILE"
 	rm -f "$PIDFILE"
+	[ -f "$LIFECYCLED_PIDFILE" ] && kill "$(cat "$LIFECYCLED_PIDFILE")" 2>/dev/null
+	rm -f "$LIFECYCLED_PIDFILE"
 }
 
 case "$1" in

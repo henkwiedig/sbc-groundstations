@@ -19,8 +19,15 @@ config BR2_PACKAGE_AR8030_TRANSPORT_RX
 	  ar8030-transport's README "Required AR8030 SDK fix" -- without
 	  it on *both* ends of the link, chunks above ~690 bytes fail).
 
-	  Installs /usr/bin/ar8030-transport-rx and
-	  /etc/init.d/S98ar8030-transport-rx.
+	  Also builds, installs, and starts ar8030-lifecycled (see
+	  ar8030-transport's README "ar8030-lifecycled: link supervisor +
+	  bind button") and its ifup/ifdown hooks -- moved here from
+	  S97ar8030 (package/ar8030) now that this package is what actually
+	  builds the binary; see S98ar8030-transport-rx's own comment for
+	  the reset-backend/role difference from the air side.
+
+	  Installs /usr/bin/ar8030-transport-rx, /usr/bin/ar8030-linkctl,
+	  /usr/bin/ar8030-lifecycled, and /etc/init.d/S98ar8030-transport-rx.
 
 comment "ar8030-transport-rx needs ar8030 and a toolchain w/ threads"
 	depends on !BR2_PACKAGE_AR8030 || !BR2_TOOLCHAIN_HAS_THREADS
