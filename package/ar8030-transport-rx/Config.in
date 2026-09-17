@@ -21,10 +21,11 @@ config BR2_PACKAGE_AR8030_TRANSPORT_RX
 
 	  Also builds, installs, and starts ar8030-lifecycled (see
 	  ar8030-transport's README "ar8030-lifecycled: link supervisor +
-	  bind button") and its ifup/ifdown hooks -- moved here from
-	  S97ar8030 (package/ar8030) now that this package is what actually
-	  builds the binary; see S98ar8030-transport-rx's own comment for
-	  the reset-backend/role difference from the air side.
+	  bind button") and its ifup/ifdown and connect/drop beep
+	  (playsong.sh, board/caddx/vrxpro's own overlay) hooks -- moved
+	  here from S97ar8030 (package/ar8030) now that this package is
+	  what actually builds the binary; see S98ar8030-transport-rx's own
+	  comment for the reset-backend/role difference from the air side.
 
 	  Installs /usr/bin/ar8030-transport-rx, /usr/bin/ar8030-linkctl,
 	  /usr/bin/ar8030-lifecycled, and /etc/init.d/S98ar8030-transport-rx.

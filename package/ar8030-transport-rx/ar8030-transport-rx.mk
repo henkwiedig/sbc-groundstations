@@ -86,6 +86,10 @@ define AR8030_TRANSPORT_RX_INSTALL_TARGET_CMDS
 		$(TARGET_DIR)/etc/ar8030/hooks.d/connected/30-ifup.sh
 	$(INSTALL) -D -m 0755 $(AR8030_TRANSPORT_RX_PKGDIR)/files/etc/ar8030/hooks.d/dropped/30-ifdown.sh \
 		$(TARGET_DIR)/etc/ar8030/hooks.d/dropped/30-ifdown.sh
+	$(INSTALL) -D -m 0755 $(AR8030_TRANSPORT_RX_PKGDIR)/files/etc/ar8030/hooks.d/connected/10-beep.sh \
+		$(TARGET_DIR)/etc/ar8030/hooks.d/connected/10-beep.sh
+	$(INSTALL) -D -m 0755 $(AR8030_TRANSPORT_RX_PKGDIR)/files/etc/ar8030/hooks.d/dropped/10-beep.sh \
+		$(TARGET_DIR)/etc/ar8030/hooks.d/dropped/10-beep.sh
 	$(INSTALL) -D -m 0755 $(AR8030_TRANSPORT_RX_PKGDIR)/files/etc/init.d/S98ar8030-transport-rx \
 		$(TARGET_DIR)/etc/init.d/S98ar8030-transport-rx
 	$(INSTALL) -D -m 0644 $(AR8030_TRANSPORT_RX_PKGDIR)/files/etc/default/ar8030-transport-rx \

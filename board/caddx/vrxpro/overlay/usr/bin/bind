@@ -11,11 +11,4 @@ done
 
 wait "$PAIR_PID"
 PAIR_STATUS=$?
-
-if [ "$PAIR_STATUS" -eq 0 ]
-then
-    playsong.sh /usr/share/sounds/success.rtttl
-else
-    playsong.sh /usr/share/sounds/error.rtttl
-fi
 exit $PAIR_STATUS
