@@ -13,6 +13,7 @@ PIXELPILOT_DVR_OSD=""
 PIXELPILOT_DVR_RESOLUTION="1080p"
 PIXELPILOT_DVR_MODE="reencode"
 PIXELPILOT_DVR_MAX_SIZE="4000"
+PIXELPILOT_RX_MODE="artosyn"
 
 
 # Opt-in Opus audio playback (audio muxed into the RTP stream by the air unit,
