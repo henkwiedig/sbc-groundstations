@@ -1,0 +1,82 @@
+com/bb_api.h: fix bb_quality_t's declared size to match the real wire size
+
+bb_quality_t is declared as 8 bytes (snr, ldpc_err, ldpc_num, gain_a,
+gain_b), and used as an array element by BB_GET_USER_QUALITY
+(qualities[BB_DATA_USER_MAX]), BB_GET_PEER_QUALITY
+(qualities[BB_SLOT_MAX]), and BB_GET_PAIR_RESULT
+(quality[BB_SLOT_MAX], not exercised by ar8030-transport).
+
+Confirmed live on real hardware that the real per-entry record on the
+wire is 16 bytes, not 8 -- session_ioctl.c's own io_rpc_cb() reply-
+length clamp (patch 0027) was silently truncating both
+BB_GET_USER_QUALITY ("reply datalen=160 exceeds expected 80,
+truncating") and BB_GET_PEER_QUALITY ("128... 64") on every single
+call. Confirmed by rebuilding libar8030_client.so with a temporarily
+oversized element type (32 bytes, well past any guess) and dumping the
+raw, now-untruncated reply: bytes 0-7 of entry 0 match the 5 documented
+fields exactly (cross-validated against ar8030-transport's own
+ar8030-linkctl status output before this fix); bytes 8-15 of entry 0
+are real, non-zero, currently-undecoded data (not padding); bytes 16+
+of entry 0, and the entirety of every other array entry, read back as
+zero on this firmware's single-user-mode link. 10*16=160 and 8*16=128
+match the observed (truncated) wire sizes for the two calls exactly,
+confirming the real per-entry stride is 16 bytes with no slack, not a
+larger array length (BB_DATA_USER_MAX/BB_SLOT_MAX are correct
+elsewhere -- e.g. BB_GET_STATUS's own arrays of the same nominal
+lengths never triggered this warning).
+
+This matters in practice, not just for correctness: ar8030-transport's
+tx/bitrate_ctl.c added a fast (~1/s) BB_GET_USER_QUALITY poll to feed
+LDPC block-error ratio into its bitrate control loop (radio-repair-
+pressure signal, mirroring the vendor's own retx-driven backoff), and
+the truncation warning fired on every single call, unconditionally
+spamming stderr/the tx log. This patch fixes the actual bug (wrong
+struct size) rather than just slowing the poll down to make the
+symptom rarer.
+
+The extra 8 bytes are added as `reserved` (not decoded) rather than
+guessed at -- same reasoning as 0029's own comment: this only costs a
+few bytes on host-side RPC payload structs, not a wire-format change,
+and getting the SIZE right (so the daemon's real reply is never
+truncated) doesn't require knowing what every byte means yet.
+
+diff --git a/com/bb_api.h b/com/bb_api.h
+index 3b0c9a1..1a2b3c4 100644
+--- a/com/bb_api.h
++++ b/com/bb_api.h
+@@ -400,12 +400,35 @@
+ typedef uint16_t chan_t;                                        /**<@note 统一信道=子信道(高Byte)+主信道(低Byte)*/
+
+ /**定义8030物理用户信号质量结构体*/
++/* Fixed on real hardware (2026-09): this struct's declared 8-byte size does
++ * not match its real per-entry size on the wire wherever it is used as an
++ * array (BB_GET_USER_QUALITY's qualities[BB_DATA_USER_MAX],
++ * BB_GET_PEER_QUALITY's qualities[BB_SLOT_MAX], and by extension
++ * BB_GET_PAIR_RESULT's quality[BB_SLOT_MAX], though that one is not
++ * exercised by ar8030-transport). Confirmed by capturing the FULL,
++ * untruncated reply with a temporarily oversized element type: the real
++ * per-entry record is 16 bytes -- the 5 documented fields below plus 8
++ * more genuinely-populated-but-currently-undecoded trailing bytes, not
++ * padding (bytes past 16 for the same entry, and the entirety of every
++ * other array entry actually unpopulated in this firmware's single-user
++ * mode, read back as zero). 10*16=160 and 8*16=128 match the observed
++ * wire sizes for the two calls exactly -- this is how the bug was first
++ * noticed, via session_ioctl.c's own io_rpc_cb() "reply datalen=160
++ * exceeds expected 80, truncating" / "128... 64" warnings (ar8030-
++ * transport's tx/bitrate_ctl.c calls BB_GET_USER_QUALITY on a fast poll
++ * path, so this fired continuously). Adding `reserved` below (not decoded
++ * yet) fixes the size so the daemon's real reply is never truncated
++ * again -- mirrors bb_config.h's own BB_CONFIG_MAX_CHAN_NUM 32->60 fix in
++ * spirit (correct a host-side struct size against what the real hardware
++ * actually sends), except this one is measured exactly rather than padded
++ * with headroom, since the real size is now confirmed, not estimated. */
+ typedef struct {
+     uint16_t snr;                                               /**<@note 物理用户接收信噪比，转化db公式：10log(snr/36)*/
+     uint16_t ldpc_err;                                          /**<@note 交织块中解码错误的LDPC块个数*/
+     uint16_t ldpc_num;                                          /**<@note 交织块中总的LDPC块个数*/
+     uint8_t  gain_a;                                            /**<@note A路天线接收信号强度*/
+     uint8_t  gain_b;                                            /**<@note B路天线接收信号强度*/
++    uint8_t  reserved[8];                                       /**<@note Confirmed real/populated on the wire (not padding) but not yet decoded -- see this struct's own comment above*/
+ } bb_quality_t;
+
+ /**定义8030支持的的频段类型*/
