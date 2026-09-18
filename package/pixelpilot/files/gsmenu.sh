@@ -116,12 +116,165 @@ send_cmd() {
     echo "$1" | nc -w 11 $REMOTE_IP 12355
 }
 
+# waybeam_venc's REST API (Artosyn mode, air unit at $REMOTE_IP:80 over the
+# ar8030 ar_net0 TUN bridge). Protocol confirmed live against a running unit
+# (see web/dashboard.html's own "API Reference" tab in OpenIPC/waybeam_venc):
+#   GET /api/v1/get?<key>       -> {"ok":true,"data":{"field":"<key>","value":<v>}}
+#   GET /api/v1/set?<key>=<val> -> {"ok":true,"data":{"field":"<key>","value":<v>,"reinit_pending":bool}}
+# <key> is the dotted camelCase path into /api/v1/config's "config" object
+# (e.g. "video0.bitrate", "isp.sensorBin"), NOT the snake_case name
+# /api/v1/capabilities itself uses to describe the same field.
+WAYBEAM_TIMEOUT=5
+
+get_waybeam_value() {
+    local key="$1"
+    curl -s -m "$WAYBEAM_TIMEOUT" "http://$REMOTE_IP/api/v1/get?$key" 2>/dev/null \
+        | jq -r '.data.value // empty' 2>/dev/null
+}
+
+set_waybeam_value() {
+    local key="$1" val="$2" enc
+    enc=$(jq -rn --arg v "$val" '$v|@uri')
+    curl -s -m "$WAYBEAM_TIMEOUT" "http://$REMOTE_IP/api/v1/set?${key}=${enc}" >/dev/null 2>&1
+}
+
+# sensor.mode is a bare pad/mode index with no inherent meaning on its own --
+# /api/v1/modes is what turns it into something a human can read ("OS02K10
+# 1080p100 RAW10"). Only pad 0 is offered; multi-pad (dual-sensor) boards would
+# need a pad picker of their own.
+waybeam_modes_json() {
+    curl -s -m "$WAYBEAM_TIMEOUT" "http://$REMOTE_IP/api/v1/modes" 2>/dev/null
+}
+waybeam_mode_desc_for_index() {
+    local idx="$1"
+    [ "$idx" = "-1" ] && { echo "Auto"; return; }
+    waybeam_modes_json | jq -r --arg i "$idx" \
+        '.data.pads[0].modes[] | select((.index|tostring)==$i) | .desc'
+}
+waybeam_mode_descs() {
+    printf 'Auto\n'
+    waybeam_modes_json | jq -r '[.data.pads[0].modes[].desc] | join("\n")'
+}
+waybeam_mode_index_for_desc() {
+    local desc="$1"
+    [ "$desc" = "Auto" ] && { echo -1; return; }
+    waybeam_modes_json | jq -r --arg d "$desc" \
+        '.data.pads[0].modes[] | select(.desc==$d) | .index' | head -1
+}
+
+# isp.sensorBin is a full path (e.g. /etc/sensors/cam_os02k10_100fps_xg1_day.bin)
+# with no listing endpoint of its own -- unlike majestic's sensor_file, waybeam's
+# REST API doesn't expose the air unit's filesystem, so this still goes over the
+# same SSH ($SSH, root/$SSH_PASS) the majestic camera section above uses,
+# confirmed reachable on a live CV610 waybeam unit the same as any other OpenIPC
+# air unit. Not part of refresh_cache()'s periodic pull -- listed on demand only,
+# since swapping calibration bins is rare compared to how often this page opens.
+list_waybeam_sensor_bins() {
+    $SSH "find /etc/sensors/ -type f -name '*.bin'" 2>/dev/null \
+        | sed 's/^\/etc\/sensors\///' | sed 's/\.bin$//' | sort
+}
+
+# ar8030-lifecycled's HTTP control API (ar8030-transport/lifecycled/,
+# lifecycle_http.c) -- runs on BOTH ends of the link, same binary/port, one
+# per side ($REMOTE_IP:8899 for the air unit's own radio, 127.0.0.1:8899 for
+# this ground unit's own radio -- ar8030-transport-rx's own
+# S98ar8030-transport-rx runs it locally here). "side" below is "air" or
+# "gs". Responses are flat JSON (no "data" wrapper, unlike waybeam's API):
+#   GET  /api/v1/status                       -> {"ok":true,"role":...,"state":...,"bandwidth_mhz":N,"paired":bool,...}
+#   POST /api/v1/bandwidth?mhz=<1|2|5|10|20|40> -> persisted, survives reconnects
+#   POST /api/v1/linkctl?cmd=<c>&args=<...>   -> {"ok":true,"exit_code":0,"output":"..."}, one-shot passthrough
+LIFECYCLED_TIMEOUT=5
+
+lifecycled_url() {
+    [ "$1" = "air" ] && echo "http://$REMOTE_IP:8899" || echo "http://127.0.0.1:8899"
+}
+
+lifecycled_status_json() {
+    curl -s -m "$LIFECYCLED_TIMEOUT" "$(lifecycled_url "$1")/api/v1/status" 2>/dev/null
+}
+
+get_lifecycled_bandwidth() {
+    lifecycled_status_json "$1" | jq -r '.bandwidth_mhz // empty' 2>/dev/null
+}
+
+set_lifecycled_bandwidth() {
+    local side="$1" mhz="$2"
+    curl -s -m "$LIFECYCLED_TIMEOUT" -X POST "$(lifecycled_url "$side")/api/v1/bandwidth?mhz=${mhz}" >/dev/null 2>&1
+}
+
+# power_mode isn't a lifecycled-persisted field (see lifecycle_tuning.h's own
+# "bandwidth-only, deliberately" comment) -- this is a one-shot
+# ar8030-linkctl read/write via the passthrough endpoint, same as the web
+# control panel's own "Power mode" control.
+get_lifecycled_power_mode() {
+    # "output" is ar8030-linkctl's raw captured stdout+stderr -- normally just
+    # "auto (closed loop)\n", but confirmed live that a connection-teardown
+    # line ("-1 Connection closing...", "io: ... deinit") sometimes trails it
+    # depending on timing. Only the first line is ever the actual answer.
+    curl -s -m "$LIFECYCLED_TIMEOUT" -X POST "$(lifecycled_url "$1")/api/v1/linkctl?cmd=power-mode&args=" 2>/dev/null \
+        | jq -r '.output // empty' 2>/dev/null | head -1 | awk '{print $1}'
+}
+
+set_lifecycled_power_mode() {
+    local side="$1" mode="$2"
+    curl -s -m "$LIFECYCLED_TIMEOUT" -X POST "$(lifecycled_url "$side")/api/v1/linkctl?cmd=power-mode&args=${mode}" >/dev/null 2>&1
+}
+
+# Channel index (0..chan_num-1) -- BB_GET_CHAN_INFO itself (segfault risk
+# below BB_CONFIG_MAX_CHAN_NUM, see patch 0022/0029) isn't called directly
+# here: /api/v1/status already runs `ar8030-linkctl status`, which now prints
+# a "BB_GET_CHAN_INFO: chan_num=.. work_chan=.." summary line (this project's
+# own linkctl patch), so this just reuses that one already-fetched status
+# blob instead of a second RPC round-trip. Setting is BB_SET_CHAN/
+# BB_SET_REMOTE via the linkctl passthrough -- a real synchronized retune
+# that also pushes to the connected peer (linkctl/main.c's cmd_channel), not
+# a blind local change -- but only takes effect while a slot is CONNECTed
+# ("-s auto" resolves the currently-connected slot; fails otherwise).
+lifecycled_chan_info_line() {
+    lifecycled_status_json "$1" | jq -r '.linkctl_status // empty' 2>/dev/null | grep -m1 '^BB_GET_CHAN_INFO:'
+}
+
+get_lifecycled_channel() {
+    lifecycled_chan_info_line "$1" | grep -oE 'work_chan=[0-9]+' | cut -d= -f2
+}
+
+get_lifecycled_chan_num() {
+    lifecycled_chan_info_line "$1" | grep -oE 'chan_num=[0-9]+' | cut -d= -f2
+}
+
+set_lifecycled_channel() {
+    local side="$1" idx="$2"
+    curl -s -m "$LIFECYCLED_TIMEOUT" -X POST \
+        "$(lifecycled_url "$side")/api/v1/linkctl?cmd=channel&args=$(jq -rn --arg v "${idx} -s auto -w 5" '$v|@uri')" \
+        >/dev/null 2>&1
+}
+
+lifecycled_status_summary() {
+    local j
+    j=$(lifecycled_status_json "$1")
+    if [ -z "$j" ]; then
+        echo "unreachable"
+        return
+    fi
+    echo "$j" | jq -r \
+        '.state + " slot=" + (.connected_slot|tostring) + " bw=" + (.bandwidth_mhz|tostring) + "MHz" +
+         (if .paired then " (paired)" else " (not paired)" end)' 2>/dev/null
+}
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # Cache refresh (only for air get commands)
 # ══════════════════════════════════════════════════════════════════════════════
 
 case "$@" in
+  "get air waybeam"*|"get air artosyn"*)
+    # None of these fields read $CACHE_DIR/{majestic,wfb,alink,aalink}.* or
+    # sensor.txt's ipcinfo-filtered listing -- waybeam has its own REST API
+    # (get_waybeam_value) and its own on-demand SSH bin-file listing
+    # (list_waybeam_sensor_bins) below, and ar8030's radio params are neither
+    # of those either. Skip the refresh so opening these pages doesn't pull a
+    # cache nothing here uses.
+    ;;
   "get air"*)
     refresh_cache
     ;;
@@ -416,6 +569,69 @@ case "$@" in
         $SSH "cli -s .audio.srate $5 && killall -1 majestic"
         ;;
 
+# ── Air: Waybeam (REST API camera, Artosyn mode) ────────────────────────────
+# Talks to waybeam_venc's own REST API on $REMOTE_IP (192.168.100.1 over the
+# ar8030 ar_net0 TUN bridge in production) via get_waybeam_value/set_waybeam_value
+# above. Field names/enums confirmed against a live unit and against
+# web/dashboard.html in OpenIPC/waybeam_venc (its built-in "API Reference" tab
+# and ENUMS table are the source of truth here, not this comment).
+
+    "get air waybeam sensor_mode")
+        waybeam_mode_desc_for_index "$(get_waybeam_value sensor.mode)"
+        emit_values_cmd waybeam_mode_descs
+        ;;
+    "get air waybeam isp_binfile")
+        cur=$(get_waybeam_value isp.sensorBin)
+        [ -n "$cur" ] && basename -s .bin "$cur"
+        emit_values_cmd list_waybeam_sensor_bins
+        ;;
+    "get air waybeam image_rotate180")
+        # image.rotate isn't supported on this backend -- flip+mirror together
+        # is the 180deg-rotation equivalent, always set/read as a pair. Only
+        # report "on" when both agree; a mismatch (set some other way) reads
+        # as "off" rather than guessing.
+        [ "$(get_waybeam_value image.flip)" = "true" ] && [ "$(get_waybeam_value image.mirror)" = "true" ] \
+            && echo 1 || echo 0
+        ;;
+    "get air waybeam video_size")
+        get_waybeam_value video0.size
+        emit_values "1280x720\n1920x1080"
+        ;;
+    "get air waybeam video_resilience")
+        get_waybeam_value video0.resilience
+        emit_values "off\nrescue\nquality\nsprint\nracing\nrally\nendurance\npatrol\nrange\nfpv"
+        ;;
+    "get air waybeam audio_enabled")
+        [ "$(get_waybeam_value audio.enabled)" = "true" ] && echo 1 || echo 0
+        ;;
+
+    "set air waybeam sensor_mode"*)
+        set_waybeam_value sensor.mode "$(waybeam_mode_index_for_desc "$5")"
+        ;;
+    "set air waybeam isp_binfile"*)
+        set_waybeam_value isp.sensorBin "/etc/sensors/$5.bin"
+        ;;
+    "set air waybeam image_rotate180"*)
+        if [ "$5" = "on" ]; then
+            set_waybeam_value image.flip true
+            sleep 5
+            set_waybeam_value image.mirror true
+        else
+            set_waybeam_value image.flip false
+            sleep 5
+            set_waybeam_value image.mirror false
+        fi
+        ;;
+    "set air waybeam video_size"*)
+        set_waybeam_value video0.size "$5"
+        ;;
+    "set air waybeam video_resilience"*)
+        set_waybeam_value video0.resilience "$5"
+        ;;
+    "set air waybeam audio_enabled"*)
+        [ "$5" = "on" ] && set_waybeam_value audio.enabled true || set_waybeam_value audio.enabled false
+        ;;
+
 # ── Air: Telemetry ───────────────────────────────────────────────────────────
 
     "get air telemetry serial")
@@ -600,6 +816,40 @@ case "$@" in
         $SSH 'sed -i "s/^'$4'=.*/'$4'='$5'/" /etc/aalink.conf; kill -SIGHUP $(pidof aalink)'
         ;;
 
+# ── Air: Artosyn ─────────────────────────────────────────────────────────────
+# ar8030-lifecycled's HTTP control API on the air unit ($REMOTE_IP:8899, see
+# lifecycled_url() above). Bandwidth is a lifecycled-persisted setting
+# (survives reconnects); power_mode and channel are live ar8030-linkctl
+# reads/writes -- not lifecycled-persisted, but nothing else contends for
+# power_mode, and channel is a real synchronized retune (BB_SET_CHAN +
+# BB_SET_REMOTE push to the connected peer), not a blind local change.
+
+    "get air artosyn bandwidth")
+        get_lifecycled_bandwidth air
+        emit_values "1\n2\n5\n10\n20\n40"
+        ;;
+    "get air artosyn power_mode")
+        get_lifecycled_power_mode air
+        emit_values "auto\nmanual"
+        ;;
+    "get air artosyn channel")
+        get_lifecycled_channel air
+        chan_num=$(get_lifecycled_chan_num air)
+        if [ -n "$chan_num" ] && [ "$chan_num" -gt 0 ] 2>/dev/null; then
+            emit_values "0 $((chan_num - 1))"
+        fi
+        ;;
+
+    "set air artosyn bandwidth"*)
+        set_lifecycled_bandwidth air "$5"
+        ;;
+    "set air artosyn power_mode"*)
+        set_lifecycled_power_mode air "$5"
+        ;;
+    "set air artosyn channel"*)
+        set_lifecycled_channel air "$5"
+        ;;
+
 # ── GS: WFB-NG ──────────────────────────────────────────────────────────────
 
     "get gs wfbng gs_channel")
@@ -686,6 +936,42 @@ case "$@" in
         fi
         ;;
 
+# ── GS: Artosyn ──────────────────────────────────────────────────────────────
+# ar8030-lifecycled's HTTP control API, GS unit's own copy -- always local
+# (http://127.0.0.1:8899, ar8030-transport-rx's own S98ar8030-transport-rx
+# runs it on this same box), so unlike the air-side "artosyn"/"waybeam" pages
+# this one is NOT gated on drone detection: it's the ground radio's own local
+# state, queryable/settable whether or not the air unit is currently linked.
+
+    "get gs artosyn status")
+        lifecycled_status_summary gs
+        ;;
+    "get gs artosyn bandwidth")
+        get_lifecycled_bandwidth gs
+        emit_values "1\n2\n5\n10\n20\n40"
+        ;;
+    "get gs artosyn power_mode")
+        get_lifecycled_power_mode gs
+        emit_values "auto\nmanual"
+        ;;
+    "get gs artosyn channel")
+        get_lifecycled_channel gs
+        chan_num=$(get_lifecycled_chan_num gs)
+        if [ -n "$chan_num" ] && [ "$chan_num" -gt 0 ] 2>/dev/null; then
+            emit_values "0 $((chan_num - 1))"
+        fi
+        ;;
+
+    "set gs artosyn bandwidth"*)
+        set_lifecycled_bandwidth gs "$5"
+        ;;
+    "set gs artosyn power_mode"*)
+        set_lifecycled_power_mode gs "$5"
+        ;;
+    "set gs artosyn channel"*)
+        set_lifecycled_channel gs "$5"
+        ;;
+
 # ── GS: System ──────────────────────────────────────────────────────────────
 
     "get gs system rx_codec")
@@ -695,12 +981,15 @@ case "$@" in
         ;;
     "get gs system rx_mode")
         . /etc/default/wifibroadcast
-        if [ x$WIFIBROADCAST_ENABLED = x"false" ]; then
-           echo "apfpv"
+        . /etc/default/pixelpilot
+        if [ x$PIXELPILOT_RX_MODE = x"artosyn" ]; then
+            echo "artosyn"
+        elif [ x$WIFIBROADCAST_ENABLED = x"false" ]; then
+            echo "apfpv"
         else
             echo "wfb"
         fi
-        emit_values "wfb\napfpv"
+        emit_values "wfb\napfpv\nartosyn"
         ;;
     "get gs system gs_rendering")
         . /etc/default/msposd
@@ -791,7 +1080,12 @@ case "$@" in
         EXCLUDE_IFACE="wlan0"
         SSID="${6:-OpenIPC}"
         PASSWORD="${7:-12345678}"
+        sed -i "s/^PIXELPILOT_RX_MODE=.*/PIXELPILOT_RX_MODE=\"$5\"/" /etc/default/pixelpilot
         if [ "$5" = "apfpv" ]; then
+            # Leaving artosyn (if it was active): tear the ar8030 RF link back down.
+            [ -f /etc/default/ar8030 ] && sed -i 's/AR8030_ENABLED.*/AR8030_ENABLED=false/' /etc/default/ar8030
+            [ -x /etc/init.d/S97ar8030 ] && /etc/init.d/S97ar8030 stop
+            ifdown ar_net0 2>/dev/null
             /etc/init.d/S98adaptive-link stop
             /etc/init.d/S98wifibroadcast stop
             sed -i 's/WIFIBROADCAST_ENABLED.*/WIFIBROADCAST_ENABLED=false/' /etc/default/wifibroadcast
@@ -821,6 +1115,10 @@ EOF
             INDEX=$((INDEX + 1))
             done
         elif [ "$5" = "wfb" ]; then
+            # Leaving artosyn (if it was active): tear the ar8030 RF link back down.
+            [ -f /etc/default/ar8030 ] && sed -i 's/AR8030_ENABLED.*/AR8030_ENABLED=false/' /etc/default/ar8030
+            [ -x /etc/init.d/S97ar8030 ] && /etc/init.d/S97ar8030 stop
+            ifdown ar_net0 2>/dev/null
             WIFI_IFACES=$(ip -o link show | awk -F': ' '{print $2}' | grep -E '^wlx' | grep -v "^$EXCLUDE_IFACE$")
             INDEX=0
             for IFACE in $WIFI_IFACES; do
@@ -835,6 +1133,26 @@ EOF
             sed -i 's/ADAPTIVE_LINK_ENABLED.*/ADAPTIVE_LINK_ENABLED=true/' /etc/default/adaptive-link
             /etc/init.d/S98adaptive-link start
             /etc/init.d/S98wifibroadcast start
+        elif [ "$5" = "artosyn" ]; then
+            # wfb-ng/adaptive-link off, same as the apfpv branch above.
+            /etc/init.d/S98adaptive-link stop
+            /etc/init.d/S98wifibroadcast stop
+            sed -i 's/WIFIBROADCAST_ENABLED.*/WIFIBROADCAST_ENABLED=false/' /etc/default/wifibroadcast
+            sed -i 's/ADAPTIVE_LINK_ENABLED.*/ADAPTIVE_LINK_ENABLED=false/' /etc/default/adaptive-link
+            # Tear down any apfpv wlx interfaces, same as the wfb branch above.
+            WIFI_IFACES=$(ip -o link show | awk -F': ' '{print $2}' | grep -E '^wlx' | grep -v "^$EXCLUDE_IFACE$")
+            for IFACE in $WIFI_IFACES; do
+                ifdown $IFACE
+                rm -f /etc/network/interfaces.d/$IFACE
+            done
+            # Bring the ar8030 RF link up: AR8030_ENABLED gates S97ar8030's
+            # GPIO/firmware-push sequence (see files/etc/init.d/S97ar8030), and
+            # ar_net0 is the TUN bridge to the air unit's REST API (192.168.100.1,
+            # see files/etc/network/interfaces.d/ar_net0 / the matching air-side
+            # overlay in OpenIPC/builder).
+            [ -f /etc/default/ar8030 ] && sed -i 's/AR8030_ENABLED.*/AR8030_ENABLED=true/' /etc/default/ar8030
+            [ -x /etc/init.d/S97ar8030 ] && /etc/init.d/S97ar8030 restart
+            ifup ar_net0 2>/dev/null
         fi
         ;;
     "set gs system gs_rendering"*)

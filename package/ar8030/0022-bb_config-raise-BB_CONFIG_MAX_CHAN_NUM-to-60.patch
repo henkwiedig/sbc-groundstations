@@ -1,0 +1,53 @@
+com/bb_config.h: raise BB_CONFIG_MAX_CHAN_NUM from 32 to 60
+
+BB_CONFIG_MAX_CHAN_NUM sizes bb_api.h's chan_freq[]/chan_freq_slave[]
+(BB_CFG_CHANNEL's input struct) and freq[]/power[] (BB_GET_CHAN_INFO's
+output struct) -- both host-side RPC payload structs only, not
+anything the chip/firmware itself enforces. This project's own
+ar8030.json config ships 42 channels (baseband.basic.channel.freq),
+already exceeding the old 32-slot cap.
+
+Confirmed live that 32 was never a real chip/firmware limit: channel
+indices above it (33, 40) already retune successfully via
+`ar8030-linkctl channel <index>` -- BB_SET_CHAN_MODE/BB_SET_CHAN/
+BB_SET_REMOTE all ret=0, and the peer actually retunes with it
+(BB_GET_1V1_INFO's tx_chan and the per-user freq= fields in `status`
+both track the new channel). That path doesn't touch
+BB_CONFIG_MAX_CHAN_NUM at all -- bb_set_chan_t is just
+{chan_dir, chan_index}, no array -- which is exactly why it was never
+gated by this constant in the first place.
+
+The actual overflow this constant caused was host-side only: reading
+BB_GET_CHAN_INFO on a >32-channel config overflowed
+bb_get_chan_info_out_t's fixed 32-slot arrays and crashed
+ar8030-linkctl outright (see ar8030-linkctl/main.c's own "Deliberately
+NOT calling BB_GET_CHAN_INFO here" comment). Patch 0020
+(session_ioctl.c's reply-length clamp) already closes the crash for
+any oversized RPC reply generically, confirmed live for a different
+oversized reply (BB_GET_1V1_INFO: "reply datalen=216 exceeds expected
+208, truncating") -- but truncating BB_GET_CHAN_INFO's reply to the
+old 32-slot struct would still silently drop channels 33+ from the
+readout even though they're real and already in active use. Raising
+the struct's own array size removes the need for that truncation to
+ever fire for a channel table this size at all.
+
+60 rather than exactly 42: headroom over the currently-deployed table
+without guessing at a tight bound -- this only costs a few hundred
+bytes of struct size on two host-side RPC payloads, not a wire-format
+or firmware constraint.
+
+Mirrors builder's own identical patch 0029 (same vendor source).
+
+diff --git a/com/bb_config.h b/com/bb_config.h
+index 9eebb4e..a17c3de 100644
+--- a/com/bb_config.h
++++ b/com/bb_config.h
+@@ -220,7 +220,7 @@
+ #define BB_CONFIG_MAC_RX_BUF_SIZE           60000       /**<@note 默认socket的接收buffer大小*/
+ #define BB_CONFIG_MAC_TX_BUF_SIZE           40000       /**<@note 默认socket的发送buffer大小*/
+ #define BB_CONFIG_MAX_USER_MCS_NUM          16          /**<@note 最大用户可设置的MCS等级数量*/
+-#define BB_CONFIG_MAX_CHAN_NUM              32          /**<@note 最大用户可设置的信道数量*/
++#define BB_CONFIG_MAX_CHAN_NUM              60          /**<@note 最大用户可设置的信道数量 (raised from 32: this project's own ar8030.json already configures 42, see 0022-bb_config-raise-BB_CONFIG_MAX_CHAN_NUM-to-60.patch)*/
+ #define BB_CONFIG_MAX_CHAN_HOP_ITEM_NUM     5           /**<@note 最大跳频触发项条目数量*/
+ #define BB_CONFIG_MAX_SLOT_CANDIDATE        5           /**<@note 每个SLOT可设置的最大候选人数量*/
+ #define BB_CONFIG_BR_FREQ_OFFSET            0           /**<@note BR与信道的频偏值 单位：KHz*/
