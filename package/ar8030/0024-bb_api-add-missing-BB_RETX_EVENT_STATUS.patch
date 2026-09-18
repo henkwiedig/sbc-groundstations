@@ -1,0 +1,164 @@
+com/bb_api.h,com/ioctl_tab.c: add BB_GET/SET_RETX_EVENT_STATUS, missing from this SDK build entirely
+
+The AR8030 baseband implements a windowed retransmission controller
+(busy/idle/consecutive-window thresholds deciding when the link is
+declared "in trouble" enough to lean harder on retx/hop/power-adjust)
+that this SDK build's own header/dispatch table never learned about --
+same class of host-side-only gap as 0028's own BB_SET_MCS_ITEM fix
+(BB_REQ_GET jumps 16->100, BB_REQ_SET jumps 36->50, both opcodes sit in
+the gap).
+
+Unlike 0028, the opcode/struct here were first identified by an
+external static-analysis writeup of the AR8030 baseband firmware and
+vendor streamer binary (bb_demo_sky_3v3.img / ar_ldyhs_sky), not this
+project's own decompile -- but this project independently confirmed
+both opcodes and the struct's size via Ghidra:
+
+- BB_GET_RETX_EVENT_STATUS (0x01000014): ar_ldyhs_sky's own
+  fpv_bb_debug_info_dump @ 0x0006a608 calls
+  `bb_ioctl(dev, 0x01000014, 0, &out)` immediately before printing
+  out's first 5 bytes as "win=%d,busy=%d,idle=%d,conti busy=%d,conti
+  idle=%d". Raw bytes at the opcode literal's own address (0x0006a62c)
+  read `14 00 00 01` little-endian = 0x01000014, confirming
+  BB_REQUEST(BB_REQ_GET, 20).
+- BB_SET_RETX_EVENT_STATUS (0x02000026): ar_ldyhs_sky's own
+  fpv_bb_init @ 0x000687e8 does `memset(&cfg, 0, 0x88)` (136 bytes),
+  writes win/busy/idle/conti_busy/conti_idle at byte offsets 0-4 (from
+  vendor defaults 10,{6,4,2,0} or a config struct when set), then
+  `bb_ioctl(dev, 0x02000026, &cfg, 0)`. Raw bytes at that opcode
+  literal's own address (0x00068d5c) read `26 00 00 02` little-endian
+  = 0x02000026, confirming BB_REQUEST(BB_REQ_SET, 38). No other xref
+  to this opcode was found in ar_ldyhs_sky -- it is only ever called
+  once, at init, so whether a live SET after boot takes effect is
+  still unverified on real hardware.
+
+Only the first 5 of the struct's 136 bytes are recovered from either
+call site (fpv_bb_debug_info_dump's own destination buffer for the GET
+call is itself only 8 bytes, confirming the stock app never reads
+further either); the remaining 131 bytes are kept as `reserved`
+(bb_retx_cfg_t) rather than guessed at, same reasoning as 0030's own
+bb_quality_t fix.
+
+com/ioctl_tab.c needs a matching cmdtab[] entry for each new opcode
+(0028's own precedent) since the client library's own
+get_bb_ioctl_cmdiptlen()/get_bb_ioctl_cmdoutlen() reject any request
+missing from that table before it ever reaches the daemon. No change
+to com/ioctl_tab.c's daemon-side counterpart is needed: daemon/
+normal_node.c's own client<->chip forwarding is a generic
+reqid+payload passthrough with no ioctl_tab.c involvement, so the
+unmodified stock RTOS firmware already understands both requests.
+
+Mirrors sbc-groundstations' own identical patch.
+
+--- a/com/bb_api.h
++++ b/com/bb_api.h
+@@ -109,6 +109,27 @@
+ #define BB_GET_RF                           BB_REQUEST(BB_REQ_GET, 15)  /**<@attention 获取RF状态*/
+ #define BB_GET_SOCK_INFO                    BB_REQUEST(BB_REQ_GET, 16)  /**<@attention 获取系统socket的信息*/
+ 
++/**<@note Read the windowed retransmission controller's own event/status
++ * record: how aggressively the baseband declares this link "in trouble"
++ * and re-sends. NOT present in this SDK build's own header/dispatch
++ * table (order 20 -- the BB_REQ_GET numbering here jumps 16 -> 100 with
++ * nothing between), same class of host-side-only gap as BB_SET_MCS_ITEM
++ * above. Opcode independently confirmed by this project via Ghidra
++ * decompile of ar_ldyhs_sky's own fpv_bb_debug_info_dump @ 0x0006a608:
++ * `bb_ioctl(dev, 0x01000014, 0, &out)` immediately precedes printing
++ * out's first 5 bytes as "win=%d,busy=%d,idle=%d,conti busy=%d,conti
++ * idle=%d" (confirmed raw bytes at the opcode literal's own address,
++ * 0x0006a62c: 14 00 00 01 little-endian = 0x01000014) -- matches an
++ * external static-analysis writeup of the same firmware/binary that
++ * this was first sourced from. Notably, fpv_bb_debug_info_dump's own
++ * destination buffer for this call is only 8 bytes, confirming (not
++ * just asserting) that the stock app itself never reads past the first
++ * 5-6 bytes of the real reply either. See bb_retx_cfg_t's own comment
++ * for exactly what is and isn't verified (struct size and opcode: yes,
++ * independently confirmed twice over; live-SET-after-boot behavior and
++ * bytes 5-135's meaning: still no, needs real hardware). */
++#define BB_GET_RETX_EVENT_STATUS             BB_REQUEST(BB_REQ_GET, 20)
++
+ #define BB_GET_REG                          BB_REQUEST(BB_REQ_GET, 100) /**<@note 基带寄存器读取命令字，本类型用于调试诊断*/
+ #define BB_GET_CFG                          BB_REQUEST(BB_REQ_GET, 101) /**<@note 基带配置文件读取命令字*/
+ #define BB_GET_DBG_MODE                     BB_REQUEST(BB_REQ_GET, 102) /**<@note 获取SDK debug模式状态*/
+@@ -197,6 +218,56 @@
+     uint16_t dw_keep_time;                                       /**<@note milliseconds*/
+ } bb_set_mcs_item_t;
+ 
++/**<@note Set the windowed retransmission controller's own tuning
++ * parameters -- NOT the same mechanism as BB_SET_RETX_COUNT below (that
++ * one is a per-slot max-retries cap, bb_user_para_t.retx_count; this one
++ * is the busy/idle/consecutive-window thresholds that decide WHEN the
++ * baseband declares the link in enough trouble to lean on retx/hop/
++ * power-adjust harder -- distinct layers). NOT present in this SDK
++ * build's own header/dispatch table (order 38 -- jumps 36 -> 50 with
++ * nothing between), same host-side gap class as BB_SET_MCS_ITEM/
++ * BB_GET_RETX_EVENT_STATUS above. Opcode and struct size independently
++ * confirmed by this project via Ghidra decompile of ar_ldyhs_sky's own
++ * fpv_bb_init @ 0x000687e8: `memset(&cfg, 0, 0x88)` (136 bytes) then
++ * `cfg.win/busy/idle/conti_busy/conti_idle` written at byte offsets 0-4
++ * from vendor defaults (10, {6,4,2,0}) or gctx+0xc8/0xcc/0xd0/0xd4/0xd8
++ * when configured, then `bb_ioctl(dev, 0x02000026, &cfg, 0)` (confirmed
++ * raw bytes at the opcode literal's own address, 0x00068d5c: 26 00 00 02
++ * little-endian = 0x02000026). UNVERIFIED on real hardware whether a
++ * live SET after boot even takes effect -- the vendor app only ever
++ * calls this once, at its own init (confirmed by decompile: no other
++ * xref to this opcode found in ar_ldyhs_sky); see bb_retx_cfg_t's own
++ * comment before using this for anything beyond a read-back-after-write
++ * sanity check. */
++#define BB_SET_RETX_EVENT_STATUS             BB_REQUEST(BB_REQ_SET, 38)
++
++/**Define the windowed retransmission controller's shared config/status
++ * record (used by both BB_GET_RETX_EVENT_STATUS and
++ * BB_SET_RETX_EVENT_STATUS -- both opcodes independently confirmed by
++ * this project via Ghidra decompile, see their own comments above, to
++ * carry a matching 136-byte struct). Only the first 5 bytes are
++ * recovered (from the vendor app's own
++ * "win=%d,busy=%d,idle=%d,conti busy=%d,conti idle=%d" log format
++ * string, its GET-path print in fpv_bb_debug_info_dump, and its SET-path
++ * write in fpv_bb_init); the remaining 131 bytes are real record space
++ * of unknown layout, kept as `reserved` rather than guessed at -- same
++ * reasoning as this project's own bb_quality_t size fix (get the SIZE
++ * right first, decode fields once confirmed on hardware). Vendor
++ * defaults when unconfigured: win=10, {busy,idle,conti_busy,conti_idle}
++ * ={6,4,2,0}. UNVERIFIED: exact units of win/busy/idle/conti_busy/
++ * conti_idle (frames vs. windows), and whether a live SET after boot
++ * actually changes the running controller's behavior -- treat any
++ * control loop built on this as gated on confirming both first
++ * (ar8030-transport's own baseband-firmware-analysis Phase B). */
++typedef struct {
++    uint8_t win;         /**<@note retransmission window*/
++    uint8_t busy;         /**<@note windowed busy threshold*/
++    uint8_t idle;         /**<@note windowed idle threshold*/
++    uint8_t conti_busy;   /**<@note consecutive-busy threshold (name-inferred, not doc-confirmed)*/
++    uint8_t conti_idle;   /**<@note consecutive-idle threshold (name-inferred, not doc-confirmed)*/
++    uint8_t reserved[131]; /**<@note real record space, unknown layout -- see this struct's own comment above*/
++} bb_retx_cfg_t;
++
+ #define BB_SET_RETX_COUNT                   BB_REQUEST(BB_REQ_SET, 50)  /**<@note 设置重传次数*/
+ 
+ // 以下为调试诊断类命令字
+
+--- a/com/ioctl_tab.c
++++ b/com/ioctl_tab.c
+@@ -45,6 +45,10 @@
+     { BB_GET_1V1_INFO,                  sizeof(bb_get_1v1_info_in_t),          sizeof(bb_get_1v1_info_out_t)         },
+     { BB_GET_RF,                        0,                                     sizeof(bb_get_rf_out_t)               },
+     { BB_GET_SOCK_INFO,                 sizeof(bb_get_sock_info_in_t),         sizeof(bb_get_sock_info_out_t)        },
++    /* Not in this SDK build originally -- see BB_GET_RETX_EVENT_STATUS's
++     * own doc comment in bb_api.h for the Ghidra confirmation (opcode,
++     * NULL in-pointer, 136-byte out) this entry is based on. */
++    { BB_GET_RETX_EVENT_STATUS,         0,                                     sizeof(bb_retx_cfg_t)                 },
+     { BB_GET_POWER_OFFSET_SAVE,         sizeof(bb_get_power_offset_in_t),      sizeof(bb_get_power_offset_out_t)     },
+     { BB_GET_FACTORY_POWER_OFFSET_SAVE, sizeof(bb_get_power_offset_in_t),      sizeof(bb_get_power_offset_out_t)     },
+     { BB_GET_POWER_SAVE_MODE,           0,                                     sizeof(bb_get_power_save_mode_t)      },
+@@ -105,6 +109,10 @@
+     { BB_SET_POWER_RANGE,       sizeof(bb_set_power_range_in_t),       0                                     },
+     { BB_SET_LOCAL_MAC,         sizeof(bb_set_local_mac_t),            0,                                    },
+     { BB_SET_MCS_ITEM,          sizeof(bb_set_mcs_item_t),             0                                     },
++    /* Not in this SDK build originally -- see BB_SET_RETX_EVENT_STATUS's
++     * own doc comment in bb_api.h for the Ghidra confirmation (opcode,
++     * 136-byte in, NULL out-pointer) this entry is based on. */
++    { BB_SET_RETX_EVENT_STATUS, sizeof(bb_retx_cfg_t),                 0                                     },
+ 
+     //remote ioctl
+     { BB_REMOTE_IOCTL_REQ,      sizeof(bb_remote_ioctl_in_t),          sizeof(bb_remote_ioctl_out_t)         },
