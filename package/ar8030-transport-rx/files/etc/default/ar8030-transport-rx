@@ -8,3 +8,10 @@
 # list. Example overriding the bb_socket port and PixelPilot target:
 #   AR8030_TRANSPORT_RX_ARGS="-o 2 -H 127.0.0.1 -p 5600"
 AR8030_TRANSPORT_RX_ARGS=""
+
+# Extra flags passed straight to ar8030-lifecycled -- see its --help
+# output (ar8030-transport's README "HTTP control API" / lifecycled/
+# main.c usage()) for the full list. Empty by default. Example enabling
+# its HTTP control API on this ground unit:
+#   AR8030_LIFECYCLED_ARGS="--http-port 8899"
+AR8030_LIFECYCLED_ARGS="--http-port 8899"

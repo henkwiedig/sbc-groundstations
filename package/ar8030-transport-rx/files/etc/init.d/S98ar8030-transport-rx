@@ -22,6 +22,12 @@
 # to it -- enable_rf() stays exactly where it is, not folded into
 # ar8030-lifecycled's own reset backends. No --bind-gpio: this board has
 # no physical bind button.
+#
+# $AR8030_LIFECYCLED_ARGS (see /etc/default/ar8030-transport-rx) passes
+# through extra ar8030-lifecycled flags -- e.g. --http-port to enable its
+# HTTP control API (see ar8030-transport's README "HTTP control API")
+# -- matching S65ar8030-transport-tx's own identical passthrough on the
+# air side.
 
 test -r /etc/default/ar8030-transport-rx && . /etc/default/ar8030-transport-rx
 # BB_CFG (the baseband cfg lifecycled persists pairing/tuning against) is
@@ -52,7 +58,8 @@ start_lifecycled() {
 		--reset-method none \
 		--hook-dir /etc/ar8030/hooks.d \
 		--cfg-path "/lib/firmware/$BB_CFG" \
-		--default-bandwidth 20
+		--default-bandwidth 20 \
+		$AR8030_LIFECYCLED_ARGS
 }
 
 start() {
