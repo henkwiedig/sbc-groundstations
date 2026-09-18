@@ -14,6 +14,14 @@ PIXELPILOT_DVR_RESOLUTION="1080p"
 PIXELPILOT_DVR_MODE="reencode"
 PIXELPILOT_DVR_MAX_SIZE="4000"
 
+# Persisted "get gs system rx_mode" state. wfb vs apfpv is inferred live from
+# WIFIBROADCAST_ENABLED (self-healing if that file is edited by hand), but
+# there's no equivalent live signal for artosyn -- ar8030's own AR8030_ENABLED
+# defaults to true on boards that ship it, independent of which RX mode was
+# last selected -- so artosyn needs this explicit flag instead. Written by
+# gsmenu.sh's "set gs system rx_mode".
+PIXELPILOT_RX_MODE="wfb"
+
 
 # Opt-in Opus audio playback (audio muxed into the RTP stream by the air unit,
 # split by payload type). Leave PIXELPILOT_AUDIO empty to keep audio off.
