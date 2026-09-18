@@ -1,0 +1,115 @@
+com/bb_api.h: add BB_EVENT_UNKNOWN_12/BB_EVENT_RETX_TOO_MANY, widen BB_EVENT_MAX
+
+The AR8030 baseband pushes a retx-pressure event to the host that the
+vendor streamer binary (ar_ldyhs_sky) subscribes to and uses to trigger
+a bitrate cut (fpv_video_buffer_cache_monitor() polls
+fpv_bb_is_send_retx_too_many(), which returns true off this event, and
+calls fpv_video_set_venc_bitrate()) -- but the event's own id, 13, is
+one past bb_event_e's own BB_EVENT_MAX (12) and is not enumerated in
+this SDK build's own header at all. A neighboring id, 12, is
+independently confirmed to exist too (also subscribed by fpv_bb_init,
+its own callback posts a different local event, purpose not traced).
+
+Recovered by tracing backwards from fpv_bb_is_send_retx_too_many()
+(Ghidra decompile of ar_ldyhs_sky) rather than forwards from a log
+string, since this function itself calls no ioctl at all -- it only
+reads two process-local flags. The flag setter is caseD_64's own
+`case 0x16` in a local event-FIFO dispatch loop (com_event_fifo_read/
+write, an internal IPC detail of the vendor binary, not part of this
+SDK), which is itself reached only via a callback registered against
+BB_EVENT id 13 in fpv_bb_init's own BB_SET_EVENT_SUBSCRIBE calls --
+confirmed by resolving that callback's own relocation-encoded address
+(0x67b7c) and disassembling it: it loads r1=0x16 (the local event type
+caseD_64 branches on) before the call that posts it. The neighboring
+callback for id 12 was independently found to post a different local
+event type (0x13), cross-confirming the address resolution method
+rather than resting on a single data point.
+
+Added as real bb_event_e enumerators, not a same-value #define past
+the enum (an earlier draft of this patch tried that, to avoid touching
+BB_EVENT_MAX's own value) -- because BB_EVENT_MAX has to actually widen
+for either id to work at all: confirmed live on real hardware that the
+already-deployed ar8030d binary hard-rejects any event id >=
+BB_EVENT_MAX at the RPC layer before the request ever reaches the
+firmware (daemon/callback_node.c's rpc_cb_read(): `if ((pack.reqid &
+0xffff) >= BB_EVENT_MAX) { pack.sta = -2; ... }`) -- confirmed via the
+daemon's own per-connection debug log showing this exact code path
+firing for a live subscribe attempt on id 13. No fixed-size array
+anywhere in this SDK/daemon tree is sized by BB_EVENT_MAX (checked
+across the whole tree), so widening it from 12 to 14 is safe.
+
+This means the fix requires rebuilding ar8030d itself against this
+header, not just the client library -- BB_SET_EVENT_SUBSCRIBE's own
+client-side plumbing (app/ar8030/session_callback.c) has no bounds
+check of its own and already forwards any event id to the daemon
+unconditionally; it's the daemon's own compiled-in BB_EVENT_MAX that
+gates acceptance.
+
+See ar8030-transport's own commit adding this event's subscription to
+tx/bitrate_ctl.c for how it's actually used -- treated as a
+conservative "react to the firing, don't parse `arg`" signal, since
+the event's own payload layout beyond what the vendor app's own local
+re-derivation shows is not independently confirmed.
+
+Mirrors sbc-groundstations' own identical patch.
+
+diff --git a/com/bb_api.h b/com/bb_api.h
+--- a/com/bb_api.h
++++ b/com/bb_api.h
+@@ -501,6 +501,56 @@
+     BB_EVENT_MCS_CHANGE_END,                                    /**<@note MCS等级发生变化结束事件*/
+     BB_EVENT_PRJ_DISPATCH2_UART,                                /**<@note 项目自定义事件分发2(用于UART RPC)*/
+     BB_EVENT_PRJ_DISPATCH2_SDIO,                                /**<@note 项目自定义事件分发2(用于SDIO RPC)*/
++    /**<@note id 12 -- NOT enumerated by this SDK build at all before this
++     * fix. Independently confirmed via Ghidra decompile (ar_ldyhs_sky's
++     * own fpv_bb_init subscribes it) to exist and to be distinct from id
++     * 13 below (its own callback posts a different local event, type
++     * 0x13, to this app's own internal com_event_fifo -- purpose not
++     * further traced). Named generically since its actual meaning is
++     * unconfirmed; do not assume it means anything more specific than
++     * "the vendor app also subscribes to this". */
++    BB_EVENT_UNKNOWN_12,
++    /**<@note Fires when the baseband's own retx pressure crosses a
++     * threshold internal to the firmware. Independently confirmed by
++     * this project via Ghidra decompile, tracing all the way from the
++     * vendor streamer's own fpv_bb_is_send_retx_too_many() (the function
++     * fpv_video_buffer_cache_monitor() polls to decide whether to cut
++     * fpv_video_set_venc_bitrate()) back to its actual trigger:
++     * fpv_bb_init subscribes id 13 via BB_SET_EVENT_SUBSCRIBE with a
++     * callback that, on firing, posts a local event (type 0x16, via
++     * this app's own internal com_event_fifo_write -- a local IPC
++     * detail of the vendor binary, not part of this SDK) which in turn
++     * sets the one-shot flag fpv_bb_is_send_retx_too_many() reads. That
++     * confirms fpv_bb_is_send_retx_too_many() itself calls no ioctl at
++     * all -- it is purely driven by this event, not by
++     * BB_GET_RETX_EVENT_STATUS (that opcode's own struct carries no
++     * usable telemetry at all, see its own doc comment -- an unrelated
++     * dead end independently discovered by this project). arg's layout
++     * for this event is NOT independently confirmed (the vendor app's
++     * own re-derived local payload, after passing through its own
++     * com_event_fifo indirection, has a gating byte at offset 6 --
++     * `payload[6] == 1` -- with a separate value at offset 5 always
++     * latched elsewhere regardless; whether bb_event_callback's own
++     * `arg` for this event matches that same layout directly, or needs
++     * different offsets, is unverified). Treat any firing as a
++     * conservative "radio is actively under repair pressure" hint
++     * rather than parsing `arg` -- see ar8030-transport's own
++     * tx/bitrate_ctl.c for how this is used (react to the firing
++     * itself, own rate limit, do not dereference `arg`).
++     *
++     * Both id 12 and this one were confirmed, on real hardware, to be
++     * rejected outright by the currently-deployed ar8030d binary: its
++     * own daemon/callback_node.c hard-rejects any event id >=
++     * BB_EVENT_MAX at the RPC layer (`pack.sta = -2`) before the
++     * request ever reaches the firmware. BB_EVENT_MAX did not cover
++     * either id until this fix added them as real enum entries (rather
++     * than a same-value #define past the enum, which this fix replaces)
++     * so that BB_EVENT_MAX itself widens to 14 and the daemon's own
++     * check, compiled against this header, passes both ids once
++     * ar8030d itself is rebuilt against it -- confirmed no fixed-size
++     * array anywhere in this SDK/daemon tree is sized by BB_EVENT_MAX,
++     * so widening it is safe. */
++    BB_EVENT_RETX_TOO_MANY,
+     BB_EVENT_MAX
+ } bb_event_e;
+ 
