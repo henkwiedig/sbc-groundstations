@@ -8,7 +8,7 @@
             "x": -270,
             "y": 0,
             "width": 270,
-            "height": 165,
+            "height": 225,
             "color": {
                 "r": 0.0,
                 "g": 0.0,
@@ -170,11 +170,24 @@
             ]
         },
         {
+            "name": "Link distance",
+            "type": "IconTplTextWidget",
+            "__comment": "ar8030.distance_m from lifecycled's /api/v1/link (chip ranging, metres; stock shows it as %1m); Artosyn only",
+            "x": -250,
+            "y": 185,
+            "icon_path": "distance.png",
+            "template": "%dm",
+            "hide_when_undefined": true,
+            "facts": [
+                {"name": "ar8030.distance_m"}
+            ]
+        },
+        {
             "name": "Goggle supply voltage",
             "type": "IconTplTextWidget",
             "__comment": "os_sensors power entry `name: vrx` in /etc/pixelpilot.yaml (SARADC ch5, stock's G-Volt)",
             "x": -250,
-            "y": 125,
+            "y": 155,
             "icon_path": "head_mounted_device.png",
             "template": "%.2fV",
             "facts": [
@@ -185,10 +198,10 @@
             "name": "WFBNG RF temperature adapter 1",
             "type": "---IconTplTextWidget",
             "x": -250,
-            "y": 185,
+            "y": 245,
             "icon_path": "device_thermostat.png",
             "template": "RF %u°C / %u°C",
-            "___comment": "BoxWidget height above needs to be 195",
+            "___comment": "BoxWidget height above needs to be 255",
             "facts": [
                 {"name": "wfbcli.rf_temperature", "tags": {"ant_id": "0"}},
                 {"name": "wfbcli.rf_temperature", "tags": {"ant_id": "256"}}
@@ -198,10 +211,10 @@
             "name": "APFPV WiFi RF temperature adapter 1",
             "type": "---IconTplTextWidget",
             "x": -250,
-            "y": 185,
+            "y": 245,
             "icon_path": "device_thermostat.png",
             "template": "RF %i°C / %i°C",
-            "___comment": "BoxWidget height above needs to be 195",
+            "___comment": "BoxWidget height above needs to be 255",
             "facts": [
                 {"name": "os_mon.wifi.temperature", "tags": {"adapter": "0", "rf_path": "0"}},
                 {"name": "os_mon.wifi.temperature", "tags": {"adapter": "0", "rf_path": "1"}}
@@ -211,10 +224,10 @@
             "name": "APFPV WiFi RF temperature adapter 2",
             "type": "---IconTplTextWidget",
             "x": -250,
-            "y": 215,
+            "y": 275,
             "icon_path": "device_thermostat.png",
             "template": "RF %i°C / %i°C",
-            "___comment": "BoxWidget height above needs to be 225",
+            "___comment": "BoxWidget height above needs to be 285",
             "facts": [
                 {"name": "os_mon.wifi.temperature", "tags": {"adapter": "1", "rf_path": "0"}},
                 {"name": "os_mon.wifi.temperature", "tags": {"adapter": "1", "rf_path": "1"}}
@@ -224,10 +237,10 @@
             "name": "APFPV WiFi RF temperature adapter 3",
             "type": "---IconTplTextWidget",
             "x": -250,
-            "y": 245,
+            "y": 305,
             "icon_path": "device_thermostat.png",
             "template": "RF %i°C / %i°C",
-            "___comment": "BoxWidget height above needs to be 255",
+            "___comment": "BoxWidget height above needs to be 315",
             "facts": [
                 {"name": "os_mon.wifi.temperature", "tags": {"adapter": "2", "rf_path": "0"}},
                 {"name": "os_mon.wifi.temperature", "tags": {"adapter": "2", "rf_path": "1"}}
@@ -276,10 +289,24 @@
             ]
         },
         {
+            "type": "IconTplTextWidget",
+            "name": "Artosyn channel",
+            "__comment": "Video channel: the air side's TX channel index and frequency (ar8030.tx.*{side=air}); Artosyn only",
+            "x": -250,
+            "y": 65,
+            "icon_path": "airwave.png",
+            "template": "CH%d %dMHz",
+            "hide_when_undefined": true,
+            "facts": [
+                {"name": "ar8030.tx.chan", "tags": {"side": "air"}},
+                {"name": "ar8030.tx.freq_mhz", "tags": {"side": "air"}}
+            ]
+        },
+        {
             "name": "Video FPS and resolution",
             "type": "VideoWidget",
             "x": -250,
-            "y": 65,
+            "y": 95,
             "icon_path": "framerate.png",
             "template": "%u fps | %ux%u",
             "per_second_window_s": 2,
@@ -301,7 +328,7 @@
             "name": "Video link throughput",
             "type": "VideoBitrateWidget",
             "x": -250,
-            "y": 95,
+            "y": 125,
             "icon_path": "network.png",
             "template": "%f Mbps",
             "per_second_window_s": 2,
@@ -317,7 +344,7 @@
             "name": "Video codec",
             "type": "IconSelectorWidget",
             "x": -80,
-            "y": 65,
+            "y": 95,
             "facts": [
                 { "name": "video.codec_id" }
             ],
@@ -330,7 +357,7 @@
             "name": "DVR status",
             "type": "DvrStatusWidget",
             "x": -250,
-            "y": 155,
+            "y": 215,
             "icon_path": "sdcard-white.png",
             "text": "Recording",
             "facts": [
