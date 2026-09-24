@@ -1942,15 +1942,21 @@
 		phandle = <0x68>;
 	};
 
+	/* Panfrost binding (stock had the vendor kbase one: clk_mali/clk_gpu,
+	 * GPU/MMU/JOB and rockchip opp-supported-hw OPPs). Our kernel's kbase is
+	 * CSF-only and can't drive the G52; Panfrost rejects OPPs that carry
+	 * opp-supported-hw, so without these changes there is no GPU (no EGL/GBM,
+	 * no PixelPilot OSD GL / live colortrans). Matches the BSP's panfrost
+	 * gpu node in rk356x.dtsi. */
 	gpu@fde60000 {
 		compatible = "arm,mali-bifrost";
 		reg = <0x00 0xfde60000 0x00 0x4000>;
 		interrupts = <0x00 0x27 0x04 0x00 0x29 0x04 0x00 0x28 0x04>;
-		interrupt-names = "GPU\0MMU\0JOB";
+		interrupt-names = "gpu\0mmu\0job";
 		upthreshold = <0x28>;
 		downdifferential = <0x0a>;
 		clocks = <0x02 0x01 0x22 0x1b>;
-		clock-names = "clk_mali\0clk_gpu";
+		clock-names = "core\0bus";
 		power-domains = <0x24 0x07>;
 		#cooling-cells = <0x02>;
 		operating-points-v2 = <0x6e>;
@@ -1985,25 +1991,21 @@
 		phandle = <0x6e>;
 
 		opp-200000000 {
-			opp-supported-hw = <0xfb 0xffff>;
 			opp-hz = <0x00 0xbebc200>;
 			opp-microvolt = <0xcf850 0xcf850 0xf4240>;
 		};
 
 		opp-300000000 {
-			opp-supported-hw = <0xfb 0xffff>;
 			opp-hz = <0x00 0x11e1a300>;
 			opp-microvolt = <0xcf850 0xcf850 0xf4240>;
 		};
 
 		opp-400000000 {
-			opp-supported-hw = <0xfb 0xffff>;
 			opp-hz = <0x00 0x17d78400>;
 			opp-microvolt = <0xcf850 0xcf850 0xf4240>;
 		};
 
 		opp-600000000 {
-			opp-supported-hw = <0xfb 0xffff>;
 			opp-hz = <0x00 0x23c34600>;
 			opp-microvolt = <0xdbba0 0xdbba0 0xf4240>;
 			opp-microvolt-L0 = <0xdbba0 0xdbba0 0xf4240>;
@@ -2013,7 +2015,6 @@
 		};
 
 		opp-700000000 {
-			opp-supported-hw = <0xfb 0xffff>;
 			opp-hz = <0x00 0x29b92700>;
 			opp-microvolt = <0xe7ef0 0xe7ef0 0xf4240>;
 			opp-microvolt-L0 = <0xe7ef0 0xe7ef0 0xf4240>;
@@ -2023,25 +2024,12 @@
 		};
 
 		opp-800000000 {
-			opp-supported-hw = <0xf9 0xffff>;
 			opp-hz = <0x00 0x2faf0800>;
 			opp-microvolt = <0xf4240 0xf4240 0xf4240>;
 			opp-microvolt-L0 = <0xf4240 0xf4240 0xf4240>;
 			opp-microvolt-L1 = <0xee098 0xee098 0xf4240>;
 			opp-microvolt-L2 = <0xe7ef0 0xe7ef0 0xf4240>;
 			opp-microvolt-L3 = <0xe1d48 0xe1d48 0xf4240>;
-		};
-
-		opp-j-600000000 {
-			opp-supported-hw = <0x04 0xffff>;
-			opp-hz = <0x00 0x23c34600>;
-			opp-microvolt = <0xdbba0 0xdbba0 0xf4240>;
-		};
-
-		opp-m-800000000 {
-			opp-supported-hw = <0x02 0xffff>;
-			opp-hz = <0x00 0x2faf0800>;
-			opp-microvolt = <0xe7ef0 0xe7ef0 0xf4240>;
 		};
 	};
 
