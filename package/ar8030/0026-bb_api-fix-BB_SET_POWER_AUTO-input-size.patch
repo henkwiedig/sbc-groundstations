@@ -1,0 +1,59 @@
+com/bb_api.h: fix BB_SET_POWER_AUTO's input struct to the real 3 bytes
+
+bb_set_pwr_auto_in_t was a typedef of bb_get_pwr_auto_out_t -- a single
+pwr_auto byte -- so ioctl_tab.c sent BB_SET_POWER_AUTO with a 1-byte
+payload. The chip takes 3: stock ar_ldy_gnd's own statically linked
+client library has { BB_SET_POWER_AUTO, 3, 0 } in its ioctl table, and
+both stock streamers fill all 3 bytes (Ghidra):
+
+  ar_ldy_gnd   do_bb_set_auto_power(mode, min, max) -> {mode, max, min}
+               mode 0 {0, min+3, min}  power adaptation off
+               mode 1 {1, max, min}    adaptation on within [min, max]
+               mode 2 {2, dbm, dbm}    "SET disconnect power"
+  ar_ldyhs_sky fpv_bb_set_local_power() -> {2, dbm, dbm} before every
+               BB_SET_POWER
+
+With the old size the library silently dropped max/min, so nothing
+built on this SDK could set the bounds or the disconnected power at all
+-- confirmed on hardware that BB_SET_POWER alone moves the value
+BB_GET_CUR_POWER reports without changing what the peer receives.
+Also defines BB_HAVE_PWR_AUTO_BOUNDS so host code can tell the fixed
+struct apart at compile time. Needed by ar8030-lifecycled's persisted output-power setting. Only the
+host-side struct size changes; ar8030d forwards the payload as-is.
+
+diff --git a/com/bb_api.h b/com/bb_api.h
+--- a/com/bb_api.h
++++ b/com/bb_api.h
+@@ -1604,7 +1604,31 @@
+ typedef bb_get_cur_pwr_out_t bb_set_pwr_in_t;                   /**<@note 复用获取当前功率输出结构, power取值范围[0-31dbm]*/
+ 
+ /**定义设置命令BB_SET_POWER_AUTO的输入参数结构*/
+-typedef bb_get_pwr_auto_out_t bb_set_pwr_auto_in_t;             /**<@note 复用获取功率自适应使能输出结构*/
++/* Fixed on real hardware (2026-09): the chip takes 3 bytes here, not the
++ * single pwr_auto byte this used to be a typedef of -- the vendor's own
++ * statically linked client library (stock ar_ldy_gnd's ioctl table) sends
++ * 3, and both stock streamers fill all 3. With the old 1-byte size this
++ * library silently dropped max/min, so the chip saw garbage/zero bounds.
++ * pwr_auto = mode (decoded from ar_ldy_gnd / ar_ldyhs_sky):
++ *   BB_PWR_AUTO_OFF (0)        power adaptation off
++ *   BB_PWR_AUTO_ON (1)         adaptation on, bounded by [min, max] dBm
++ *   BB_PWR_AUTO_DISCONNECT (2) max/min = transmit power while no link is
++ *                              up (stock always passes max == min) */
++typedef enum {
++    BB_PWR_AUTO_OFF = 0,
++    BB_PWR_AUTO_ON,
++    BB_PWR_AUTO_DISCONNECT,
++} bb_pwr_auto_mode_e;
++
++typedef struct {
++    uint8_t         pwr_auto;                                   /**<@note mode, type: bb_pwr_auto_mode_e (kept this name: SDK apps set .pwr_auto)*/
++    uint8_t         max;                                        /**<@note upper bound, dBm*/
++    uint8_t         min;                                        /**<@note lower bound, dBm*/
++} bb_set_pwr_auto_in_t;
++
++/* Lets host code tell this fixed struct apart from the old 1-byte one at
++ * compile time (ar8030-lifecycled only enables power control with it). */
++#define BB_HAVE_PWR_AUTO_BOUNDS 1
+ 
+ /**定义设置命令BB_SET_FREQ的输入参数结构*/
+ typedef struct {
