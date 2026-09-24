@@ -1,0 +1,8 @@
+# gs-fan: goggle fan control (see /usr/bin/gs-fan). Set from the menu under
+# System -> Fan, or by hand; re-read every FAN_POLL_S seconds.
+FAN_MODE=auto
+FAN_PCT=80
+FAN_MIN_PCT=30
+FAN_TEMP_LOW=45
+FAN_TEMP_HIGH=70
+FAN_POLL_S=2

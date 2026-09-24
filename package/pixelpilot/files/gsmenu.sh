@@ -1184,6 +1184,16 @@ case "$@" in
         echo $PIXELPILOT_VIDEO_SCALE
         emit_values "0.5 1.0"
         ;;
+    # Fan control -- only on boards that ship /usr/bin/gs-fan (VRX Pro);
+    # PixelPilot hides these rows elsewhere.
+    "get gs system fan_mode")
+        gs-fan get mode
+        emit_values "auto\nmanual"
+        ;;
+    "get gs system fan_speed")
+        gs-fan get pct
+        emit_values "0 100"
+        ;;
     "get gs system gs_live_colortrans")
         . /etc/default/pixelpilot
         [ x$PIXELPILOT_LIVE_COLORTRANS = x"" ] && echo 0 || echo 1
@@ -1345,6 +1355,12 @@ EOF
         ;;
     "set gs system video_scale"*)
         sed -i "s/^PIXELPILOT_VIDEO_SCALE=.*/PIXELPILOT_VIDEO_SCALE=$5/" /etc/default/pixelpilot
+        ;;
+    "set gs system fan_mode"*)
+        gs-fan set mode "$5"
+        ;;
+    "set gs system fan_speed"*)
+        gs-fan set pct "$5"
         ;;
     "set gs system gs_live_colortrans"*)
         if [ "$5" = "on" ]

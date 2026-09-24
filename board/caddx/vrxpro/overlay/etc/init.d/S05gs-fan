@@ -1,0 +1,27 @@
+#!/bin/sh
+# Goggle fan control loop (/usr/bin/gs-fan). Without it the fan PWM is never
+# configured and the fan runs flat out.
+
+PIDFILE=/var/run/gs-fan.pid
+
+case "$1" in
+start)
+	printf "Starting gs-fan: "
+	start-stop-daemon -S -b -q -m -p "$PIDFILE" -x /usr/bin/gs-fan -- daemon
+	[ $? = 0 ] && echo "OK" || echo "FAIL"
+	;;
+stop)
+	printf "Stopping gs-fan: "
+	start-stop-daemon -K -q -p "$PIDFILE"
+	rm -f "$PIDFILE"
+	echo "OK"
+	;;
+restart)
+	"$0" stop
+	"$0" start
+	;;
+*)
+	echo "Usage: $0 {start|stop|restart}"
+	exit 1
+	;;
+esac

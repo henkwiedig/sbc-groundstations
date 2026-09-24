@@ -780,11 +780,24 @@
 			};
 		};
 
+		/* trips added: stock's zone had none, and this kernel refuses a
+		 * zone without trips ("Failed to find 'trips' node") -- which
+		 * fails the whole rockchip-thermal probe, soc-thermal included:
+		 * no temperature readings, no throttling, no gs-fan auto mode.
+		 * Same critical trip as the BSP's rk356x.dtsi gpu-thermal. */
 		gpu-thermal {
 			polling-delay-passive = <0x14>;
 			polling-delay = <0x3e8>;
 			thermal-sensors = <0x1f 0x01>;
 			phandle = <0x14b>;
+
+			trips {
+				gpu-crit {
+					temperature = <0x1c138>;
+					hysteresis = <0x7d0>;
+					type = "critical";
+				};
+			};
 		};
 	};
 
