@@ -21,6 +21,17 @@ gsmenu:
   #     - label: Custom Action 1
   #       action: sleep 5
 # enables collection of `os_mon.*` OSD facts
+# VRX Pro: the goggles' own supply voltage as os_mon.power.voltage (mV,
+# sensor=vrx) -- SARADC channel 5 through a x16 divider minus 300 mV, the
+# same reading and constants stock ar_ldy_gnd shows as "G-Volt".
+os_sensors:
+  power:
+    - type: iio
+      path: /sys/bus/iio/devices/iio:device0/in_voltage5_raw
+      multiplier: 16
+      offset_mv: -300
+      name: vrx
+
 # os_sensors:
 #   cpu: true      # Monitor CPU load percentage
 #   power:
