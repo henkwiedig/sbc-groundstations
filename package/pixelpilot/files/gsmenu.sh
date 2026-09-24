@@ -182,6 +182,10 @@ list_waybeam_sensor_bins() {
 # "gs". Responses are flat JSON (no "data" wrapper, unlike waybeam's API):
 #   GET  /api/v1/status                       -> {"ok":true,"role":...,"state":...,"bandwidth_mhz":N,"paired":bool,...}
 #   POST /api/v1/bandwidth?mhz=<1|2|5|10|20|40> -> persisted, survives reconnects
+#   GET  /api/v1/channel                      -> {"channel":"auto"|N|null,...,"table_mhz":[...]}
+#   POST /api/v1/channel?chan=<index|auto>    -> persisted on the air unit (AP), which owns the channel
+#   GET  /api/v1/power                        -> {"power":"auto"|mW|null,"power_dbm":N,"power_levels":[...]}
+#   POST /api/v1/power?level=<mW|auto>        -> persisted, per side
 #   POST /api/v1/linkctl?cmd=<c>&args=<...>   -> {"ok":true,"exit_code":0,"output":"..."}, one-shot passthrough
 LIFECYCLED_TIMEOUT=5
 
@@ -202,51 +206,56 @@ set_lifecycled_bandwidth() {
     curl -s -m "$LIFECYCLED_TIMEOUT" -X POST "$(lifecycled_url "$side")/api/v1/bandwidth?mhz=${mhz}" >/dev/null 2>&1
 }
 
-# power_mode isn't a lifecycled-persisted field (see lifecycle_tuning.h's own
-# "bandwidth-only, deliberately" comment) -- this is a one-shot
-# ar8030-linkctl read/write via the passthrough endpoint, same as the web
-# control panel's own "Power mode" control.
-get_lifecycled_power_mode() {
-    # "output" is ar8030-linkctl's raw captured stdout+stderr -- normally just
-    # "auto (closed loop)\n", but confirmed live that a connection-teardown
-    # line ("-1 Connection closing...", "io: ... deinit") sometimes trails it
-    # depending on timing. Only the first line is ever the actual answer.
-    curl -s -m "$LIFECYCLED_TIMEOUT" -X POST "$(lifecycled_url "$1")/api/v1/linkctl?cmd=power-mode&args=" 2>/dev/null \
-        | jq -r '.output // empty' 2>/dev/null | head -1 | awk '{print $1}'
+# Output power: a level in mW or "auto" (ground only), persisted per side by
+# that side's own lifecycled. Shown as "500 mW"/"auto"; the level set comes
+# from the API (power_levels), since air and ground offer different ones.
+lifecycled_power_json() {
+    curl -s -m "$LIFECYCLED_TIMEOUT" "$(lifecycled_url "$1")/api/v1/power" 2>/dev/null
 }
 
-set_lifecycled_power_mode() {
-    local side="$1" mode="$2"
-    curl -s -m "$LIFECYCLED_TIMEOUT" -X POST "$(lifecycled_url "$side")/api/v1/linkctl?cmd=power-mode&args=${mode}" >/dev/null 2>&1
+get_lifecycled_power() {
+    lifecycled_power_json "$1" | jq -r \
+        '.power | if . == null then empty elif . == "auto" then "auto" else (tostring + " mW") end' 2>/dev/null
 }
 
-# Channel index (0..chan_num-1) -- BB_GET_CHAN_INFO itself (segfault risk
-# below BB_CONFIG_MAX_CHAN_NUM, see patch 0022/0029) isn't called directly
-# here: /api/v1/status already runs `ar8030-linkctl status`, which now prints
-# a "BB_GET_CHAN_INFO: chan_num=.. work_chan=.." summary line (this project's
-# own linkctl patch), so this just reuses that one already-fetched status
-# blob instead of a second RPC round-trip. Setting is BB_SET_CHAN/
-# BB_SET_REMOTE via the linkctl passthrough -- a real synchronized retune
-# that also pushes to the connected peer (linkctl/main.c's cmd_channel), not
-# a blind local change -- but only takes effect while a slot is CONNECTed
-# ("-s auto" resolves the currently-connected slot; fails otherwise).
-lifecycled_chan_info_line() {
-    lifecycled_status_json "$1" | jq -r '.linkctl_status // empty' 2>/dev/null | grep -m1 '^BB_GET_CHAN_INFO:'
+list_lifecycled_power_levels() {
+    lifecycled_power_json "$1" | jq -r \
+        '.power_levels[] | if . == "auto" then "auto" else (tostring + " mW") end' 2>/dev/null
+}
+
+# The dropdown hands over the whole option ("100 mW", "32 (6075 MHz)") as one
+# argument -- only its first word is the value.
+first_word() { echo "$1" | awk '{print $1}'; }
+
+set_lifecycled_power() {
+    local side="$1" level
+    level=$(first_word "$2")
+    curl -s -m "$LIFECYCLED_TIMEOUT" -X POST "$(lifecycled_url "$side")/api/v1/power?level=${level}" >/dev/null 2>&1
+}
+
+# Channel: owned and persisted by the air unit's lifecycled (the AP); a
+# change there retunes both ends together over the live link. Shown as
+# "auto" or "<index> (<MHz> MHz)" from the chip's own channel table
+# (table_mhz), so the picker always matches the table ar8030.json defines.
+lifecycled_channel_json() {
+    curl -s -m "$LIFECYCLED_TIMEOUT" "$(lifecycled_url "$1")/api/v1/channel" 2>/dev/null
 }
 
 get_lifecycled_channel() {
-    lifecycled_chan_info_line "$1" | grep -oE 'work_chan=[0-9]+' | cut -d= -f2
+    lifecycled_channel_json "$1" | jq -r \
+        '.channel as $c | if $c == null then empty elif $c == "auto" then "auto"
+         else ($c|tostring) + " (" + ((.table_mhz[$c] // "?")|tostring) + " MHz)" end' 2>/dev/null
 }
 
-get_lifecycled_chan_num() {
-    lifecycled_chan_info_line "$1" | grep -oE 'chan_num=[0-9]+' | cut -d= -f2
+list_lifecycled_channels() {
+    lifecycled_channel_json "$1" | jq -r \
+        '"auto", (.table_mhz | to_entries[] | (.key|tostring) + " (" + (.value|tostring) + " MHz)")' 2>/dev/null
 }
 
 set_lifecycled_channel() {
-    local side="$1" idx="$2"
-    curl -s -m "$LIFECYCLED_TIMEOUT" -X POST \
-        "$(lifecycled_url "$side")/api/v1/linkctl?cmd=channel&args=$(jq -rn --arg v "${idx} -s auto -w 5" '$v|@uri')" \
-        >/dev/null 2>&1
+    local side="$1" chan
+    chan=$(first_word "$2")
+    curl -s -m "$LIFECYCLED_TIMEOUT" -X POST "$(lifecycled_url "$side")/api/v1/channel?chan=${chan}" >/dev/null 2>&1
 }
 
 lifecycled_status_summary() {
@@ -258,6 +267,7 @@ lifecycled_status_summary() {
     fi
     echo "$j" | jq -r \
         '.state + " slot=" + (.connected_slot|tostring) + " bw=" + (.bandwidth_mhz|tostring) + "MHz" +
+         (if .power == null then "" elif .power == "auto" then " pwr=auto" else " pwr=" + (.power|tostring) + "mW" end) +
          (if .paired then " (paired)" else " (not paired)" end)' 2>/dev/null
 }
 
@@ -818,33 +828,28 @@ case "$@" in
 
 # ── Air: Artosyn ─────────────────────────────────────────────────────────────
 # ar8030-lifecycled's HTTP control API on the air unit ($REMOTE_IP:8899, see
-# lifecycled_url() above). Bandwidth is a lifecycled-persisted setting
-# (survives reconnects); power_mode and channel are live ar8030-linkctl
-# reads/writes -- not lifecycled-persisted, but nothing else contends for
-# power_mode, and channel is a real synchronized retune (BB_SET_CHAN +
-# BB_SET_REMOTE push to the connected peer), not a blind local change.
+# lifecycled_url() above). All three are lifecycled-persisted: bandwidth and
+# output power per side, the channel by the air unit alone (it owns it --
+# changing it here retunes both ends together over the live link).
 
     "get air artosyn bandwidth")
         get_lifecycled_bandwidth air
         emit_values "1\n2\n5\n10\n20\n40"
         ;;
-    "get air artosyn power_mode")
-        get_lifecycled_power_mode air
-        emit_values "auto\nmanual"
+    "get air artosyn power")
+        get_lifecycled_power air
+        emit_values_cmd list_lifecycled_power_levels air
         ;;
     "get air artosyn channel")
         get_lifecycled_channel air
-        chan_num=$(get_lifecycled_chan_num air)
-        if [ -n "$chan_num" ] && [ "$chan_num" -gt 0 ] 2>/dev/null; then
-            emit_values "0 $((chan_num - 1))"
-        fi
+        emit_values_cmd list_lifecycled_channels air
         ;;
 
     "set air artosyn bandwidth"*)
         set_lifecycled_bandwidth air "$5"
         ;;
-    "set air artosyn power_mode"*)
-        set_lifecycled_power_mode air "$5"
+    "set air artosyn power"*)
+        set_lifecycled_power air "$5"
         ;;
     "set air artosyn channel"*)
         set_lifecycled_channel air "$5"
@@ -942,6 +947,7 @@ case "$@" in
 # runs it on this same box), so unlike the air-side "artosyn"/"waybeam" pages
 # this one is NOT gated on drone detection: it's the ground radio's own local
 # state, queryable/settable whether or not the air unit is currently linked.
+# No channel here: the air unit owns it (see the Air: Artosyn page).
 
     "get gs artosyn status")
         lifecycled_status_summary gs
@@ -950,26 +956,16 @@ case "$@" in
         get_lifecycled_bandwidth gs
         emit_values "1\n2\n5\n10\n20\n40"
         ;;
-    "get gs artosyn power_mode")
-        get_lifecycled_power_mode gs
-        emit_values "auto\nmanual"
-        ;;
-    "get gs artosyn channel")
-        get_lifecycled_channel gs
-        chan_num=$(get_lifecycled_chan_num gs)
-        if [ -n "$chan_num" ] && [ "$chan_num" -gt 0 ] 2>/dev/null; then
-            emit_values "0 $((chan_num - 1))"
-        fi
+    "get gs artosyn power")
+        get_lifecycled_power gs
+        emit_values_cmd list_lifecycled_power_levels gs
         ;;
 
     "set gs artosyn bandwidth"*)
         set_lifecycled_bandwidth gs "$5"
         ;;
-    "set gs artosyn power_mode"*)
-        set_lifecycled_power_mode gs "$5"
-        ;;
-    "set gs artosyn channel"*)
-        set_lifecycled_channel gs "$5"
+    "set gs artosyn power"*)
+        set_lifecycled_power gs "$5"
         ;;
 
 # ── GS: System ──────────────────────────────────────────────────────────────
