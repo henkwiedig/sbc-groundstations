@@ -138,6 +138,155 @@ set_waybeam_value() {
     curl -s -m "$WAYBEAM_TIMEOUT" "http://$REMOTE_IP/api/v1/set?${key}=${enc}" >/dev/null 2>&1
 }
 
+# Live image tuning through waybeam's IQ API (/api/v1/iq, /api/v1/iq/set --
+# CV610 "_schema" shape: data.<group>.fields.<dotted field>). Live only:
+# nothing here is persisted, the ISP falls back to the sensor tuning file
+# whenever waybeam restarts or the air unit reboots. Writing a manual.* field
+# also switches its group to manual (op_type 1); op_type 0 is back to auto.
+waybeam_iq_json() {
+    curl -s -m "$WAYBEAM_TIMEOUT" "http://$REMOTE_IP/api/v1/iq" 2>/dev/null
+}
+
+waybeam_iq_field() {
+    waybeam_iq_json | jq -r --arg g "$1" --arg f "$2" \
+        '.data[$g].fields[$f] | if type == "array" then join(",") else . end // empty' 2>/dev/null
+}
+
+waybeam_iq_set() {
+    curl -s -m "$WAYBEAM_TIMEOUT" "http://$REMOTE_IP/api/v1/iq/set?$1=$2" >/dev/null 2>&1
+}
+
+# EV and sharpness are relative to the sensor tuning file's own values (AE
+# target, sharpen curves), which the IQ API only reports as current values.
+# The first menu change records them in /tmp on the air unit -- cleared by an
+# air reboot together with the live IQ values it describes; a waybeam restart
+# reloads the same tuning file, so the recorded baseline stays right. A new
+# sensor bin (isp_binfile) clears it.
+WAYBEAM_CAM_STATE=/tmp/gsmenu_cam
+
+cam_state_get() {
+    $SSH "sed -n 's/^$1=//p' $WAYBEAM_CAM_STATE 2>/dev/null" 2>/dev/null
+}
+
+cam_state_set() {
+    $SSH "touch $WAYBEAM_CAM_STATE; sed -i '/^$1=/d' $WAYBEAM_CAM_STATE; echo '$1=$2' >> $WAYBEAM_CAM_STATE" >/dev/null 2>&1
+}
+
+# Records the current value of $1 (state key) from IQ field $2/$3 as the
+# baseline, unless one is already recorded; prints the baseline.
+cam_baseline() {
+    local key="$1" base
+    base=$(cam_state_get "$key")
+    if [ -z "$base" ]; then
+        base=$(waybeam_iq_field "$2" "$3")
+        [ -n "$base" ] && cam_state_set "$key" "$base"
+    fi
+    echo "$base"
+}
+
+WAYBEAM_EV_STEPS="-1\n-0.7\n-0.3\n0\n+0.3\n+0.7\n+1"
+WAYBEAM_LEVELS="auto\n0\n1\n2\n3\n4\n5\n6\n7\n8\n9\n10"
+
+# EV: exposure.auto.compensation (AE target, 0-255) = baseline * 2^EV, with
+# 2^EV as a fixed x1000 table -- busybox awk here has no math support.
+waybeam_ev_factor() {
+    case "$1" in
+        -1) echo 500 ;; -0.7) echo 616 ;; -0.3) echo 812 ;; 0) echo 1000 ;;
+        +0.3) echo 1231 ;; +0.7) echo 1625 ;; +1) echo 2000 ;;
+    esac
+}
+
+get_waybeam_ev() {
+    local comp base ratio best="" bestd=-1 step f d
+    comp=$(waybeam_iq_field exposure auto.compensation)
+    [ -z "$comp" ] && return
+    base=$(cam_state_get ev_base)
+    [ -z "$base" ] && base=$comp            # never changed since boot
+    [ "$base" -gt 0 ] 2>/dev/null || return
+    ratio=$((comp * 1000 / base))
+    for step in -1 -0.7 -0.3 0 +0.3 +0.7 +1; do
+        f=$(waybeam_ev_factor "$step")
+        d=$((ratio > f ? ratio - f : f - ratio))
+        if [ "$bestd" -lt 0 ] || [ "$d" -lt "$bestd" ]; then
+            bestd=$d
+            best=$step
+        fi
+    done
+    echo "$best"
+}
+
+set_waybeam_ev() {
+    local base f comp
+    f=$(waybeam_ev_factor "$1")
+    [ -z "$f" ] && return
+    base=$(cam_baseline ev_base exposure auto.compensation)
+    [ "$base" -gt 0 ] 2>/dev/null || return
+    comp=$(((base * f + 500) / 1000))
+    [ "$comp" -gt 255 ] && comp=255
+    [ "$comp" -lt 1 ] && comp=1
+    waybeam_iq_set exposure.auto.compensation "$comp"
+}
+
+# Saturation: auto = saturation.op_type 0; 0-10 = manual.saturation 0-255.
+get_waybeam_saturation() {
+    local j
+    j=$(waybeam_iq_json)
+    [ -z "$j" ] && return
+    echo "$j" | jq -r '.data.saturation.fields as $f |
+        if $f.op_type == 0 then "auto" else ($f["manual.saturation"] / 25.5 | round | tostring) end' 2>/dev/null
+}
+
+set_waybeam_saturation() {
+    if [ "$1" = "auto" ]; then
+        waybeam_iq_set saturation.op_type 0
+    else
+        waybeam_iq_set saturation.manual.saturation "$(awk -v n="$1" 'BEGIN { print int(n * 25.5 + 0.5) }')"
+    fi
+}
+
+# Contrast: csc.contr 0-100 (50 = the ISP's neutral point, which has no auto
+# mode of its own) -- "auto" is 50, so level 5 reads back as "auto".
+get_waybeam_contrast() {
+    local v
+    v=$(waybeam_iq_field csc contr)
+    [ -z "$v" ] && return
+    [ "$v" = "50" ] && echo auto || awk -v v="$v" 'BEGIN { print int(v / 10 + 0.5) }'
+}
+
+set_waybeam_contrast() {
+    [ "$1" = "auto" ] && waybeam_iq_set csc.contr 50 || waybeam_iq_set csc.contr "$(($1 * 10))"
+}
+
+# Sharpness: auto = sharpen.op_type 0; 0-10 scales the tuning file's own
+# manual texture/edge curves (32 per-gain entries each, 0-4095): 5 = as
+# tuned, 0 = off, 10 = double.
+get_waybeam_sharpness() {
+    local op lvl
+    op=$(waybeam_iq_field sharpen op_type)
+    [ -z "$op" ] && return
+    if [ "$op" = "0" ]; then
+        echo auto
+        return
+    fi
+    lvl=$(cam_state_get sharp_level)
+    echo "${lvl:-5}"
+}
+
+set_waybeam_sharpness() {
+    local tex edge scale
+    if [ "$1" = "auto" ]; then
+        waybeam_iq_set sharpen.op_type 0
+        return
+    fi
+    tex=$(cam_baseline sharp_tex sharpen manual.texture_strength)
+    edge=$(cam_baseline sharp_edge sharpen manual.edge_strength)
+    [ -z "$tex" ] || [ -z "$edge" ] && return
+    scale() { echo "$1" | awk -F, -v n="$2" '{ for (i = 1; i <= NF; i++) { v = int($i * n / 5 + 0.5); if (v > 4095) v = 4095; printf "%s%d", (i > 1 ? "," : ""), v } }'; }
+    waybeam_iq_set sharpen.manual.texture_strength "$(scale "$tex" "$1")"
+    waybeam_iq_set sharpen.manual.edge_strength "$(scale "$edge" "$1")"
+    cam_state_set sharp_level "$1"
+}
+
 # sensor.mode is a bare pad/mode index with no inherent meaning on its own --
 # /api/v1/modes is what turns it into something a human can read ("OS02K10
 # 1080p100 RAW10"). Only pad 0 is offered; multi-pad (dual-sensor) boards would
@@ -614,12 +763,30 @@ case "$@" in
     "get air waybeam audio_enabled")
         [ "$(get_waybeam_value audio.enabled)" = "true" ] && echo 1 || echo 0
         ;;
+    "get air waybeam image_ev")
+        get_waybeam_ev
+        emit_values "$WAYBEAM_EV_STEPS"
+        ;;
+    "get air waybeam image_saturation")
+        get_waybeam_saturation
+        emit_values "$WAYBEAM_LEVELS"
+        ;;
+    "get air waybeam image_sharpness")
+        get_waybeam_sharpness
+        emit_values "$WAYBEAM_LEVELS"
+        ;;
+    "get air waybeam image_contrast")
+        get_waybeam_contrast
+        emit_values "$WAYBEAM_LEVELS"
+        ;;
 
     "set air waybeam sensor_mode"*)
         set_waybeam_value sensor.mode "$(waybeam_mode_index_for_desc "$5")"
         ;;
     "set air waybeam isp_binfile"*)
         set_waybeam_value isp.sensorBin "/etc/sensors/$5.bin"
+        # New tuning file: the recorded EV/sharpness baselines are stale.
+        $SSH "rm -f $WAYBEAM_CAM_STATE" >/dev/null 2>&1
         ;;
     "set air waybeam image_rotate180"*)
         if [ "$5" = "on" ]; then
@@ -640,6 +807,18 @@ case "$@" in
         ;;
     "set air waybeam audio_enabled"*)
         [ "$5" = "on" ] && set_waybeam_value audio.enabled true || set_waybeam_value audio.enabled false
+        ;;
+    "set air waybeam image_ev"*)
+        set_waybeam_ev "$5"
+        ;;
+    "set air waybeam image_saturation"*)
+        set_waybeam_saturation "$5"
+        ;;
+    "set air waybeam image_sharpness"*)
+        set_waybeam_sharpness "$5"
+        ;;
+    "set air waybeam image_contrast"*)
+        set_waybeam_contrast "$5"
         ;;
 
 # ── Air: Telemetry ───────────────────────────────────────────────────────────
