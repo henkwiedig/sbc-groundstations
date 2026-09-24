@@ -246,6 +246,36 @@
             ]
         },
         {
+            "type": "IconSelectorWidget",
+            "name": "Artosyn signal level",
+            "__comment": "ar8030.signal_level: stock's 0..4 bars (video MCS, frame errors), from lifecycled's /api/v1/link; only published in Artosyn mode",
+            "x": -250,
+            "y": 0,
+            "facts": [
+                {"name": "ar8030.signal_level"}
+            ],
+            "ranges_and_icons": [
+                {"range": [4, 4], "icon_path": "signal1.png"},
+                {"range": [3, 3], "icon_path": "signal3.png"},
+                {"range": [2, 2], "icon_path": "signal5.png"},
+                {"range": [1, 1], "icon_path": "signal7.png"},
+                {"range": [0, 0], "icon_path": "no_signal.png"}
+            ]
+        },
+        {
+            "type": "TplTextWidget",
+            "name": "Artosyn SNR ground / air",
+            "__comment": "Receiver SNR in dB: ground (video downlink) / air (uplink) -- stock's G-SNR / S-SNR",
+            "x": -205,
+            "y": 10,
+            "template": "SNR %.0f/%.0fdB",
+            "hide_when_undefined": true,
+            "facts": [
+                {"name": "ar8030.rx.snr_db", "tags": {"side": "ground"}},
+                {"name": "ar8030.rx.snr_db", "tags": {"side": "air"}}
+            ]
+        },
+        {
             "name": "Video FPS and resolution",
             "type": "VideoWidget",
             "x": -250,

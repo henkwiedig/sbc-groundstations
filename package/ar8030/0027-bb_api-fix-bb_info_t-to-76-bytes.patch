@@ -1,0 +1,36 @@
+com/bb_api.h: fix bb_info_t to the chip's real 76 bytes
+
+BB_GET_1V1_INFO replies with 216 bytes -- the client library logs
+"io: req 0x100006b reply datalen=216 exceeds expected 208, truncating"
+-- i.e. two 76-byte bb_info_t blocks plus the 64 reserved bytes, not
+2 * 72 + 64. Stock ar_ldy_gnd (Ghidra, FUN_0019ee1c and its debug dump)
+reads the peer block at offset 0x4c accordingly. With rev[47] every
+peer field was read 4 bytes early: peer{snr=0 gain=[0,0] tx_mcs=0 ...}
+on both ends of a live link, while the raw bytes at 0x4c hold the
+peer's real values (snr 4352, gain [29,113], tx_mcs 12, chan 25,
+5805000 kHz on the bench -- matching the air unit's own self block).
+
+Grow rev[] by 4 and define BB_HAVE_1V1_INFO_76 so host code can tell
+the fixed layout apart at compile time. Only the host-side struct size
+changes; ar8030d forwards the reply as-is. Needed by ar8030-lifecycled's
+link-quality readings (GET /api/v1/link).
+
+diff --git a/com/bb_api.h b/com/bb_api.h
+--- a/com/bb_api.h
++++ b/com/bb_api.h
+@@ -1424,9 +1424,14 @@
+     bb_lfs_quality_t lfs_low_band;       /**<@note 2G长扫频质量*/
+     bb_lfs_quality_t lfs_high_band;      /**<@note 5G长扫频质量*/
+     uint8_t     main_loc;                /**<@note 接收主径*/
+-    uint8_t     rev[47];
++    uint8_t     rev[51];                 /* 76 bytes on the real chip, not 72: see BB_HAVE_1V1_INFO_76 */
+ } bb_info_t;
+ 
++/* bb_info_t is 76 bytes on the chip -- BB_GET_1V1_INFO replies with 216
++ * bytes (2 * 76 + 64). With rev[47] the peer block was read 4 bytes early
++ * (all zeros) and the client library truncated the reply. */
++#define BB_HAVE_1V1_INFO_76 1
++
+ /**定义读取命令BB_GET_1V1_INFO的输出参数*/
+ typedef struct {
+     bb_info_t self;                      /**<@note 本设备属性*/
