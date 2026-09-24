@@ -1,0 +1,30 @@
+com/bb_config.h: BB_CONFIG_MAX_SLOT_CANDIDATE is 100 on the chip
+
+BB_GET_CANDIDATES replies with 401 bytes -- the client library logs
+"io: req 0x1000003 reply datalen=401 exceeds expected 21, truncating" --
+i.e. a count byte plus 100 four-byte MACs, not 5. Stock ar_ldy_gnd and
+ar_ldyhs_sky (Ghidra: fpv_bb_set_ap_candidate_mac, "BB_CONFIG_MAX_SLOT_
+CANDIDATE=%d" printed as 100) build BB_SET_CANDIDATES as 402 bytes with
+up to 100 entries, loaded from their bb_mac_addr_N ring.
+
+Raise the limit to 100 and define BB_HAVE_CANDIDATES_100 so host code
+can tell at compile time. Only host-side struct sizes change (the
+ioctl table derives its sizes from them). Needed by ar8030-lifecycled's
+multi-bind on the ground: the dev side honors the candidate list too.
+
+--- a/com/bb_config.h	2026-09-25 00:24:09.285690895 +0200
++++ b/com/bb_config.h	2026-09-25 00:24:09.304058907 +0200
+@@ -222,7 +222,12 @@
+ #define BB_CONFIG_MAX_USER_MCS_NUM          16          /**<@note 最大用户可设置的MCS等级数量*/
+ #define BB_CONFIG_MAX_CHAN_NUM              60          /**<@note 最大用户可设置的信道数量 (raised from 32: this project's own ar8030.json already configures 42, see 0022-bb_config-raise-BB_CONFIG_MAX_CHAN_NUM-to-60.patch)*/
+ #define BB_CONFIG_MAX_CHAN_HOP_ITEM_NUM     5           /**<@note 最大跳频触发项条目数量*/
+-#define BB_CONFIG_MAX_SLOT_CANDIDATE        5           /**<@note 每个SLOT可设置的最大候选人数量*/
++#define BB_CONFIG_MAX_SLOT_CANDIDATE        100         /**<@note 每个SLOT可设置的最大候选人数量*/
++/* The chip firmware holds 100 candidates per slot, not 5: BB_GET_CANDIDATES
++ * replies with 401 bytes (count + 100 MACs) and stock ar_ldy_gnd/
++ * ar_ldyhs_sky send BB_SET_CANDIDATES as 402 bytes. See
++ * BB_HAVE_CANDIDATES_100. */
++#define BB_HAVE_CANDIDATES_100              1
+ #define BB_CONFIG_BR_FREQ_OFFSET            0           /**<@note BR与信道的频偏值 单位：KHz*/
+ #define BB_CONFIG_LINK_UNLOCK_TIMEOUT       2000        /**<@note Link通道超时门限 单位：毫秒*/
+ #define BB_CONFIG_SLOT_UNLOCK_TIMEOUT       2000        /**<@note FCH超时门限 单位：毫秒*/
