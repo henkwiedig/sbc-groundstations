@@ -1,0 +1,122 @@
+#!/bin/sh
+# VRX Pro fan: PWM4 (fe6e0000.pwm), 25 kHz, normal polarity -- the same
+# channel and period stock's /ar8030soc/pwm_ctl.sh drives.
+#
+#   gs-fan daemon           control loop (started by /etc/init.d/S05gs-fan)
+#   gs-fan get mode|pct|temp
+#   gs-fan set mode auto|manual
+#   gs-fan set pct <0-100>  manual speed (also switches to manual)
+#
+# Auto: FAN_MIN_PCT at or below FAN_TEMP_LOW, linear up to 100 % at
+# FAN_TEMP_HIGH, on the hotter of the SoC and GPU thermal zones. The config
+# is re-read every cycle, so a change applies within FAN_POLL_S.
+
+CONF=/etc/default/gs-fan
+PWM_DEV=fe6e0000.pwm
+PERIOD=40000
+
+FAN_MODE=auto
+FAN_PCT=80
+FAN_MIN_PCT=30
+FAN_TEMP_LOW=45
+FAN_TEMP_HIGH=70
+FAN_POLL_S=2
+
+load_conf() { [ -r "$CONF" ] && . "$CONF"; }
+
+conf_set() {
+	if grep -q "^$1=" "$CONF" 2>/dev/null; then
+		sed -i "s/^$1=.*/$1=$2/" "$CONF"
+	else
+		echo "$1=$2" >> "$CONF"
+	fi
+}
+
+pwm_path() {
+	for c in /sys/class/pwm/pwmchip*; do
+		case "$(readlink -f "$c/device")" in
+		*/$PWM_DEV) echo "$c"; return 0 ;;
+		esac
+	done
+	return 1
+}
+
+# Hottest thermal zone, whole degrees C (empty if none is readable).
+temp_c() {
+	max=
+	for z in /sys/class/thermal/thermal_zone*/temp; do
+		[ -r "$z" ] || continue
+		t=$(cat "$z" 2>/dev/null) || continue
+		[ -z "$max" ] || [ "$t" -gt "$max" ] && max=$t
+	done
+	[ -n "$max" ] && echo $((max / 1000))
+}
+
+auto_pct() {
+	t=$(temp_c)
+	[ -z "$t" ] && { echo 100; return; }   # no sensor: fail safe
+	if [ "$t" -le "$FAN_TEMP_LOW" ]; then
+		echo "$FAN_MIN_PCT"
+	elif [ "$t" -ge "$FAN_TEMP_HIGH" ]; then
+		echo 100
+	else
+		echo $((FAN_MIN_PCT + (100 - FAN_MIN_PCT) * (t - FAN_TEMP_LOW) / (FAN_TEMP_HIGH - FAN_TEMP_LOW)))
+	fi
+}
+
+apply_pct() {
+	c=$(pwm_path) || return 1
+	p=$c/pwm0
+	[ -d "$p" ] || echo 0 > "$c/export"
+	if [ "$(cat "$p/period")" != "$PERIOD" ]; then
+		echo 0 > "$p/duty_cycle"
+		echo "$PERIOD" > "$p/period"
+		echo normal > "$p/polarity"
+	fi
+	echo $((PERIOD * $1 / 100)) > "$p/duty_cycle"
+	[ "$(cat "$p/enable")" = 1 ] || echo 1 > "$p/enable"
+}
+
+cur_pct() {
+	c=$(pwm_path) && [ -d "$c/pwm0" ] && echo $(($(cat "$c/pwm0/duty_cycle") * 100 / PERIOD))
+}
+
+case "$1" in
+daemon)
+	last=
+	while :; do
+		load_conf
+		if [ "$FAN_MODE" = manual ]; then want=$FAN_PCT; else want=$(auto_pct); fi
+		# 5 % deadband against hunting, but always hit the exact end points
+		if [ -z "$last" ] || [ $((want - last)) -ge 5 ] || [ $((last - want)) -ge 5 ] ||
+		   { [ "$want" != "$last" ] && { [ "$want" = 100 ] || [ "$want" = "$FAN_MIN_PCT" ] || [ "$FAN_MODE" = manual ]; }; }; then
+			apply_pct "$want" && last=$want
+		fi
+		sleep "$FAN_POLL_S"
+	done
+	;;
+get)
+	load_conf
+	case "$2" in
+	mode) echo "$FAN_MODE" ;;
+	pct) if [ "$FAN_MODE" = manual ]; then echo "$FAN_PCT"; else cur_pct; fi ;;
+	temp) temp_c ;;
+	*) echo "mode=$FAN_MODE pct=$(cur_pct) temp=$(temp_c)" ;;
+	esac
+	;;
+set)
+	case "$2" in
+	mode)
+		case "$3" in auto|manual) conf_set FAN_MODE "$3" ;; *) exit 2 ;; esac ;;
+	pct)
+		[ "$3" -ge 0 ] 2>/dev/null && [ "$3" -le 100 ] || exit 2
+		conf_set FAN_PCT "$3"
+		conf_set FAN_MODE manual ;;
+	*) exit 2 ;;
+	esac
+	;;
+*)
+	echo "usage: gs-fan daemon | get [mode|pct|temp] | set mode auto|manual | set pct <0-100>" >&2
+	exit 2
+	;;
+esac

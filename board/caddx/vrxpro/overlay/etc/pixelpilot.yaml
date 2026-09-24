@@ -31,6 +31,16 @@ os_sensors:
       multiplier: 16
       offset_mv: -300
       name: vrx
+  # SoC (CPU) and GPU temperature, os_mon.temperature{name=soc-thermal|gpu-thermal}
+  # in millidegrees C -- needs the gpu-thermal trips fix in the board DTS.
+  temperature:
+    - thermal_zone: thermal_zone0
+    - thermal_zone: thermal_zone1
+  # Goggle fan duty (os_mon.fan.duty{sensor=vrx}, %): PWM4, driven by gs-fan.
+  fan:
+    - type: pwm
+      device: fe6e0000.pwm
+      name: vrx
 
 # os_sensors:
 #   cpu: true      # Monitor CPU load percentage

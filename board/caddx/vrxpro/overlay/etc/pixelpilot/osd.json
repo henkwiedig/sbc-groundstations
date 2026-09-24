@@ -8,7 +8,7 @@
             "x": -270,
             "y": 0,
             "width": 270,
-            "height": 225,
+            "height": 255,
             "color": {
                 "r": 0.0,
                 "g": 0.0,
@@ -174,7 +174,7 @@
             "type": "IconTplTextWidget",
             "__comment": "ar8030.distance_m from lifecycled's /api/v1/link (chip ranging, metres; stock shows it as %1m); Artosyn only",
             "x": -250,
-            "y": 185,
+            "y": 215,
             "icon_path": "distance.png",
             "template": "%dm",
             "hide_when_undefined": true,
@@ -192,6 +192,33 @@
             "template": "%.2fV",
             "facts": [
                 {"name": "os_mon.power.voltage", "tags": {"sensor": "vrx"}, "convert": "x / 1000"}
+            ]
+        },
+        {
+            "name": "SoC/GPU temperature",
+            "type": "IconTplTextWidget",
+            "__comment": "os_sensors temperature thermal_zone0 (soc-thermal) / thermal_zone1 (gpu-thermal) in /etc/pixelpilot.yaml; the fan widget shares this row",
+            "x": -250,
+            "y": 185,
+            "icon_path": "device_thermostat.png",
+            "template": "%.0f°C/%.0f°C",
+            "hide_when_undefined": true,
+            "facts": [
+                {"name": "os_mon.temperature", "tags": {"name": "soc-thermal"}, "convert": "x / 1000"},
+                {"name": "os_mon.temperature", "tags": {"name": "gpu-thermal"}, "convert": "x / 1000"}
+            ]
+        },
+        {
+            "name": "Fan speed",
+            "type": "IconTplTextWidget",
+            "__comment": "os_sensors fan `name: vrx` (PWM4 duty, driven by gs-fan) in /etc/pixelpilot.yaml; same row as the temperatures",
+            "x": -100,
+            "y": 185,
+            "icon_path": "mode_fan.png",
+            "template": "%d%%",
+            "hide_when_undefined": true,
+            "facts": [
+                {"name": "os_mon.fan.duty", "tags": {"sensor": "vrx"}}
             ]
         },
         {
@@ -357,7 +384,7 @@
             "name": "DVR status",
             "type": "DvrStatusWidget",
             "x": -250,
-            "y": 215,
+            "y": 245,
             "icon_path": "sdcard-white.png",
             "text": "Recording",
             "facts": [
