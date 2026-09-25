@@ -4,7 +4,7 @@
 #
 ###############################################################################
 
-MSPOSD_VERSION = 27ae3a0779fe2d7148a8d775c4313c321c0f6d1d
+MSPOSD_VERSION = af5e7e7c0148f751892b659b876df6d16460f569
 MSPOSD_SITE = https://github.com/OpenIPC/msposd.git
 MSPOSD_SITE_METHOD = git
 MSPOSD_INSTALL_TARGET = YES
@@ -19,9 +19,6 @@ define MSPOSD_INSTALL_TARGET_CMDS
 
 	mkdir -p $(TARGET_DIR)/usr/share/fonts
 	
-	$(INSTALL) -m 755 $(@D)/fonts/original/betaflight/font_hd.png $(TARGET_DIR)/usr/share/fonts/font_hd.png
-	$(INSTALL) -m 755 $(@D)/fonts/original/betaflight/font.png $(TARGET_DIR)/usr/share/fonts/font.png
-
 	$(INSTALL) -m 755 $(@D)/fonts/font_ardu_hd.png $(TARGET_DIR)/usr/share/fonts/font_ardu_hd.png
 	$(INSTALL) -m 755 $(@D)/fonts/font_ardu.png $(TARGET_DIR)/usr/share/fonts/font_ardu.png
 
