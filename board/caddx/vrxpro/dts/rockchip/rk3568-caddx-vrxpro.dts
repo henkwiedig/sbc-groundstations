@@ -320,6 +320,8 @@
 	};
 
 	aliases {
+		rtc0 = "/i2c@fe5a0000/rtc@51";
+		rtc1 = "/i2c@fdd40000/pmic@20";
 		csi2dphy0 = "/csi2-dphy0";
 		csi2dphy1 = "/csi2-dphy1";
 		csi2dphy2 = "/csi2-dphy2";
@@ -3854,10 +3856,16 @@
 		status = "okay";
 		phandle = <0x1b0>;
 
+		/* Battery-backed HYM8563: disabled in stock's DTS (and "rtc,hym8563"
+		 * is no compatible our kernel knows), yet fitted and keeping time.
+		 * The PMIC's rk817 RTC runs ~10 % slow and lost the date on power-off,
+		 * so this one is rtc0 (aliases): the kernel sets the clock from it at
+		 * boot and NTP writes it back (RTC_HCTOSYS/RTC_SYSTOHC). */
 		rtc@51 {
-			status = "disabled";
-			compatible = "rtc,hym8563";
+			status = "okay";
+			compatible = "haoyu,hym8563";
 			reg = <0x51>;
+			#clock-cells = <0x00>;
 		};
 	};
 
