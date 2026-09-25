@@ -36,6 +36,29 @@ mkdir -p "$CACHE_DIR"
 emit_values()     { printf '\x1e'"$1"; }
 emit_values_cmd() { printf '\x1e'; "$@"; }
 
+# Timezone (System -> Date & Time): /etc/localtime links into the zoneinfo
+# tree (BR2_TARGET_TZ_INFO); glibc re-reads it, so running apps follow. The
+# RTC and the kernel stay UTC.
+ZONEINFO=/usr/share/zoneinfo
+tz_current() {
+    local z
+    z=$(readlink /etc/localtime 2>/dev/null)
+    z=${z#*zoneinfo/}
+    if [ -n "$z" ] && [ -f "$ZONEINFO/$z" ]; then echo "$z"; else echo "Etc/UTC"; fi
+}
+tz_regions() {
+    local r
+    for r in Africa America Antarctica Asia Atlantic Australia Europe Indian Pacific Etc; do
+        [ -d "$ZONEINFO/$r" ] && echo "$r"
+    done
+}
+tz_cities() { (cd "$ZONEINFO/$1" 2>/dev/null && find . -type f | sed 's|^\./||' | sort); }
+tz_set() {
+    [ -f "$ZONEINFO/$1" ] || return 1
+    ln -sf "$ZONEINFO/$1" /etc/localtime
+    echo "$1" > /etc/timezone
+}
+
 # Refresh cached config files from the air unit (10s TTL)
 refresh_cache() {
     local current_time=$(date +%s)
@@ -1184,6 +1207,19 @@ case "$@" in
         echo $PIXELPILOT_VIDEO_SCALE
         emit_values "0.5 1.0"
         ;;
+    "get gs system datetime")
+        date "+%Y-%m-%d %H:%M %Z"
+        ;;
+    "get gs system tz_region")
+        z=$(tz_current)
+        echo "${z%%/*}"
+        emit_values "$(tz_regions)"
+        ;;
+    "get gs system tz_city")
+        z=$(tz_current)
+        echo "${z#*/}"
+        emit_values "$(tz_cities "${z%%/*}")"
+        ;;
     # Fan control -- only on boards that ship /usr/bin/gs-fan (VRX Pro);
     # PixelPilot hides these rows elsewhere.
     "get gs system fan_mode")
@@ -1355,6 +1391,17 @@ EOF
         ;;
     "set gs system video_scale"*)
         sed -i "s/^PIXELPILOT_VIDEO_SCALE=.*/PIXELPILOT_VIDEO_SCALE=$5/" /etc/default/pixelpilot
+        ;;
+    "set gs system tz_region"*)
+        z=$(tz_current)
+        # keep the zone when the region didn't change; else its first city
+        if [ "${z%%/*}" != "$5" ]; then
+            tz_set "$5/$(tz_cities "$5" | head -n 1)"
+        fi
+        ;;
+    "set gs system tz_city"*)
+        z=$(tz_current)
+        tz_set "${z%%/*}/$5"
         ;;
     "set gs system fan_mode"*)
         gs-fan set mode "$5"
