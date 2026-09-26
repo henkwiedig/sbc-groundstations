@@ -1,0 +1,284 @@
+#!/usr/bin/env python3
+"""
+gs-headtrack -- head tracking backend for the Caddx VRX Pro.
+
+Reads the goggles' own motion sensors, fuses them into a head attitude and
+publishes it as MAVLink ATTITUDE (sysid 250 / compid 25 by default) to a UDP
+target, 127.0.0.1:14550 (PixelPilot's MAVLink input) unless --target says
+otherwise. Nothing starts it yet; it is the sensor side for a later head
+tracking output (e.g. an ELRS backpack or the FC link).
+
+Hardware (found on the board; stock reads it the same way from user space):
+  - IMU: TDK ICM-40609-D (WHO_AM_I 0x3B, ICM-426xx register map) on SPI0,
+    stock dts name "mpu6509"; driven through spidev (spi0.0).
+  - Magnetometer: QST QMC5883P (chip id 0x80) on I2C bus 5, address 0x2c.
+    Published raw in MAVLink RAW_IMU (xmag/ymag/zmag, with the raw IMU
+    counts); not fused yet -- yaw is gyro-only and slowly drifts, which is
+    fine for a relative head tracker.
+
+Stock never gets this to an output on the VRX Pro: its fused angles go over
+the Artosyn link on xdata sub-channel 1, which the air firmware drops.
+
+Keep the goggles still for the first 2 s (gyro bias calibration).
+"""
+
+import argparse
+import array
+import fcntl
+import math
+import os
+import socket
+import struct
+import sys
+import time
+
+SPI_DEV = "/sys/bus/spi/devices/spi0.0"
+
+# --- ICM-40609-D over spidev -------------------------------------------------
+
+SPI_IOC_WR_MODE = 0x40016B01
+SPI_IOC_MESSAGE_1 = 0x40206B00
+REG_DEVICE_CONFIG, REG_ACCEL_DATA, REG_PWR_MGMT0 = 0x11, 0x1F, 0x4E
+REG_GYRO_CONFIG0, REG_ACCEL_CONFIG0, REG_WHO_AM_I, REG_BANK_SEL = 0x4F, 0x50, 0x75, 0x76
+GYRO_LSB_PER_DPS = 65.5      # GYRO_CONFIG0 FS code 010: +-500 dps
+ACCEL_LSB_PER_G = 4096.0     # ACCEL_CONFIG0 FS code 010: +-8 g on the ICM-40609-D
+
+
+def bind_spidev():
+    """Hand spi0.0 to spidev (there is no kernel driver for this IMU)."""
+    if not os.path.exists("/dev/spidev0.0"):
+        with open(SPI_DEV + "/driver_override", "w") as f:
+            f.write("spidev")
+        try:
+            with open("/sys/bus/spi/drivers/spidev/bind", "w") as f:
+                f.write("spi0.0")
+        except OSError:
+            pass
+        for _ in range(50):
+            if os.path.exists("/dev/spidev0.0"):
+                break
+            time.sleep(0.02)
+
+
+class Imu:
+    def __init__(self):
+        bind_spidev()
+        self.fd = os.open("/dev/spidev0.0", os.O_RDWR)
+        fcntl.ioctl(self.fd, SPI_IOC_WR_MODE, struct.pack("B", 3))
+
+    def _xfer(self, tx):
+        txb = array.array("B", tx)
+        rxb = array.array("B", bytes(len(tx)))
+        tr = struct.pack("QQIIHBBBBBB", txb.buffer_info()[0], rxb.buffer_info()[0], len(tx),
+                         8000000, 0, 8, 0, 0, 0, 0, 0)
+        fcntl.ioctl(self.fd, SPI_IOC_MESSAGE_1, tr)
+        return rxb.tobytes()
+
+    def rd(self, reg, n=1):
+        return self._xfer([0x80 | reg] + [0] * n)[1:]
+
+    def wr(self, reg, val):
+        self._xfer([reg & 0x7F, val])
+
+    def start(self):
+        self.wr(REG_BANK_SEL, 0)
+        self.wr(REG_DEVICE_CONFIG, 0x01)          # soft reset
+        time.sleep(0.01)
+        who = self.rd(REG_WHO_AM_I)[0]
+        if who != 0x3B:
+            sys.exit("gs-headtrack: unexpected IMU WHO_AM_I 0x%02x (want 0x3b)" % who)
+        self.wr(REG_GYRO_CONFIG0, 0x48)           # +-500 dps, ODR 100 Hz
+        self.wr(REG_ACCEL_CONFIG0, 0x48)          # +-8 g, ODR 100 Hz
+        self.wr(REG_PWR_MGMT0, 0x0F)              # gyro + accel low-noise
+        time.sleep(0.1)
+
+    def read(self):
+        """(ax, ay, az) in g, (gx, gy, gz) in rad/s; raw counts in self.raw."""
+        v = struct.unpack(">6h", self.rd(REG_ACCEL_DATA, 12))
+        self.raw = v
+        a = tuple(x / ACCEL_LSB_PER_G for x in v[:3])
+        g = tuple(math.radians(x / GYRO_LSB_PER_DPS) for x in v[3:])
+        return a, g
+
+    def stop(self):
+        self.wr(REG_PWR_MGMT0, 0x00)
+
+
+# --- QMC5883P over /dev/i2c-5 --------------------------------------------------
+
+class Mag:
+    def __init__(self, bus=5, addr=0x2C):
+        self.fd = os.open("/dev/i2c-%d" % bus, os.O_RDWR)
+        fcntl.ioctl(self.fd, 0x0703, addr)        # I2C_SLAVE
+        os.write(self.fd, bytes([0x0A, 0xCD]))     # stock's control 1 value
+        os.write(self.fd, bytes([0x0B, 0x00]))     # stock's control 2 value
+
+    def read(self):
+        os.write(self.fd, bytes([0x01]))
+        return struct.unpack("<3h", os.read(self.fd, 6))
+
+
+# --- Madgwick 6-axis filter -----------------------------------------------------
+
+class Madgwick:
+    def __init__(self, beta=0.05):
+        self.q = [1.0, 0.0, 0.0, 0.0]
+        self.beta = beta
+
+    def seed(self, ax, ay, az):
+        """Start at the attitude gravity implies (yaw 0) instead of level."""
+        roll = math.atan2(ay, az)
+        pitch = math.atan2(-ax, math.sqrt(ay * ay + az * az))
+        cr, sr = math.cos(roll / 2), math.sin(roll / 2)
+        cp, sp = math.cos(pitch / 2), math.sin(pitch / 2)
+        self.q = [cr * cp, sr * cp, cr * sp, -sr * sp]
+
+    def update(self, g, a, dt):
+        q0, q1, q2, q3 = self.q
+        gx, gy, gz = g
+        ax, ay, az = a
+        qd0 = 0.5 * (-q1 * gx - q2 * gy - q3 * gz)
+        qd1 = 0.5 * (q0 * gx + q2 * gz - q3 * gy)
+        qd2 = 0.5 * (q0 * gy - q1 * gz + q3 * gx)
+        qd3 = 0.5 * (q0 * gz + q1 * gy - q2 * gx)
+        n = math.sqrt(ax * ax + ay * ay + az * az)
+        if n > 0.0:
+            ax, ay, az = ax / n, ay / n, az / n
+            f0 = 2 * (q1 * q3 - q0 * q2) - ax
+            f1 = 2 * (q0 * q1 + q2 * q3) - ay
+            f2 = 2 * (0.5 - q1 * q1 - q2 * q2) - az
+            s0 = -2 * q2 * f0 + 2 * q1 * f1
+            s1 = 2 * q3 * f0 + 2 * q0 * f1 - 4 * q1 * f2
+            s2 = -2 * q0 * f0 + 2 * q3 * f1 - 4 * q2 * f2
+            s3 = 2 * q1 * f0 + 2 * q2 * f1
+            sn = math.sqrt(s0 * s0 + s1 * s1 + s2 * s2 + s3 * s3)
+            if sn > 0.0:
+                qd0 -= self.beta * s0 / sn
+                qd1 -= self.beta * s1 / sn
+                qd2 -= self.beta * s2 / sn
+                qd3 -= self.beta * s3 / sn
+        q0 += qd0 * dt
+        q1 += qd1 * dt
+        q2 += qd2 * dt
+        q3 += qd3 * dt
+        n = math.sqrt(q0 * q0 + q1 * q1 + q2 * q2 + q3 * q3)
+        self.q = [q0 / n, q1 / n, q2 / n, q3 / n]
+
+    def euler(self):
+        q0, q1, q2, q3 = self.q
+        roll = math.atan2(2 * (q0 * q1 + q2 * q3), 1 - 2 * (q1 * q1 + q2 * q2))
+        pitch = math.asin(max(-1.0, min(1.0, 2 * (q0 * q2 - q3 * q1))))
+        yaw = math.atan2(2 * (q0 * q3 + q1 * q2), 1 - 2 * (q2 * q2 + q3 * q3))
+        return roll, pitch, yaw
+
+
+# --- MAVLink v1 ATTITUDE ----------------------------------------------------------
+
+def x25(data, crc=0xFFFF):
+    for b in data:
+        t = b ^ (crc & 0xFF)
+        t = (t ^ (t << 4)) & 0xFF
+        crc = ((crc >> 8) ^ (t << 8) ^ (t << 3) ^ (t >> 4)) & 0xFFFF
+    return crc
+
+
+class MavlinkOut:
+    MSG_ATTITUDE, CRC_EXTRA_ATTITUDE = 30, 39
+    MSG_RAW_IMU, CRC_EXTRA_RAW_IMU = 27, 144
+
+    def __init__(self, target, sysid, compid):
+        host, port = target.rsplit(":", 1)
+        self.addr = (host, int(port))
+        self.sysid, self.compid, self.seq = sysid, compid, 0
+        self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+
+    def _send(self, msgid, crc_extra, payload):
+        hdr = bytes([len(payload), self.seq, self.sysid, self.compid, msgid])
+        crc = x25(hdr + payload)
+        crc = x25(bytes([crc_extra]), crc)
+        self.sock.sendto(b"\xfe" + hdr + payload + struct.pack("<H", crc), self.addr)
+        self.seq = (self.seq + 1) & 0xFF
+
+    def attitude(self, t_ms, rpy, rates):
+        """ATTITUDE: radians, rad/s."""
+        self._send(self.MSG_ATTITUDE, self.CRC_EXTRA_ATTITUDE,
+                   struct.pack("<I6f", t_ms & 0xFFFFFFFF, *rpy, *rates))
+
+    def raw_imu(self, t_us, acc, gyr, mag):
+        """RAW_IMU: raw sensor counts (v1 payload, no id/temperature extensions)."""
+        self._send(self.MSG_RAW_IMU, self.CRC_EXTRA_RAW_IMU,
+                   struct.pack("<Q9h", t_us & 0xFFFFFFFFFFFFFFFF, *acc, *gyr, *mag))
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--target", default="127.0.0.1:14550", help="MAVLink UDP target host:port")
+    ap.add_argument("--sysid", type=int, default=250)
+    ap.add_argument("--compid", type=int, default=25)
+    ap.add_argument("--rate", type=float, default=50.0, help="MAVLink messages per second")
+    ap.add_argument("--raw-rate", type=float, default=10.0,
+                    help="RAW_IMU (raw IMU + magnetometer) messages per second, 0 = off")
+    ap.add_argument("--debug", action="store_true", help="print angles and raw magnetometer")
+    args = ap.parse_args()
+
+    imu = Imu()
+    imu.start()
+    try:
+        mag = Mag()
+    except OSError as e:
+        mag = None
+        print("gs-headtrack: magnetometer unavailable (%s)" % e, file=sys.stderr)
+    out = MavlinkOut(args.target, args.sysid, args.compid)
+    filt = Madgwick()
+
+    # gyro bias: average 2 s at rest, seed the filter with gravity
+    bias = [0.0, 0.0, 0.0]
+    acc = [0.0, 0.0, 0.0]
+    n = 0
+    t_end = time.monotonic() + 2.0
+    while time.monotonic() < t_end:
+        a, g = imu.read()
+        bias = [b + x for b, x in zip(bias, g)]
+        acc = [s + x for s, x in zip(acc, a)]
+        n += 1
+        time.sleep(0.01)
+    bias = [b / n for b in bias]
+    filt.seed(*(s / n for s in acc))
+    print("gs-headtrack: gyro bias %.2f %.2f %.2f deg/s, sending to %s as %d/%d" %
+          (*(math.degrees(b) for b in bias), args.target, args.sysid, args.compid), file=sys.stderr)
+
+    t0 = time.monotonic()
+    last = t0
+    next_send = t0
+    next_raw = t0
+    next_dbg = t0
+    mag_raw = (0, 0, 0)
+    period = 0.01
+    try:
+        while True:
+            now = time.monotonic()
+            a, g = imu.read()
+            g = tuple(x - b for x, b in zip(g, bias))
+            filt.update(g, a, now - last)
+            last = now
+            if now >= next_send:
+                next_send += 1.0 / args.rate
+                out.attitude(int((now - t0) * 1000), filt.euler(), g)
+            if args.raw_rate > 0 and now >= next_raw:
+                next_raw += 1.0 / args.raw_rate
+                if mag:
+                    mag_raw = mag.read()
+                out.raw_imu(int((now - t0) * 1e6), imu.raw[:3], imu.raw[3:], mag_raw)
+            if args.debug and now >= next_dbg:
+                next_dbg += 0.5
+                r, p, y = (math.degrees(v) for v in filt.euler())
+                print("roll %7.1f pitch %7.1f yaw %7.1f  mag %s" % (r, p, y, mag_raw), flush=True)
+            time.sleep(max(0.0, period - (time.monotonic() - now)))
+    except KeyboardInterrupt:
+        pass
+    finally:
+        imu.stop()
+
+
+if __name__ == "__main__":
+    main()
