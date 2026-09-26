@@ -50,3 +50,13 @@
 		};
 	};
 };
+
+/*
+ * SFC + internal SPI NAND (HYF2GQ4UAACAE, 0005) for the boot menu's "Stock
+ * firmware" entry, U-Boot only: the kernel dts keeps the SFC disabled (the
+ * BSP kernel's MTD probe was seen writing a bad-block table to this NAND).
+ * U-Boot only reads it.
+ */
+&sfc {
+	status = "okay";
+};
