@@ -3,7 +3,7 @@ new file mode 100644
 index 0000000..f63d640
 --- /dev/null
 +++ b/arch/arm/dts/rk3568-caddx-vrxpro-u-boot.dtsi
-@@ -0,0 +1,52 @@
+@@ -0,0 +1,62 @@
 +// SPDX-License-Identifier: (GPL-2.0+ OR MIT)
 +
 +/*
@@ -55,6 +55,16 @@ index 0000000..f63d640
 +			/delete-node/ endpoint@2;
 +		};
 +	};
++};
++
++/*
++ * SFC + internal SPI NAND (HYF2GQ4UAACAE, 0005) for the boot menu's "Stock
++ * firmware" entry, U-Boot only: the kernel dts keeps the SFC disabled (the
++ * BSP kernel's MTD probe was seen writing a bad-block table to this NAND).
++ * U-Boot only reads it.
++ */
++&sfc {
++	status = "okay";
 +};
 diff --git a/dts/upstream/src/arm64/rockchip/rk3568-caddx-vrxpro.dts b/dts/upstream/src/arm64/rockchip/rk3568-caddx-vrxpro.dts
 new file mode 100644

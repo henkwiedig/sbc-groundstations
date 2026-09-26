@@ -45,3 +45,12 @@ CONFIG_CONSOLE_MUX=y
 # Boot menu on the VRX Pro button ladder: uboot-buttons.env reads SARADC
 # channel 6 with `adc single` (see board/caddx/vrxpro/overlay/boot).
 CONFIG_CMD_ADC=y
+
+# Stock firmware from the internal SPI NAND (boot menu): read-only access to
+# the SFC flash. U-Boot keeps the SPI NAND bad-block table in RAM only
+# (nanddev_bbt_update() is a no-op), so nothing here writes to the NAND.
+CONFIG_ROCKCHIP_SFC=y
+CONFIG_DM_MTD=y
+CONFIG_MTD_SPI_NAND=y
+CONFIG_CMD_MTD=y
+CONFIG_CMD_SETEXPR=y

@@ -119,3 +119,36 @@ declares 6 channels, so `adc single saradc@fe720000 6` failed with -EINVAL.
 The RK3568 is the same v1 block with 8 channels (as in Linux). Channel 6 is
 the button ladder the boot menu reads (`overlay/boot/uboot-buttons.env`).
 Candidate for upstreaming.
+
+## 0005 — local patch (port)
+
+`0005-mtd-spinand-add-HeYangTek-HYF-SPI-NAND-support.patch` ports the
+Rockchip BSP kernel's `drivers/mtd/nand/spi/hyf.c` to U-Boot (adapted to
+U-Boot's MTD API: `.rfree`, `nand->eccreq`). The VRX Pro's internal flash is
+a HYF2GQ4UAACAE (MFR 0xC9, device 0x52, 256 MiB, 2 KiB pages, 128 KiB
+blocks); mainline U-Boot printed "unknown raw ID 52 c9 52 c9". With it and
+`CONFIG_ROCKCHIP_SFC`/`CONFIG_MTD_SPI_NAND` (uboot.fragment) plus `&sfc`
+enabled in `rk3568-caddx-vrxpro-u-boot.dtsi` only, `mtd list` shows
+`spi-nand0`.
+
+## Booting the stock firmware from the boot menu
+
+The stock system stays on that SPI NAND (layout from stock's
+`parameter.txt`: uboot, misc, factory, boot @ 30 MiB, recovery, rootfs =
+mtd5 as UBIFS). `overlay/boot/uboot-buttons.env` defines `bootstock`, which
+the shared boot menu offers as a third entry "Stock firmware (NAND)". The
+stock boot partition is a Rockchip FIT whose load addresses are vendor
+placeholders (0xffffff00/01), so `bootstock` reads it with `mtd read`,
+unpacks the LZ4 kernel and the DT by their `data-position`, and `booti`s
+them with stock's command line plus
+`mtdparts=spi-nand0:...` (the vendor kernel's MTD name). Verified on
+hardware: stock 5.10 kernel and UI come up; `reboot` from its serial root
+shell returns to the SD system.
+
+U-Boot only reads the NAND (its SPI NAND bad-block table is RAM-only). The
+kernel dts keeps the SFC disabled: the BSP kernel's MTD probe writes a
+bad-block table to this NAND.
+
+Caution: stock's recorder keeps trying to mount the SD card for DVR and
+fails on our GPT/squashfs layout. Never accept a "format SD card" offer
+from the stock UI -- it would wipe this system.
