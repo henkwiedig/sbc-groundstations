@@ -100,7 +100,10 @@ mkdir -p functions/acm.gs0
 # 创建mass_storage function
 echo ">>>>>>>>Create Mass_Storage ......"
 mkdir -p functions/mass_storage.usb0
-echo 1 > functions/mass_storage.usb0/stall
+# No bulk-in stalls: on a rejected SCSI command the dwc3 UDC can fail the
+# CSW queued right after the halt (bulk_in_complete -32), the host waits for
+# it until its 30 s SCSI timeout and resets the whole device (NCM/ACM too).
+echo 0 > functions/mass_storage.usb0/stall
 # echo 1 > functions/mass_storage.usb0/lun.0/ro
 echo 1 > functions/mass_storage.usb0/lun.0/removable
 echo $MASS_FILE > functions/mass_storage.usb0/lun.0/file
