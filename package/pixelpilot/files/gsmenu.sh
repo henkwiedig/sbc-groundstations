@@ -92,6 +92,22 @@ get_aalink_value() {
     grep ^$key= "$CACHE_DIR/aalink.conf" | cut -d "=" -f 2 2>/dev/null
 }
 
+# Caddx VRX Pro: the onboard RTL8188FTV ships without an antenna (the stock
+# firmware never uses it). Until the user confirms a retrofitted antenna, don't
+# let gsmenu make it transmit: no scan (probe requests), no connect, no
+# hotspot. The confirmation is the file below -- created by picking the virtual
+# network WIFI_ACK_SSID in the Networks list and entering YES, or by hand.
+# Every other build: wifi_antenna_blocked is always false.
+WIFI_ACK=/etc/gs-wifi-antenna-ack
+WIFI_ACK_SSID="Antenna fitted? Enter YES"
+wifi_antenna_blocked() {
+    grep -q '^BR2_DEFCONFIG=.*/caddx_vrxpro_defconfig"' /etc/default/br-config 2>/dev/null && [ ! -f "$WIFI_ACK" ]
+}
+wifi_antenna_refuse() {
+    echo "The onboard WiFi ships without an antenna. Retrofit one, then confirm it: WiFi > Networks > \"$WIFI_ACK_SSID\"."
+    exit 1
+}
+
 # Helper: list available wifi channels (used by air and gs)
 list_wifi_channels() {
     iw list | grep MHz | grep -v disabled | grep -v "radar detection" | grep \* | tr -d '[]' | awk '{print $4 " (" $2 " " $3 ")"}' | grep '^[1-9]' | sort -n | uniq | head -c -1
@@ -1586,6 +1602,8 @@ EOF
         ;;
     "get gs wifi networks")
         [ ! -d /sys/class/net/wlan0 ] && exit 0
+        # Unconfirmed antenna: only the virtual confirm entry, and no scan
+        wifi_antenna_blocked && { echo "$WIFI_ACK_SSID:WPA:100"; exit 0; }
         ip link set wlan0 up 2>/dev/null || true
         # Trigger a fresh scan via iw and parse the BSS list
         iw dev wlan0 scan 2>/dev/null | awk '
@@ -1620,6 +1638,14 @@ EOF
         [ ! -d /sys/class/net/wlan0 ] && exit 0
         SSID="$5"
         PASSWORD="$6"
+        if [ "$SSID" = "$WIFI_ACK_SSID" ]; then
+            if [ "$(echo "$PASSWORD" | tr a-z A-Z)" = "YES" ]; then
+                touch "$WIFI_ACK"; sync
+                exit 0
+            fi
+            wifi_antenna_refuse
+        fi
+        wifi_antenna_blocked && wifi_antenna_refuse
         # Save/update this network in the persistent multi-network conf
         wpa_conf_update_network "$SSID" "$PASSWORD"
         # Tear down hotspot if active
@@ -1666,6 +1692,7 @@ EOF
     "set gs wifi wlan"*)
         [ ! -d /sys/class/net/wlan0 ] && exit 0
         if [ "$5" = "on" ]; then
+            wifi_antenna_blocked && wifi_antenna_refuse
             # Tear down hotspot if active
             if [ -f /etc/wpa_supplicant.hotspot.conf ]; then
                 ifdown wlan0 2>/dev/null || true
@@ -1683,6 +1710,7 @@ EOF
     "set gs wifi hotspot"*)
         [ ! -d /sys/class/net/wlan0 ] && exit 0
         if [ "$5" = "on" ]; then
+            wifi_antenna_blocked && wifi_antenna_refuse
             [ -f /etc/wpa_supplicant.hotspot.conf ] && ip addr show wlan0 2>/dev/null | grep -q "inet " && exit 0  # already on, nothing to do
             ifdown wlan0 2>/dev/null || true
             rm -f /etc/network/interfaces.d/wlan0
