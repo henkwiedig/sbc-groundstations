@@ -84,3 +84,38 @@ power-on; that retry is now handled at the actual failure point instead,
 inside the kernel's own `rtl8xxxu_download_firmware()` (see
 `linux-patches/0002-rtl8xxxu-retry-firmware-download-on-error.patch`), so
 a single one-time power-on here is enough.
+
+## Rockchip VOP2 display support — shared with the Radxa Zero 3
+
+Not copied here: `BR2_TARGET_UBOOT_PATCH` lists
+`board/radxa/zero3/uboot-patches` first, then this directory, so the
+"Rockchip VOP2 support" series (Radxa `0002`–`0013`, see that README for
+sources and status) applies before our board patches. It gives U-Boot a
+VOP2 framebuffer and RK3568 HDMI output, so `uboot.fragment`'s PREBOOT
+shows the boot splash (`/usr/share/splash*.bmp`) early, as on the
+Radxa-based boards. The Radxa directory's own `0001` only touches the Radxa
+board file, which this `evb-rk3568` build doesn't compile.
+
+The series' only devicetree change (Radxa `0009`) marks `&vop` pre-relocation in
+`rk356x-u-boot.dtsi`. Our board dts is decompiled from stock and only
+carries the labels that file needs, so `0002` labels `vop: vop@fe040000`
+for it. The VOP2/HDMI drivers find everything else through the stock node
+layout (`regs` first, `dclk_vpN` clocks, the ports/remote-endpoint graph).
+
+One more U-Boot-only DT fix (`rk3568-caddx-vrxpro-u-boot.dtsi`, carried in
+`0002`): the stock dts lists every possible VP0 output as endpoint@0..3
+(DSI0, DSI1, eDP, HDMI), but the VOP2 driver only follows each port's
+*first* endpoint. It tried the disabled DSI0, the VOP never probed, and the
+splash never showed (`bdinfo`: "Video = vop@fe040000 inactive"). Deleting
+endpoint@0..2 of port@0 leaves HDMI first, as in upstream board dts.
+Verified on hardware: VOP + HDMI probed, 1920x1080x32 framebuffer, splash
+visible before the kernel starts.
+
+## 0004 — local patch
+
+`0004-adc-rockchip-saradc-add-RK3568-with-8-channels.patch`: U-Boot matched
+the RK3568 SARADC only through its `rockchip,rk3399-saradc` fallback, which
+declares 6 channels, so `adc single saradc@fe720000 6` failed with -EINVAL.
+The RK3568 is the same v1 block with 8 channels (as in Linux). Channel 6 is
+the button ladder the boot menu reads (`overlay/boot/uboot-buttons.env`).
+Candidate for upstreaming.

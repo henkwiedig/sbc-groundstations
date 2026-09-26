@@ -21,3 +21,27 @@ CONFIG_DEFAULT_DEVICE_TREE="rockchip/rk3568-caddx-vrxpro"
 CONFIG_OF_LIST="rockchip/rk3568-caddx-vrxpro"
 
 CONFIG_BAUDRATE=115200
+
+# Early boot splash on HDMI, same as the Radxa Zero 3 boards: the VOP2 +
+# RK3568 HDMI series (0004-0015, see uboot-patches/README.md) gives U-Boot a
+# framebuffer, and PREBOOT shows /usr/share/splash*.bmp from the squashfs
+# rootfs. uboot-menu.env's GPIO boot menu stays inert here: there is no
+# uboot-buttons.env (the VRX Pro's buttons are an ADC ladder, not GPIOs).
+CONFIG_BOOTDELAY=1
+CONFIG_VIDEO=y
+CONFIG_DISPLAY=y
+CONFIG_VIDEO_ROCKCHIP=y
+CONFIG_DISPLAY_ROCKCHIP_HDMI=y
+CONFIG_VIDEO_REMOVE=y
+CONFIG_BMP=y
+CONFIG_CMD_BMP=y
+CONFIG_CMD_CLS=y
+CONFIG_BMP_24BPP=y
+CONFIG_USE_PREBOOT=y
+CONFIG_PREBOOT="for d in 0 1; do if sqfsload mmc ${d}:1 ${loadaddr} /usr/share/splash-bg.bmp; then bmp display ${loadaddr} m m; fi; if sqfsload mmc ${d}:1 ${loadaddr} /usr/share/splash.bmp; then bmp display ${loadaddr} m m; fi; done; setenv stdout serial; setenv stderr serial; for f in /boot/uboot-menu.env /boot/uboot-buttons.env; do if sqfsload mmc 1:1 ${loadaddr} $f || sqfsload mmc 0:1 ${loadaddr} $f; then env import -t ${loadaddr} ${filesize}; fi; done; if env exists preboot_hook; then run preboot_hook; fi"
+CONFIG_SYS_CONSOLE_IS_IN_ENV=y
+CONFIG_CONSOLE_MUX=y
+
+# Boot menu on the VRX Pro button ladder: uboot-buttons.env reads SARADC
+# channel 6 with `adc single` (see board/caddx/vrxpro/overlay/boot).
+CONFIG_CMD_ADC=y

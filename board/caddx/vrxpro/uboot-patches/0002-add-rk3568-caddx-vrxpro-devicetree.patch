@@ -3,7 +3,7 @@ new file mode 100644
 index 0000000..f63d640
 --- /dev/null
 +++ b/arch/arm/dts/rk3568-caddx-vrxpro-u-boot.dtsi
-@@ -0,0 +1,35 @@
+@@ -0,0 +1,52 @@
 +// SPDX-License-Identifier: (GPL-2.0+ OR MIT)
 +
 +/*
@@ -38,6 +38,23 @@ index 0000000..f63d640
 + */
 +&chosen {
 +	stdout-path = "serial2:115200n8";
++};
++
++/*
++ * The stock-derived dts lists every possible VP0 output (DSI0, DSI1, eDP,
++ * HDMI as endpoint@0..3), but the VOP2 driver only follows each port's
++ * first endpoint, so it tried the disabled DSI0 and never reached HDMI:
++ * video stayed unprobed and the boot splash never showed. Upstream board
++ * dts only add the endpoints they use -- do the same for U-Boot.
++ */
++&vop {
++	ports {
++		port@0 {
++			/delete-node/ endpoint@0;
++			/delete-node/ endpoint@1;
++			/delete-node/ endpoint@2;
++		};
++	};
 +};
 diff --git a/dts/upstream/src/arm64/rockchip/rk3568-caddx-vrxpro.dts b/dts/upstream/src/arm64/rockchip/rk3568-caddx-vrxpro.dts
 new file mode 100644
@@ -2569,7 +2586,7 @@ index 0000000..dbccee4
 +		};
 +	};
 +
-+	vop@fe040000 {
++	vop: vop@fe040000 {
 +		compatible = "rockchip,rk3568-vop";
 +		reg = <0x00 0xfe040000 0x00 0x3000 0x00 0xfe044000 0x00 0x1000>;
 +		reg-names = "regs\0gamma_lut";

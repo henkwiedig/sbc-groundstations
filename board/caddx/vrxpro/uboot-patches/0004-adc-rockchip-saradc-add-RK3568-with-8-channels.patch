@@ -1,0 +1,36 @@
+adc: rockchip-saradc: add RK3568 with 8 channels
+
+The RK3568 SARADC is the RK3399's v1 block with 8 channels instead of 6,
+which is how Linux handles it (rk3568_saradc_data). U-Boot only matched
+the "rockchip,rk3399-saradc" fallback, so channels 6 and 7 were rejected
+with -EINVAL -- on the Caddx VRX Pro, channel 6 is the button ladder the
+boot menu reads.
+
+--- a/drivers/adc/rockchip-saradc.c	2026-09-26 10:36:32.855692059 +0200
++++ b/drivers/adc/rockchip-saradc.c	2026-09-26 10:36:32.878374649 +0200
+@@ -339,6 +339,16 @@
+ 	.stop = rockchip_saradc_stop_v1,
+ };
+ 
++/* Same v1 block as the RK3399, but with 8 channels (as in Linux). */
++static const struct rockchip_saradc_data rk3568_saradc_data = {
++	.num_bits = 10,
++	.num_channels = 8,
++	.clk_rate = 1000000,
++	.channel_data = rockchip_saradc_channel_data_v1,
++	.start_channel = rockchip_saradc_start_channel_v1,
++	.stop = rockchip_saradc_stop_v1,
++};
++
+ static const struct rockchip_saradc_data rk3528_saradc_data = {
+ 	.num_bits = 10,
+ 	.num_channels = 4,
+@@ -362,6 +372,8 @@
+ 	  .data = (ulong)&rk3066_tsadc_data },
+ 	{ .compatible = "rockchip,rk3399-saradc",
+ 	  .data = (ulong)&rk3399_saradc_data },
++	{ .compatible = "rockchip,rk3568-saradc",
++	  .data = (ulong)&rk3568_saradc_data },
+ 	{ .compatible = "rockchip,rk3528-saradc",
+ 	  .data = (ulong)&rk3528_saradc_data },
+ 	{ .compatible = "rockchip,rk3588-saradc",
