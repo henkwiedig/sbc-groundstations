@@ -23,7 +23,9 @@ PIXELPILOT_RX_MODE="artosyn"
 # Empty = system default. Also selectable live from the OSD (System -> Receiver -> Output).
 # PIXELPILOT_AUDIO_VOLUME is the software output volume in percent (0-100, empty = 100%).
 PIXELPILOT_AUDIO=""
-PIXELPILOT_AUDIO_DEVICE=""
+# VRX Pro: HDMI is the only audio output -- the RK817 analog codec (card
+# rockchiprk809, the ALSA default) is not wired to any jack. There may be an internal pad for this.
+PIXELPILOT_AUDIO_DEVICE="rockchiphdmi"
 PIXELPILOT_AUDIO_VOLUME=""
 PIXELPILOT_AUDIO_ARGS="$PIXELPILOT_AUDIO"
 if [ -n "$PIXELPILOT_AUDIO" ]; then
