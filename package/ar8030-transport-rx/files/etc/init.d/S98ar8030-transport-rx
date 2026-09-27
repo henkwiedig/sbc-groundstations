@@ -46,11 +46,6 @@ BB_CFG=${BB_CFG:-ar8030/bb_config_gnd_pro.json}
 # ar8030-transport/lifecycled/lc_log.h) -- no RUNDIR/cd needed the way
 # ar8030d's own log still requires (S97ar8030's own RUNDIR comment).
 
-if [ "x$AR8030_TRANSPORT_RX_ENABLED" = "xfalse" ]; then
-	echo "Starting ar8030-transport-rx... skipped (disabled)"
-	exit 0
-fi
-
 start_lifecycled() {
 	[ -x "$LIFECYCLED" ] || return 0
 	start-stop-daemon -S -q -b -m -p "$LIFECYCLED_PIDFILE" -x "$LIFECYCLED" -- \
@@ -63,6 +58,13 @@ start_lifecycled() {
 }
 
 start() {
+	# Nothing to bridge or manage while the RF link itself is off (receiver
+	# mode wfb/apfpv, see gsmenu.sh "set gs system rx_mode"). Only start is
+	# gated: stop must work after the defaults were already flipped.
+	if [ "x$AR8030_TRANSPORT_RX_ENABLED" = "xfalse" ] || [ "x$AR8030_ENABLED" = "xfalse" ]; then
+		echo "Starting ar8030-transport-rx... skipped (disabled)"
+		return 0
+	fi
 	echo "Starting ar8030-transport-rx..."
 	start-stop-daemon -S -q -b -m -p "$PIDFILE" -x "$DAEMON" -- $AR8030_TRANSPORT_RX_ARGS
 	start_lifecycled

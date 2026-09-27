@@ -954,7 +954,7 @@
 			compatible = "snps,dwc3";
 			reg = <0x00 0xfcc00000 0x00 0x400000>;
 			interrupts = <0x00 0xa9 0x04>;
-			dr_mode = "peripheral";
+			dr_mode = "otg";	/* gadget by default; usb-host switches the PHY to host */
 			phys = <0x27>;
 			phy-names = "usb2-phy";
 			phy_type = "utmi_wide";
