@@ -1,0 +1,46 @@
+#!/bin/sh
+# Caddx VRX Pro: switch the USB-C port (dwc3 fcc00000, dr_mode "otg") between
+# gadget and host mode, for external WiFi cards in wfb / apfpv receiver mode.
+#
+# The board can't power the port: it has no Type-C controller (CC is a fixed
+# device pull-down) and no VBUS switch. Host mode therefore needs a USB-C to
+# USB-A adapter with 5V injected on VBUS from outside; USB-C hubs and cards
+# with a C plug won't attach (they wait for a host's Rp on CC).
+#
+# usage: usb-host on|off|status [wait_s]
+#   on      drop the USB gadget (if any), PHY -> host; with wait_s, wait up
+#           to that many seconds for a wlx* interface to appear
+#   off     PHY -> peripheral (the gadget script can bind again)
+#   status  print host|peripheral
+
+PHY=/sys/devices/platform/fe8a0000.usb2-phy/otg_mode
+
+[ -w "$PHY" ] || { echo "usb-host: $PHY not available" >&2; exit 1; }
+
+case "$1" in
+on)
+	if [ -d /sys/kernel/config/usb_gadget/g1 ]; then
+		/usr/sbin/gadget >/dev/null 2>&1    # second run deletes the gadget
+	fi
+	[ "$(cat $PHY)" = host ] || echo host > $PHY
+	if [ -n "$2" ]; then
+		i=0
+		while [ $i -lt $(( $2 * 10 )) ]; do
+			ls /sys/class/net | grep -q '^wlx' && exit 0
+			usleep 100000
+			i=$((i + 1))
+		done
+		echo "usb-host: no external WiFi card on the USB-C port (needs a 5V-injecting USB-A adapter)" >&2
+	fi
+	;;
+off)
+	[ "$(cat $PHY)" = peripheral ] || echo peripheral > $PHY
+	;;
+status)
+	cat $PHY
+	;;
+*)
+	echo "usage: $0 on|off|status [wait_s]" >&2
+	exit 2
+	;;
+esac

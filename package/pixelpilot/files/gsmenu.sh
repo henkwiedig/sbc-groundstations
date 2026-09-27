@@ -1319,10 +1319,15 @@ case "$@" in
         PASSWORD="${7:-12345678}"
         sed -i "s/^PIXELPILOT_RX_MODE=.*/PIXELPILOT_RX_MODE=\"$5\"/" /etc/default/pixelpilot
         if [ "$5" = "apfpv" ]; then
+            # VRX Pro: USB-C port to host mode for the external WiFi card(s)
+            [ -x /usr/sbin/usb-host ] && usb-host on 4
             # Leaving artosyn (if it was active): tear the ar8030 RF link back down.
-            [ -f /etc/default/ar8030 ] && sed -i 's/AR8030_ENABLED.*/AR8030_ENABLED=false/' /etc/default/ar8030
-            [ -x /etc/init.d/S97ar8030 ] && /etc/init.d/S97ar8030 stop
             ifdown ar_net0 2>/dev/null
+            # transport-rx + lifecycled, then ar8030d (S97 stop also powers the
+            # chip off) -- stop first, then persist the disable
+            [ -x /etc/init.d/S98ar8030-transport-rx ] && /etc/init.d/S98ar8030-transport-rx stop
+            [ -x /etc/init.d/S97ar8030 ] && /etc/init.d/S97ar8030 stop
+            [ -f /etc/default/ar8030 ] && sed -i 's/^AR8030_ENABLED=.*/AR8030_ENABLED=false/' /etc/default/ar8030
             /etc/init.d/S98adaptive-link stop
             /etc/init.d/S98wifibroadcast stop
             sed -i 's/WIFIBROADCAST_ENABLED.*/WIFIBROADCAST_ENABLED=false/' /etc/default/wifibroadcast
@@ -1352,10 +1357,15 @@ EOF
             INDEX=$((INDEX + 1))
             done
         elif [ "$5" = "wfb" ]; then
+            # VRX Pro: USB-C port to host mode for the external WiFi card(s)
+            [ -x /usr/sbin/usb-host ] && usb-host on 4
             # Leaving artosyn (if it was active): tear the ar8030 RF link back down.
-            [ -f /etc/default/ar8030 ] && sed -i 's/AR8030_ENABLED.*/AR8030_ENABLED=false/' /etc/default/ar8030
-            [ -x /etc/init.d/S97ar8030 ] && /etc/init.d/S97ar8030 stop
             ifdown ar_net0 2>/dev/null
+            # transport-rx + lifecycled, then ar8030d (S97 stop also powers the
+            # chip off) -- stop first, then persist the disable
+            [ -x /etc/init.d/S98ar8030-transport-rx ] && /etc/init.d/S98ar8030-transport-rx stop
+            [ -x /etc/init.d/S97ar8030 ] && /etc/init.d/S97ar8030 stop
+            [ -f /etc/default/ar8030 ] && sed -i 's/^AR8030_ENABLED=.*/AR8030_ENABLED=false/' /etc/default/ar8030
             WIFI_IFACES=$(ip -o link show | awk -F': ' '{print $2}' | grep -E '^wlx' | grep -v "^$EXCLUDE_IFACE$")
             INDEX=0
             for IFACE in $WIFI_IFACES; do
@@ -1382,13 +1392,16 @@ EOF
                 ifdown $IFACE
                 rm -f /etc/network/interfaces.d/$IFACE
             done
+            # VRX Pro: USB-C port back to gadget mode, no external cards needed
+            [ -x /usr/sbin/usb-host ] && usb-host off
             # Bring the ar8030 RF link up: AR8030_ENABLED gates S97ar8030's
             # GPIO/firmware-push sequence (see files/etc/init.d/S97ar8030), and
             # ar_net0 is the TUN bridge to the air unit's REST API (192.168.100.1,
             # see files/etc/network/interfaces.d/ar_net0 / the matching air-side
             # overlay in OpenIPC/builder).
-            [ -f /etc/default/ar8030 ] && sed -i 's/AR8030_ENABLED.*/AR8030_ENABLED=true/' /etc/default/ar8030
+            [ -f /etc/default/ar8030 ] && sed -i 's/^AR8030_ENABLED=.*/AR8030_ENABLED=true/' /etc/default/ar8030
             [ -x /etc/init.d/S97ar8030 ] && /etc/init.d/S97ar8030 restart
+            [ -x /etc/init.d/S98ar8030-transport-rx ] && /etc/init.d/S98ar8030-transport-rx restart
             ifup ar_net0 2>/dev/null
         fi
         ;;

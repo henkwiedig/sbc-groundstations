@@ -49,6 +49,12 @@ if [ -d /sys/kernel/config/usb_gadget/g1 ]; then
 	exit 0
 fi
 
+# Caddx VRX Pro: the USB-C port may be switched to host mode (usb-host)
+if [ "$(cat /sys/devices/platform/fe8a0000.usb2-phy/otg_mode 2>/dev/null)" = "host" ]; then
+	echo "USB port is in host mode (usb-host on), not creating a gadget"
+	exit 1
+fi
+
 # 定义一些变量
 HOST_MAC="48:6f:73:74:50:43"
 DEVICE_MAC="42:61:64:55:53:42"

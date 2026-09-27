@@ -30,29 +30,25 @@ BB_CFG=${BB_CFG:-ar8030/bb_config_gnd_pro.json}
 # matching OpenIPC/builder's own S65 ar8030-transport-tx script.
 RUNDIR="/tmp/ar8030"
 
-if [ x$AR8030_ENABLED = x"false" ]; then
-	echo "Starting ar8030... skipped (disabled)"
-	exit 0
-fi
 
 # Power-on handshake for the AR8030 RF daughterboard, ported verbatim
 # (GPIO numbers, ordering, delays) from stock's S99ar8030 enable_rf().
 # Not modeled in the shared devicetree -- stock drives these as raw sysfs
 # GPIOs too. gpio154=bank4/offset26, gpio83/84/82=bank2/offset19/20/18.
 enable_rf() {
-	echo 154 > /sys/class/gpio/export
+	[ -e /sys/class/gpio/gpio154 ] || echo 154 > /sys/class/gpio/export
 	echo out > /sys/class/gpio/gpio154/direction
 	echo 0 > /sys/class/gpio/gpio154/value
 
-	echo 83 > /sys/class/gpio/export
+	[ -e /sys/class/gpio/gpio83 ] || echo 83 > /sys/class/gpio/export
 	echo out > /sys/class/gpio/gpio83/direction
 	echo 0 > /sys/class/gpio/gpio83/value
 
-	echo 84 > /sys/class/gpio/export
+	[ -e /sys/class/gpio/gpio84 ] || echo 84 > /sys/class/gpio/export
 	echo out > /sys/class/gpio/gpio84/direction
 	echo 0 > /sys/class/gpio/gpio84/value
 
-	echo 82 > /sys/class/gpio/export
+	[ -e /sys/class/gpio/gpio82 ] || echo 82 > /sys/class/gpio/export
 	echo out > /sys/class/gpio/gpio82/direction
 	echo 0 > /sys/class/gpio/gpio82/value
 
@@ -93,6 +89,11 @@ wait_flag_file() {
 }
 
 start() {
+	# Only start is gated: stop must work after the default was flipped.
+	if [ x$AR8030_ENABLED = x"false" ]; then
+		echo "Starting ar8030... skipped (disabled)"
+		return 0
+	fi
 	printf "Starting ar8030... "
 
 	enable_rf
@@ -124,10 +125,21 @@ start() {
 	[ $? = 0 ] && echo "OK" || echo "FAIL"
 }
 
+# gpio154 is the one line enable_rf() leaves driven high; dropping it takes
+# the chip off USB (confirmed on hardware). Without this a "stopped" link
+# keeps the chip powered and running its firmware -- its RF link runs
+# independently of ar8030d, i.e. it may keep transmitting on 5.8 GHz while
+# another receiver mode (wfb/apfpv) uses the band. start() re-runs the full
+# enable_rf() power-on sequence, so restart stays correct.
+disable_rf() {
+	[ -e /sys/class/gpio/gpio154 ] && echo 0 > /sys/class/gpio/gpio154/value
+}
+
 stop() {
 	printf "Stopping ar8030... "
 	start-stop-daemon -K -p /var/run/ar8030d.pid
 	[ $? = 0 ] && echo "OK" || echo "FAIL"
+	disable_rf
 }
 
 case "$1" in
