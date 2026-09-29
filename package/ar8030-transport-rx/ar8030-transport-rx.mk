@@ -94,6 +94,12 @@ define AR8030_TRANSPORT_RX_INSTALL_TARGET_CMDS
 		$(TARGET_DIR)/etc/init.d/S98ar8030-transport-rx
 	$(INSTALL) -D -m 0644 $(AR8030_TRANSPORT_RX_PKGDIR)/files/etc/default/ar8030-transport-rx \
 		$(TARGET_DIR)/etc/default/ar8030-transport-rx
+	$(INSTALL) -D -m 0755 $(AR8030_TRANSPORT_RX_PKGDIR)/files/etc/init.d/S99ar8030-flightlog \
+		$(TARGET_DIR)/etc/init.d/S99ar8030-flightlog
+	$(INSTALL) -D -m 0755 $(AR8030_TRANSPORT_RX_PKGDIR)/files/usr/bin/ar8030-flightlog \
+		$(TARGET_DIR)/usr/bin/ar8030-flightlog
+	$(INSTALL) -D -m 0755 $(AR8030_TRANSPORT_RX_PKGDIR)/files/usr/bin/flightlog \
+		$(TARGET_DIR)/usr/bin/flightlog
 endef
 
 $(eval $(generic-package))

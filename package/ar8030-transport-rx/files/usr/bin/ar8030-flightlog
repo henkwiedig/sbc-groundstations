@@ -1,0 +1,174 @@
+#!/bin/sh
+#
+# ar8030-flightlog: records a flight to the DVR medium while it happens,
+# so the evidence survives whatever ends the flight (air brownout, link
+# loss, the goggles being switched off). One session directory per start
+# under $FLIGHTLOG_DIR, holding:
+#
+#   link.jsonl        one JSON object per sample: ground clock (t, ms),
+#                     ground uptime (up), ground and air lifecycled
+#                     /api/v1/link, plus air batt/rf-temp every
+#                     $FLIGHTLOG_SLOW_EVERY samples and both sides'
+#                     /api/v1/status every $FLIGHTLOG_STATUS_EVERY.
+#                     Air queries are skipped while the ground reports no
+#                     link, so a dead link doesn't stall the loop on
+#                     curl timeouts.
+#   air_syslog.log    the air unit's syslog, forwarded live over ar_net0
+#                     (air side: SYSLOG_REMOTE=192.168.100.2:514 in its
+#                     /etc/default/syslogd), prefixed with ground time --
+#                     the air unit has no RTC.
+#   ground_syslog.log /var/log/messages, followed from the start of boot.
+#   ground_sys.log    ground thermal zones + loadavg every
+#                     $FLIGHTLOG_STATUS_EVERY samples.
+#   ground_ar8030d.log ar8030d's own log (/tmp/ar8030/daemon_log/<date>.log,
+#                     RAM only, truncated to zero by ar8030d at 2 MB)
+#                     without its per-packet lines ([DBG] [sock-com] and
+#                     sock_rpc_push_read_data) and the three lines every
+#                     RPC client connect logs -- unfiltered it was measured
+#                     at up to ~80 KB/s (~300 MB/h, wrapping every ~25 s).
+#                     Video throughput is in link.jsonl's port counters
+#                     instead. The air unit's ar8030d log arrives filtered
+#                     the same way, in air_syslog.log, tag "ar8030d".
+#   ground_ar8030_chip.log the AR8030 chip's own RTOS console, which ar8030d
+#                     writes to daemon_log/<chip MAC>.log and reopens with
+#                     "w" whenever the chip registers -- MCS/channel
+#                     changes, retx, driver errors. The air chip's arrives
+#                     in air_syslog.log, tag "ar8030-chip".
+#
+# Only cheap lifecycled endpoints are polled at the fast rate: /link,
+# /batt and /rf-temp return lifecycled's cached values (no chip access,
+# no ADC re-arm). /status forks ar8030-linkctl, hence the slow rate.
+#
+# Files are fsync'd every $FLIGHTLOG_SYNC_EVERY samples -- /media/dvr is
+# vfat and the goggles get switched off without a shutdown.
+
+test -r /etc/default/ar8030-transport-rx && . /etc/default/ar8030-transport-rx
+
+DIR=${FLIGHTLOG_DIR:-/media/dvr/flightlog}
+INTERVAL=${FLIGHTLOG_INTERVAL:-0.5}
+SLOW_EVERY=${FLIGHTLOG_SLOW_EVERY:-4}
+STATUS_EVERY=${FLIGHTLOG_STATUS_EVERY:-20}
+SYNC_EVERY=${FLIGHTLOG_SYNC_EVERY:-10}
+KEEP=${FLIGHTLOG_KEEP:-30}
+SYSLOG_PORT=${FLIGHTLOG_SYSLOG_PORT:-514}
+GND_API=${FLIGHTLOG_GND_API:-http://127.0.0.1:8899/api/v1}
+AIR_API=${FLIGHTLOG_AIR_API:-http://192.168.100.1:8899/api/v1}
+
+# start-stop-daemon -b puts us in our own session: take every child
+# (socat, awk, tail) down with us.
+trap 'trap - TERM INT; kill 0' TERM INT
+
+# autofs mounts /media/dvr on access; the SD card may also be inserted
+# late. Wait for it rather than recording somewhere that doesn't survive.
+while ! mkdir -p "$DIR" 2>/dev/null; do
+	sleep 5
+done
+
+# Session names start with a sequence number: the ground clock is only
+# trustworthy on boards with an RTC.
+seq=$(cat "$DIR/.seq" 2>/dev/null)
+seq=$(( ${seq:-0} + 1 ))
+echo "$seq" > "$DIR/.seq"
+SESSION="$DIR/$(printf %04d "$seq")_$(date +%Y%m%d-%H%M%S)"
+mkdir -p "$SESSION" || exit 1
+
+# Keep the newest $KEEP sessions.
+ls -1d "$DIR"/[0-9]*_* 2>/dev/null | sort | head -n -"$KEEP" | while read -r old; do
+	rm -rf "$old"
+done
+
+logger -t ar8030-flightlog "recording to $SESSION"
+
+# Air syslog. busybox syslogd sends one newline-terminated line per
+# datagram. awk stamps ground time; fflush so nothing sits in a buffer
+# when the power goes.
+socat -u "UDP4-RECV:$SYSLOG_PORT,reuseaddr" STDOUT 2>/dev/null |
+	awk '{ print strftime("%Y-%m-%d %H:%M:%S"), $0; fflush() }' >> "$SESSION/air_syslog.log" &
+
+tail -n +1 -F /var/log/messages >> "$SESSION/ground_syslog.log" 2>/dev/null &
+
+# Newest ar8030d log ("daemon": <date>.log, the only names with a "-") or
+# chip console log ("chip": <mac>.log).
+newest_log() {
+	if [ "$1" = daemon ]; then
+		ls -1t /tmp/ar8030/daemon_log/*.log 2>/dev/null | grep -- - | head -n 1
+	else
+		ls -1t /tmp/ar8030/daemon_log/*.log 2>/dev/null | grep -v -- - | head -n 1
+	fi
+}
+
+# Follows the newest log of kind $1, switching when ar8030d restarts and
+# creates a new one; tail -F rereads from the start after a truncation
+# (ar8030d's own truncate-at-2-MB, or the chip log's reopen).
+follow_log() {
+	while :; do
+		f=$(newest_log "$1")
+		if [ -z "$f" ]; then
+			sleep 5
+			continue
+		fi
+		echo "=== $(date '+%Y-%m-%d %H:%M:%S') following $f"
+		tail -n +1 -F "$f" 2>/dev/null &
+		tp=$!
+		while [ "$(newest_log "$1")" = "$f" ]; do
+			sleep 5
+		done
+		kill "$tp" 2>/dev/null
+	done
+}
+
+follow_log daemon |
+	awk '!/\[DBG\] \[sock-com\]|sock_rpc_push_read_data|nod_read_thread:|rpc_recv_chk_init:|normal_dev_deinit:/ { print; fflush() }' \
+	>> "$SESSION/ground_ar8030d.log" &
+follow_log chip >> "$SESSION/ground_ar8030_chip.log" &
+
+get() {
+	curl -s --connect-timeout 0.3 -m 0.8 "$1" 2>/dev/null
+}
+
+# Raw lifecycled JSON, or null if the reply isn't a JSON object.
+json_or_null() {
+	case "$1" in
+		\{*\}) printf '%s' "$1" ;;
+		*) printf 'null' ;;
+	esac
+}
+
+n=0
+while :; do
+	t=$(date +%s%3N)
+	read -r up _ < /proc/uptime
+
+	gnd=$(get "$GND_API/link")
+	extra=""
+	case "$gnd" in
+		*'"state":"connected"'*)
+			extra=",\"air\":$(json_or_null "$(get "$AIR_API/link")")"
+			if [ $((n % SLOW_EVERY)) -eq 0 ]; then
+				extra="$extra,\"air_batt\":$(json_or_null "$(get "$AIR_API/batt")")"
+				extra="$extra,\"air_rf_temp\":$(json_or_null "$(get "$AIR_API/rf-temp")")"
+			fi
+			if [ $((n % STATUS_EVERY)) -eq 0 ]; then
+				extra="$extra,\"air_status\":$(json_or_null "$(get "$AIR_API/status")")"
+			fi
+			;;
+	esac
+	if [ $((n % STATUS_EVERY)) -eq 0 ]; then
+		extra="$extra,\"gnd_status\":$(json_or_null "$(get "$GND_API/status")")"
+		{
+			printf '%s up=%s load=%s' "$(date '+%Y-%m-%d %H:%M:%S')" "$up" "$(cut -d' ' -f1-3 /proc/loadavg)"
+			for z in /sys/class/thermal/thermal_zone*; do
+				[ -r "$z/temp" ] && printf ' %s=%s' "$(cat "$z/type")" "$(cat "$z/temp")"
+			done
+			echo
+		} >> "$SESSION/ground_sys.log"
+	fi
+
+	printf '{"t":%s,"up":%s,"gnd":%s%s}\n' "$t" "$up" "$(json_or_null "$gnd")" "$extra" >> "$SESSION/link.jsonl"
+
+	n=$((n + 1))
+	if [ $((n % SYNC_EVERY)) -eq 0 ]; then
+		sync "$SESSION"/* 2>/dev/null
+	fi
+	sleep "$INTERVAL"
+done

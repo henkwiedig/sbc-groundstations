@@ -1,0 +1,52 @@
+#!/bin/sh
+#
+# ar8030-flightlog: records link quality, the air unit's forwarded syslog
+# and the ground syslog to /media/dvr/flightlog/ for later analysis (see
+# /usr/bin/ar8030-flightlog). Off unless FLIGHTLOG_ENABLED=true in
+# /etc/default/ar8030-transport-rx, and never while the AR8030 link itself
+# is disabled (same gate as S98ar8030-transport-rx).
+
+test -r /etc/default/ar8030-transport-rx && . /etc/default/ar8030-transport-rx
+test -r /etc/default/ar8030 && . /etc/default/ar8030
+
+DAEMON="/usr/bin/ar8030-flightlog"
+PIDFILE="/var/run/ar8030-flightlog.pid"
+
+start() {
+	if [ "x$FLIGHTLOG_ENABLED" != "xtrue" ] ||
+		[ "x$AR8030_TRANSPORT_RX_ENABLED" = "xfalse" ] || [ "x$AR8030_ENABLED" = "xfalse" ]; then
+		echo "Starting ar8030-flightlog... skipped (disabled)"
+		return 0
+	fi
+	echo "Starting ar8030-flightlog..."
+	start-stop-daemon -S -q -b -m -p "$PIDFILE" -x /bin/sh -- "$DAEMON"
+}
+
+stop() {
+	echo "Stopping ar8030-flightlog..."
+	# The recorder kills its own process group on TERM (socat/awk/tail).
+	[ -f "$PIDFILE" ] && kill "$(cat "$PIDFILE")" 2>/dev/null
+	rm -f "$PIDFILE"
+	sync
+}
+
+case "$1" in
+	start)
+		start
+		;;
+
+	stop)
+		stop
+		;;
+
+	restart|reload)
+		stop
+		sleep 1
+		start
+		;;
+
+	*)
+		echo "Usage: $0 {start|stop|restart}"
+		exit 1
+		;;
+esac
