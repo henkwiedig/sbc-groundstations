@@ -1,0 +1,38 @@
+#!/bin/sh
+#
+# flightlog enable|disable|status -- switch this ground station's flight
+# recorder (FLIGHTLOG_ENABLED in /etc/default/ar8030-transport-rx, see
+# /usr/bin/ar8030-flightlog) and apply it right away. enable starts a new
+# session directory. The air unit has its own `flightlog` for its side
+# (syslog forwarding, telemetry); ar8030-flightlog here still records link
+# quality without it, just no air_syslog.log.
+
+CONF=/etc/default/ar8030-transport-rx
+
+set_enabled() {
+	if grep -q '^FLIGHTLOG_ENABLED=' "$CONF"; then
+		sed -i "s/^FLIGHTLOG_ENABLED=.*/FLIGHTLOG_ENABLED=$1/" "$CONF"
+	else
+		echo "FLIGHTLOG_ENABLED=$1" >> "$CONF"
+	fi
+	/etc/init.d/S99ar8030-flightlog stop
+	/etc/init.d/S99ar8030-flightlog start
+}
+
+case "$1" in
+	enable)  set_enabled true ;;
+	disable) set_enabled false ;;
+	status)
+		. "$CONF"
+		echo "flight logging: ${FLIGHTLOG_ENABLED:-false}"
+		if [ -f /var/run/ar8030-flightlog.pid ] && kill -0 "$(cat /var/run/ar8030-flightlog.pid)" 2>/dev/null; then
+			echo "  recording to $(ls -1d "${FLIGHTLOG_DIR:-/media/dvr/flightlog}"/[0-9]*_* 2>/dev/null | tail -n 1)"
+		else
+			echo "  recorder not running"
+		fi
+		;;
+	*)
+		echo "Usage: $0 {enable|disable|status}"
+		exit 1
+		;;
+esac

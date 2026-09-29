@@ -255,6 +255,53 @@ for log in /var/log/pixelpilot.log /var/log/pixelpilot.*.log; do
     fi
 done
 
+# 6a. AR8030 LINK + AIR UNIT
+# Both lifecycled HTTP APIs (--http-port 8899 in /etc/default/ar8030-transport-rx
+# and on the air unit), ar8030d's own logs, and -- while the link is still up --
+# the air unit's full snapshot (collect_air_logs over ssh on ar_net0). Run this
+# BEFORE powering the air unit off: its logs live in RAM only.
+echo_colored "Collecting AR8030 link and air unit data..." "$GREEN"
+mkdir -p ar8030/ground ar8030/air
+
+for ep in status link peers batt rf-temp channel power; do
+    curl -s -m 3 "http://127.0.0.1:8899/api/v1/$ep" > "ar8030/ground/api_${ep}.json" 2>&1 || echo "unreachable" > "ar8030/ground/api_${ep}.json"
+done
+for f in /tmp/ar8030/*; do
+    if [ -f "$f" ]; then collect_log "$f" "ar8030/ground/$(basename "$f")"; fi
+done
+# ar8030d's own logs: capped at 2 MB each by ar8030d itself, so copied whole.
+mkdir -p ar8030/ground/daemon_log
+for f in /tmp/ar8030/daemon_log/*; do
+    if [ -f "$f" ]; then collect_file "$f" "ar8030/ground/daemon_log/$(basename "$f")"; fi
+done
+for f in /etc/default/ar8030 /etc/default/ar8030-transport-rx; do
+    collect_file "$f" "ar8030/ground/$(basename "$f")"
+done
+ls -la /lib/firmware/ar8030/ > ar8030/ground/firmware_dir.txt 2>&1 || true
+ip addr show ar_net0 > ar8030/ground/ar_net0.txt 2>&1 || true
+
+# Same root password and sshpass as gsmenu.sh's $SSH.
+AIR=192.168.100.1
+AIR_SSH_PASS="${AIR_SSH_PASS:-12345}"
+if timeout -k 1 60 sshpass -p "$AIR_SSH_PASS" ssh -o ConnectTimeout=5 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+        root@${AIR} collect_air_logs - > ar8030/air/air_logs.tar.gz 2> ar8030/air/ssh.err; then
+    rm -f ar8030/air/ssh.err
+else
+    # No ssh access (link down, different root password): at least its API view.
+    rm -f ar8030/air/air_logs.tar.gz
+    for ep in status link batt rf-temp channel power; do
+        curl -s -m 3 "http://${AIR}:8899/api/v1/$ep" > "ar8030/air/api_${ep}.json" 2>&1 || echo "unreachable" > "ar8030/air/api_${ep}.json"
+    done
+fi
+
+# The current ar8030-flightlog session (the recorder keeps writing to the
+# original on /media/dvr; this is a point-in-time copy).
+FLIGHTLOG_SESSION=$(ls -1d /media/dvr/flightlog/[0-9]*_* 2>/dev/null | sort | tail -n 1)
+if [ -n "$FLIGHTLOG_SESSION" ]; then
+    mkdir -p ar8030/flightlog
+    cp -r "$FLIGHTLOG_SESSION" ar8030/flightlog/ 2>/dev/null || true
+fi
+
 # 7. CONFIGURATION FILES
 echo_colored "Collecting configuration files..." "$GREEN"
 mkdir -p configs
@@ -323,7 +370,9 @@ du -sh / 2>/dev/null | head -5 > custom_checks/disk_usage.txt || true
 df -i > custom_checks/inode_usage.txt 2>&1
 
 # List filesysten
-find / 2>/dev/null > custom_checks/file_list.txt
+# find exits non-zero when e.g. /proc entries vanish mid-walk; under set -e
+# that used to abort the whole collection before the archive was written.
+find / 2>/dev/null > custom_checks/file_list.txt || true
 
 # 11. CREATE SUMMARY REPORT
 echo_colored "Creating summary report..." "$GREEN"
@@ -357,6 +406,7 @@ COLLECTED DATA:
 - Network Info: $(ls -1 network/ 2>/dev/null | wc -l) files
 - Log Files: $(ls -1 logs/ 2>/dev/null | wc -l) files
 - Configuration: $(ls -1 configs/ 2>/dev/null | wc -l) files
+- AR8030/Air: $(find ar8030/ -type f 2>/dev/null | wc -l) files$( [ -f ar8030/air/air_logs.tar.gz ] && echo " (incl. air unit snapshot)" || echo " (NO air unit snapshot, see ar8030/air/ssh.err)")
 
 NOTES:
 This archive contains troubleshooting data from your device.
@@ -380,6 +430,9 @@ CONTENTS:
 4. network/          - Network configuration and status
 5. processes/        - Running processes and services
 6. logs/             - System and application logs (includes pixelpilot.log)
+6a. ar8030/          - AR8030 link state (ground + air lifecycled API),
+                       ar8030d logs, air unit snapshot (air/air_logs.tar.gz)
+                       and the current flight log session (flightlog/)
 7. configs/          - Configuration files (includes pixelpilot config)
 8. packages/         - Installed package information
 9. environment/      - Environment variables
@@ -427,6 +480,8 @@ rm -rf "${COLLECTION_DIR}"
 if [ "$MOUNTED_DEBUGFS" = "1" ]; then
     umount /sys/kernel/debug 2>/dev/null || true
 fi
+
+sync
 
 # 16. FINAL INSTRUCTIONS
 cat << EOF

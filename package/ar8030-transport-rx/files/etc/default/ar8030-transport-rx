@@ -15,3 +15,14 @@ AR8030_TRANSPORT_RX_ARGS=""
 # its HTTP control API on this ground unit:
 #   AR8030_LIFECYCLED_ARGS="--http-port 8899"
 AR8030_LIFECYCLED_ARGS="--http-port 8899"
+
+# ar8030-flightlog (/etc/init.d/S99ar8030-flightlog, toggle with `flightlog
+# enable|disable`): records link quality
+# (both sides' lifecycled HTTP API above, so it needs --http-port 8899
+# here and on the air unit), the air unit's forwarded syslog and this
+# unit's syslog to $FLIGHTLOG_DIR, one session directory per boot. See
+# /usr/bin/ar8030-flightlog for the file formats and the other knobs.
+FLIGHTLOG_ENABLED=false
+#FLIGHTLOG_DIR=/media/dvr/flightlog
+#FLIGHTLOG_INTERVAL=0.5
+#FLIGHTLOG_KEEP=30
