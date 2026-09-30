@@ -392,6 +392,107 @@
             ]
         },
         {
+            "name": "Latency background",
+            "type": "BoxWidget",
+            "__comment": "Per-frame timing from ar8030-transport-rx's timing SEI. Its rows hide while no SEI arrives (non-Artosyn links); the box itself is always drawn.",
+            "x": -270,
+            "y": 265,
+            "width": 270,
+            "height": 225,
+            "color": {
+                "r": 0.0,
+                "g": 0.0,
+                "b": 0.0,
+                "alpha": 0.4
+            },
+            "facts": []
+        },
+        {
+            "name": "Latency total",
+            "type": "TplTextWidget",
+            "__comment": "sensor capture to scan-out start: this frame / worst frame of the last second",
+            "x": -250,
+            "y": 270,
+            "template": "LAT %.0f ms max %.0f",
+            "hide_when_undefined": true,
+            "facts": [
+                {"name": "video.latency.capture_to_display_ms"},
+                {"name": "video.latency.capture_to_display_max_ms"}
+            ]
+        },
+        {
+            "name": "Latency air",
+            "type": "TplTextWidget",
+            "__comment": "capture -> frame reassembled on the ground",
+            "x": -250,
+            "y": 300,
+            "template": "air %.1f ms",
+            "hide_when_undefined": true,
+            "facts": [
+                {"name": "video.latency.air_ms"}
+            ]
+        },
+        {
+            "name": "Latency air split",
+            "type": "TplTextWidget",
+            "x": -250,
+            "y": 330,
+            "template": " enc %.1f link %.1f",
+            "hide_when_undefined": true,
+            "facts": [
+                {"name": "video.latency.encode_ms"},
+                {"name": "video.latency.link_ms"}
+            ]
+        },
+        {
+            "name": "Latency ground",
+            "type": "TplTextWidget",
+            "__comment": "reassembled -> scan-out, all on the goggle clock",
+            "x": -250,
+            "y": 360,
+            "template": "gnd %.1f ms",
+            "hide_when_undefined": true,
+            "facts": [
+                {"name": "video.latency.ground_ms"}
+            ]
+        },
+        {
+            "name": "Latency ground split",
+            "type": "TplTextWidget",
+            "x": -250,
+            "y": 390,
+            "template": " pipe %.1f dec %.1f",
+            "hide_when_undefined": true,
+            "facts": [
+                {"name": "video.latency.pipeline_ms"},
+                {"name": "video.latency.decode_ms"}
+            ]
+        },
+        {
+            "name": "Latency display",
+            "type": "TplTextWidget",
+            "x": -250,
+            "y": 420,
+            "template": " disp %.1f ms",
+            "hide_when_undefined": true,
+            "facts": [
+                {"name": "video.latency.display_ms"}
+            ]
+        },
+        {
+            "name": "Latency sync",
+            "type": "TplTextWidget",
+            "__comment": "air/ground split bound from the clock sync; frames that never reached rx whole",
+            "x": -250,
+            "y": 450,
+            "template": "sync +-%.1f lost %u",
+            "hide_when_undefined": true,
+            "facts": [
+                {"name": "video.latency.sync_uncertainty_ms"},
+                {"name": "video.frames_lost"}
+            ]
+        },
+        {
             "name": "Custom fading message",
             "type": "PopupWidget",
             "x": 400,
