@@ -6,6 +6,11 @@ PIXELPILOT_DISABLE_VSYNC="--disable-vsync"
 PIXELPILOT_CODEC="h265"
 PIXELPILOT_VIDEO_SCALE=1.0
 PIXELPILOT_LIVE_COLORTRANS=""
+# Front buffer: every decoded frame is copied (RGA) into the buffer the
+# display is already scanning out, instead of flipped to at the next vblank.
+# Saves the 1-2 refreshes of vblank wait (median capture -> display 66 -> 51 ms
+# on the bench), at the cost of tearing. Set to "" for vsynced page flips.
+PIXELPILOT_FRONT_BUFFER="--front-buffer"
 PIXELPILOT_DVR_CODEC="h265"
 PIXELPILOT_DVR_BITRATE="50000"
 PIXELPILOT_DVR_FPS="60"
@@ -33,4 +38,4 @@ if [ -n "$PIXELPILOT_AUDIO" ]; then
 	[ -n "$PIXELPILOT_AUDIO_VOLUME" ] && PIXELPILOT_AUDIO_ARGS="$PIXELPILOT_AUDIO_ARGS --audio-volume $PIXELPILOT_AUDIO_VOLUME"
 fi
 
-PIXELPILOT_ARGS="--config $PIXELPILOT_CONFIG_YAML $PIXELPILOT_OSD_ARGS --codec $PIXELPILOT_CODEC --screen-mode $PIXELPILOT_SCREEN_MODE --video-scale $PIXELPILOT_VIDEO_SCALE $PIXELPILOT_AUDIO_ARGS --dvr-fmp4 --dvr-sequenced-files --dvr-template /media/dvr/record_%Y-%m-%d_%H-%M-%S.mp4 $PIXELPILOT_LIVE_COLORTRANS --dvr-reenc-codec $PIXELPILOT_DVR_CODEC --dvr-reenc-bitrate $PIXELPILOT_DVR_BITRATE --dvr-reenc-fps $PIXELPILOT_DVR_FPS $PIXELPILOT_DVR_OSD --dvr-reenc-resolution $PIXELPILOT_DVR_RESOLUTION --dvr-mode $PIXELPILOT_DVR_MODE --dvr-max-size $PIXELPILOT_DVR_MAX_SIZE --video-plane-id 56 --osd-plane-id 104"
+PIXELPILOT_ARGS="--config $PIXELPILOT_CONFIG_YAML $PIXELPILOT_OSD_ARGS --codec $PIXELPILOT_CODEC --screen-mode $PIXELPILOT_SCREEN_MODE --video-scale $PIXELPILOT_VIDEO_SCALE $PIXELPILOT_AUDIO_ARGS --dvr-fmp4 --dvr-sequenced-files --dvr-template /media/dvr/record_%Y-%m-%d_%H-%M-%S.mp4 $PIXELPILOT_LIVE_COLORTRANS --dvr-reenc-codec $PIXELPILOT_DVR_CODEC --dvr-reenc-bitrate $PIXELPILOT_DVR_BITRATE --dvr-reenc-fps $PIXELPILOT_DVR_FPS $PIXELPILOT_DVR_OSD --dvr-reenc-resolution $PIXELPILOT_DVR_RESOLUTION --dvr-mode $PIXELPILOT_DVR_MODE --dvr-max-size $PIXELPILOT_DVR_MAX_SIZE --video-plane-id 56 --osd-plane-id 104 $PIXELPILOT_FRONT_BUFFER"
