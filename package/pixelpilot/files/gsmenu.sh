@@ -1250,6 +1250,10 @@ case "$@" in
         . /etc/default/pixelpilot
         [ x$PIXELPILOT_LIVE_COLORTRANS = x"" ] && echo 0 || echo 1
         ;;
+    "get gs system gs_front_buffer")
+        . /etc/default/pixelpilot
+        [ x$PIXELPILOT_FRONT_BUFFER = x"" ] && echo 0 || echo 1
+        ;;
     "get gs system dvr_mode")
         . /etc/default/pixelpilot
         echo $PIXELPILOT_DVR_MODE
@@ -1444,6 +1448,14 @@ EOF
             sed -i "s/^PIXELPILOT_LIVE_COLORTRANS=.*/PIXELPILOT_LIVE_COLORTRANS=\"--live-colortrans\"/" /etc/default/pixelpilot
         else
             sed -i "s/^PIXELPILOT_LIVE_COLORTRANS=.*/PIXELPILOT_LIVE_COLORTRANS=\"\"/" /etc/default/pixelpilot
+        fi
+        ;;
+    "set gs system gs_front_buffer"*)
+        if [ "$5" = "on" ]
+        then
+            sed -i "s/^PIXELPILOT_FRONT_BUFFER=.*/PIXELPILOT_FRONT_BUFFER=\"--front-buffer\"/" /etc/default/pixelpilot
+        else
+            sed -i "s/^PIXELPILOT_FRONT_BUFFER=.*/PIXELPILOT_FRONT_BUFFER=\"\"/" /etc/default/pixelpilot
         fi
         ;;
     "set gs system rec_enabled"*)
