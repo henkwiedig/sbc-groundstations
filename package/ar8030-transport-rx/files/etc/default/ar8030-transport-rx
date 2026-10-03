@@ -14,7 +14,11 @@ AR8030_TRANSPORT_RX_ARGS=""
 # main.c usage()) for the full list. Empty by default. Example enabling
 # its HTTP control API on this ground unit:
 #   AR8030_LIFECYCLED_ARGS="--http-port 8899"
-AR8030_LIFECYCLED_ARGS="--http-port 8899"
+# --link-policy 2: on every connect push stock's downlink MCS table for
+# video_strategy 2 (~2.5-3 dB lower thresholds than ar8030.json's), as
+# the stock goggles do for the Ascent Lite. See ar8030-transport
+# common/ar8030_link_policy.h.
+AR8030_LIFECYCLED_ARGS="--http-port 8899 --link-policy 2"
 
 # ar8030-flightlog (/etc/init.d/S99ar8030-flightlog, toggle with `flightlog
 # enable|disable`): records link quality
