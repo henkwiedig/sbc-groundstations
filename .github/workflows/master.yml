@@ -27,6 +27,7 @@ jobs:
           - openipc_bonnet
           - runcam_wifilink
           - emax_wyvern-link
+          - caddx_vrxpro
 
     steps:
 
