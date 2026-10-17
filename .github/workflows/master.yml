@@ -67,6 +67,13 @@ jobs:
           export BR2_CCACHE_DIR=/tmp/ccache
 
           NAME=${{ matrix.platform }}
+          # caddx_vrxpro: ascent-vendor-firmware extracts the AR8030 baseband
+          # firmware from CADDX's stock image with ubireader_extract_files, a
+          # host prerequisite.
+          if [ "${NAME}" = caddx_vrxpro ]; then
+            pipx install ubi_reader
+          fi
+
           DEFCONFIG=${NAME}_defconfig bash build.sh
 
       - name: Upload images to workflow artifacts
