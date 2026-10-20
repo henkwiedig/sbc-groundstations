@@ -10,7 +10,7 @@ PIXELPILOT_LIVE_COLORTRANS=""
 # display is already scanning out, instead of flipped to at the next vblank.
 # Saves the 1-2 refreshes of vblank wait (median capture -> display 66 -> 51 ms
 # on the bench), at the cost of tearing. Set to "" for vsynced page flips.
-PIXELPILOT_FRONT_BUFFER="--front-buffer"
+PIXELPILOT_FRONT_BUFFER=""
 PIXELPILOT_DVR_CODEC="h265"
 PIXELPILOT_DVR_BITRATE="50000"
 PIXELPILOT_DVR_FPS="60"
