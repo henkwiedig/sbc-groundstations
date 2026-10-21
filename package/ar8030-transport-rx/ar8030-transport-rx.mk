@@ -100,6 +100,8 @@ define AR8030_TRANSPORT_RX_INSTALL_TARGET_CMDS
 		$(TARGET_DIR)/usr/bin/ar8030-flightlog
 	$(INSTALL) -D -m 0755 $(AR8030_TRANSPORT_RX_PKGDIR)/files/usr/bin/flightlog \
 		$(TARGET_DIR)/usr/bin/flightlog
+	$(INSTALL) -D -m 0755 $(AR8030_TRANSPORT_RX_PKGDIR)/files/usr/bin/ascent-ota \
+		$(TARGET_DIR)/usr/bin/ascent-ota
 endef
 
 $(eval $(generic-package))

@@ -30,5 +30,9 @@ config BR2_PACKAGE_AR8030_TRANSPORT_RX
 	  Installs /usr/bin/ar8030-transport-rx, /usr/bin/ar8030-linkctl,
 	  /usr/bin/ar8030-lifecycled, and /etc/init.d/S98ar8030-transport-rx.
 
+	  Also installs /usr/bin/ascent-ota, which updates a Caddx Ascent
+	  air unit over the link: it serves an ASW image over HTTP on
+	  ar_net0 and runs the air's sysupgrade --asw=<url> --copy-overlay.
+
 comment "ar8030-transport-rx needs ar8030 and a toolchain w/ threads"
 	depends on !BR2_PACKAGE_AR8030 || !BR2_TOOLCHAIN_HAS_THREADS
