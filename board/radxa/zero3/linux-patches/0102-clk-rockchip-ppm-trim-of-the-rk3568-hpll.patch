@@ -126,14 +126,15 @@ diff --git a/drivers/clk/rockchip/clk-pll.c b/drivers/clk/rockchip/clk-pll.c
 diff --git a/drivers/clk/rockchip/clk-rk3568.c b/drivers/clk/rockchip/clk-rk3568.c
 --- a/drivers/clk/rockchip/clk-rk3568.c
 +++ b/drivers/clk/rockchip/clk-rk3568.c
-@@ -95,6 +95,77 @@
+@@ -95,6 +95,78 @@
  	{ /* sentinel */ },
  };
  
 +/*
-+ * HPLL feeds the HDMI dclk. The common HDMI rates run in fractional mode
-+ * with the fraction mid-range, so rockchip_pll_clk_compensation() can trim
-+ * the refresh rate by +-1000 ppm without relocking the pll. The pll syncs to
++ * HPLL feeds the HDMI dclk. The common HDMI rates (297 MHz: 1080p100/120,
++ * 148.5: 1080p50/60, 74.25: 720p) run in fractional mode with the fraction
++ * mid-range, so rockchip_pll_clk_compensation() can trim the refresh rate by
++ * +-1000 ppm without relocking the pll. The pll syncs to
 + * this table at registration: the loader leaves it at the same rate in
 + * integer mode, and the clk core skips setting an unchanged rate.
 + */
@@ -185,7 +186,7 @@ diff --git a/drivers/clk/rockchip/clk-rk3568.c b/drivers/clk/rockchip/clk-rk3568
 +	RK3036_PLL_RATE(500000000, 1, 125, 6, 1, 1, 0),
 +	RK3036_PLL_RATE(408000000, 1, 68, 2, 2, 1, 0),
 +	RK3036_PLL_RATE(312000000, 1, 78, 6, 1, 1, 0),
-+	RK3036_PLL_RATE(297000000, 1, 99, 4, 2, 1, 0),
++	RK3036_PLL_RATE(297000000, 1, 148, 6, 2, 0, 8388608),
 +	RK3036_PLL_RATE(292500000, 1, 195, 4, 4, 1, 0),
 +	RK3036_PLL_RATE(241500000, 1, 161, 4, 4, 1, 0),
 +	RK3036_PLL_RATE(216000000, 1, 72, 4, 2, 1, 0),
@@ -204,7 +205,7 @@ diff --git a/drivers/clk/rockchip/clk-rk3568.c b/drivers/clk/rockchip/clk-rk3568
  #define RK3568_DIV_ATCLK_CORE_MASK	0x1f
  #define RK3568_DIV_ATCLK_CORE_SHIFT	0
  #define RK3568_DIV_GICCLK_CORE_MASK	0x1f
-@@ -329,7 +400,8 @@
+@@ -329,7 +401,8 @@
  		     RK3568_PMU_MODE_CON0, 0, 4, 0, rk3568_pll_rates),
  	[hpll] = PLL(pll_rk3328, PLL_HPLL, "hpll",  mux_pll_p,
  		     0, RK3568_PMU_PLL_CON(16),
