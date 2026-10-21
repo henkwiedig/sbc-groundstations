@@ -493,6 +493,77 @@
             ]
         },
         {
+            "name": "Sync background",
+            "type": "BoxWidget",
+            "__comment": "pixelpilot --vsync-lock: the HDMI refresh phase locked to the video. Hidden while pixelpilot runs without it (front buffer).",
+            "x": -270,
+            "y": 500,
+            "width": 270,
+            "height": 135,
+            "color": {
+                "r": 0.0,
+                "g": 0.0,
+                "b": 0.0,
+                "alpha": 0.4
+            },
+            "hide_when_undefined": true,
+            "facts": [
+                {"name": "video.sync.state"}
+            ]
+        },
+        {
+            "name": "Sync state",
+            "type": "TplTextWidget",
+            "__comment": "locked / locking / free (video rate not lockable) / idle, and the refresh rate trim",
+            "x": -250,
+            "y": 505,
+            "template": "SYNC %s %d ppm",
+            "hide_when_undefined": true,
+            "facts": [
+                {"name": "video.sync.state"},
+                {"name": "video.sync.ppm"}
+            ]
+        },
+        {
+            "name": "Sync phase",
+            "type": "TplTextWidget",
+            "__comment": "phase error; the median frame's wait from decoded to its vblank",
+            "x": -250,
+            "y": 535,
+            "template": " err %.1f wait %.1f ms",
+            "hide_when_undefined": true,
+            "facts": [
+                {"name": "video.sync.error_ms"},
+                {"name": "video.sync.wait_ms"}
+            ]
+        },
+        {
+            "name": "Sync margin",
+            "type": "TplTextWidget",
+            "__comment": "late frames' lag behind the median; commit lead before the vblank",
+            "x": -250,
+            "y": 565,
+            "template": " margin %.1f lead %.1f",
+            "hide_when_undefined": true,
+            "facts": [
+                {"name": "video.sync.margin_ms"},
+                {"name": "video.sync.lead_ms"}
+            ]
+        },
+        {
+            "name": "Sync drops",
+            "type": "TplTextWidget",
+            "__comment": "per second over 10 s: frames late for their vblank, commits that missed it",
+            "x": -250,
+            "y": 595,
+            "template": " drop %.1f miss %.1f /s",
+            "hide_when_undefined": true,
+            "facts": [
+                {"name": "video.sync.drops_per_s"},
+                {"name": "video.sync.misses_per_s"}
+            ]
+        },
+        {
             "name": "Custom fading message",
             "type": "PopupWidget",
             "x": 400,
