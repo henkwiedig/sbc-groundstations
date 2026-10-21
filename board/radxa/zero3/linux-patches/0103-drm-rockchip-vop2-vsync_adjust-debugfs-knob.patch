@@ -1,0 +1,142 @@
+diff --git a/drivers/gpu/drm/rockchip/rockchip_drm_vop2.c b/drivers/gpu/drm/rockchip/rockchip_drm_vop2.c
+--- a/drivers/gpu/drm/rockchip/rockchip_drm_vop2.c
++++ b/drivers/gpu/drm/rockchip/rockchip_drm_vop2.c
+@@ -32,6 +32,7 @@
+ #include <linux/clk.h>
+ #include <linux/clk-provider.h>
+ #include <linux/clk/clk-conf.h>
++#include <linux/clk/rockchip.h>
+ #include <linux/iopoll.h>
+ #include <linux/of.h>
+ #include <linux/of_device.h>
+@@ -593,6 +594,11 @@
+ 	struct pixel_shift_data pixel_shift;
+ 
+ 	/**
++	 * @vsync_adjust_ppm: refresh rate trim set through debugfs vsync_adjust
++	 */
++	int vsync_adjust_ppm;
++
++	/**
+ 	 * @hdr_in: Indicate we have a hdr plane input.
+ 	 *
+ 	 */
+@@ -7612,6 +7618,94 @@
+ 
+ #undef DEBUG_PRINT
+ 
++static DEFINE_MUTEX(vop2_vsync_adjust_lock);
++
++/*
++ * Trim the refresh rate of a video port by up to +-1000 ppm without a
++ * modeset, by nudging the fractional divider of the pll behind its dclk, so
++ * userspace can phase lock vsync to an external frame source. Only the
++ * display plls are trimmed: the system plls also clock other peripherals.
++ */
++static int vop2_vp_vsync_adjust(struct vop2_video_port *vp, int ppm)
++{
++	struct clk *pll = clk_get_parent(vp->dclk);
++	struct clk *pll_src;
++	const char *name;
++	int ret;
++
++	if (!pll)
++		return -ENODEV;
++
++	name = __clk_get_name(pll);
++	if (strcmp(name, "hpll") && strcmp(name, "vpll")) {
++		DRM_DEV_ERROR(vp->vop2->dev, "VP%d dclk parent %s is not a display pll\n",
++			      vp->id, name);
++		return -EOPNOTSUPP;
++	}
++
++	/* the pll mux must be in normal mode, fed by the pll itself */
++	pll_src = clk_get_parent(pll);
++	if (!pll_src || strncmp(__clk_get_name(pll_src), "pll_", 4))
++		return -ENODEV;
++
++	mutex_lock(&vop2_vsync_adjust_lock);
++	ret = rockchip_pll_clk_compensation(pll, ppm);
++	if (!ret)
++		vp->vsync_adjust_ppm = ppm;
++	mutex_unlock(&vop2_vsync_adjust_lock);
++
++	DRM_DEV_DEBUG_DRIVER(vp->vop2->dev, "VP%d %s adjust ppm: %d, nominal dclk %lu, ret %d\n",
++			     vp->id, name, ppm, clk_get_rate(vp->dclk), ret);
++
++	return ret;
++}
++
++static int vop2_vsync_adjust_show(struct seq_file *s, void *data)
++{
++	struct vop2_video_port *vp = s->private;
++
++	seq_printf(s, "adjust ppm: echo x(ppm you want to adjust) > /sys/kernel/debug/dri/0/video_port%d/vsync_adjust\n",
++		   vp->id);
++	seq_printf(s, "current vsync_adjust = %d\n", vp->vsync_adjust_ppm);
++
++	return 0;
++}
++
++static int vop2_vsync_adjust_open(struct inode *inode, struct file *file)
++{
++	return single_open(file, vop2_vsync_adjust_show, inode->i_private);
++}
++
++static ssize_t vop2_vsync_adjust_write(struct file *file, const char __user *ubuf,
++				       size_t len, loff_t *offp)
++{
++	struct seq_file *s = file->private_data;
++	struct vop2_video_port *vp = s->private;
++	int ppm, ret;
++
++	ret = kstrtoint_from_user(ubuf, len, 10, &ppm);
++	if (ret)
++		return ret;
++
++	if (!__clk_is_enabled(vp->dclk))
++		return -EBUSY;
++
++	ret = vop2_vp_vsync_adjust(vp, ppm);
++	if (ret)
++		return ret;
++
++	return len;
++}
++
++static const struct file_operations vop2_vsync_adjust_fops = {
++	.owner = THIS_MODULE,
++	.open = vop2_vsync_adjust_open,
++	.read = seq_read,
++	.llseek = seq_lseek,
++	.release = single_release,
++	.write = vop2_vsync_adjust_write,
++};
++
+ static struct drm_info_list vop2_debugfs_files[] = {
+ 	{ "gamma_lut", vop2_gamma_show, 0, NULL },
+ 	{ "cubic_lut", vop2_cubic_lut_show, 0, NULL },
+@@ -7640,6 +7734,8 @@
+ 	rockchip_drm_debugfs_add_color_bar(crtc, vop2->debugfs);
+ 	rockchip_drm_debugfs_add_regs_write(crtc, vop2->debugfs);
+ #endif
++	debugfs_create_file("vsync_adjust", 0644, vop2->debugfs, vp, &vop2_vsync_adjust_fops);
++
+ 	for (i = 0; i < ARRAY_SIZE(vop2_debugfs_files); i++)
+ 		vop2->debugfs_files[i].data = vop2;
+ 
+@@ -9551,6 +9647,14 @@
+ 		dclk_rate = dclk->rate;
+ 	else
+ 		dclk_rate = adjusted_mode->crtc_clock * 1000 / vp->dclk_div;
++	/*
++	 * Start every modeset from the nominal refresh rate: the clk core skips
++	 * an unchanged rate, which would keep a trim from vsync_adjust.
++	 */
++	if (vp->vsync_adjust_ppm) {
++		vop2_vp_vsync_adjust(vp, 0);
++		vp->vsync_adjust_ppm = 0;
++	}
+ 	rockchip_drm_dclk_set_rate(vop2->version, vp->dclk, dclk_rate);
+ 	DRM_DEV_INFO(vop2->dev, "set %s to %ld, get %ld\n",
+ 		     __clk_get_name(vp->dclk), dclk_rate, clk_get_rate(vp->dclk));
