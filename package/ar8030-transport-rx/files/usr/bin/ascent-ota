@@ -1,0 +1,179 @@
+#!/bin/sh
+#
+# ascent-ota: updates the Caddx Ascent air unit's OpenIPC firmware over the
+# AR8030 link (ar_net0), from an ASW image on this ground station -- builder's
+# Ascent_H_Sky_*_OpenIPC*.img (devices/hi3516cv6xx_artosyn_caddx-ascent-lite).
+#
+# Serves the image over HTTP on the ground's ar_net0 address while it runs
+# and lets the air's own sysupgrade fetch it (--asw=<url>). That script owns
+# the A/B flashing: it writes the inactive bank, verifies it and only then
+# switches the boot bank, so a failed update leaves the air on its old bank.
+# --copy-overlay gives the new bank this bank's settings, the AR8030 pairing
+# among them -- with the image's blank usrdata the new bank would boot
+# unpaired and never come back over this link.
+#
+# The uplink is the slow direction: the air holds it at MCS 1-2 (stock's
+# link policy, lifecycled --link-policy 2) inside the frame structure
+# lifecycled exchanges in the downlink's favour, ~1.1 Mbit/s of TCP. For
+# the download the air goes to MCS 1-5 and the original frame structure,
+# ~3 Mbit/s on the bench at 20 MHz (MCS 8 overflows the air chip's rx
+# buffers: "bb_phy_pool_alloc: rx len 3070 exceeding!"). The air reverts
+# on its own after OTA_BOOST_SECS should this script die, and a reboot
+# starts from lifecycled's defaults anyway.
+
+AIR=${AIR_IP:-192.168.100.1}
+GND=${GND_IP:-192.168.100.2}
+PORT=${OTA_HTTP_PORT:-8000}
+AIR_SSH_PASS=${AIR_SSH_PASS:-12345}
+BOOST_SECS=${OTA_BOOST_SECS:-900}
+
+BOOST_ON="ar8030-linkctl frame-change 0 && ar8030-linkctl mcs-range 1 5"
+BOOST_OFF="ar8030-linkctl mcs-range 1 2; ar8030-linkctl frame-change 1"
+BOOST_PID=/tmp/ascent-ota-boost.pid
+PROGRESS=/tmp/ascent-ota.progress
+
+usage() {
+	cat <<EOF
+Usage: $0 [options] <image.img>
+
+Flashes the air unit's inactive bank with <image.img> (an ASW image) over
+ar_net0, carries its settings and pairing over, and reboots it into the
+new bank.
+
+  -x, --no-reboot      Flash and select the new bank, don't reboot.
+  --no-boost           Leave the uplink at its normal MCS/frame setup.
+  --sysupgrade=FILE    Run FILE on the air instead of its own
+                       /usr/sbin/sysupgrade (an air build older than
+                       --copy-overlay: pass builder's sysupgrade).
+
+Environment: AIR_IP ($AIR), GND_IP ($GND), OTA_HTTP_PORT ($PORT),
+AIR_SSH_PASS, OTA_BOOST_SECS ($BOOST_SECS).
+EOF
+}
+
+die() {
+	echo "ascent-ota: $*" >&2
+	exit 1
+}
+
+air() {
+	sshpass -p "$AIR_SSH_PASS" ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+		-o LogLevel=ERROR -o ConnectTimeout=10 -o ServerAliveInterval=5 -o ServerAliveCountMax=6 \
+		"root@$AIR" "$@"
+}
+
+no_reboot=
+boost=1
+sysupgrade_file=
+img=
+for i in "$@"; do
+	case "$i" in
+		-h | --help) usage; exit 0 ;;
+		-x | --no-reboot) no_reboot=1 ;;
+		--no-boost) boost= ;;
+		--sysupgrade=*) sysupgrade_file="${i#*=}" ;;
+		-*) usage; exit 1 ;;
+		*) img=$i ;;
+	esac
+done
+[ -n "$img" ] || { usage; exit 1; }
+[ -f "$img" ] || die "$img: no such file"
+[ "$(head -c 4 "$img" | od -An -tx1 | tr -d ' \n')" = 41535700 ] || die "$img is not an ASW image"
+[ -z "$sysupgrade_file" ] || [ -f "$sysupgrade_file" ] || die "$sysupgrade_file: no such file"
+
+work=$(mktemp -d /tmp/ascent-ota.XXXXXX) || die "mktemp failed"
+http_pid=
+boosted=
+cleanup() {
+	[ -n "$http_pid" ] && kill "$http_pid" 2>/dev/null
+	[ -n "$boosted" ] && boost_off
+	rm -rf "$work"
+}
+trap cleanup EXIT
+trap 'exit 1' INT TERM HUP
+
+boost_off() {
+	air "[ -f $BOOST_PID ] && kill \$(cat $BOOST_PID) 2>/dev/null; rm -f $BOOST_PID; $BOOST_OFF" >/dev/null 2>&1 ||
+		echo "ascent-ota: could not restore the uplink; the air does it itself within ${BOOST_SECS}s" >&2
+	boosted=
+}
+
+# Which bank (0/1) the air runs, the way its sysupgrade tells (the mtd behind ubi0).
+air_bank() {
+	air 'grep "^mtd$(cat /sys/class/ubi/ubi0/mtd_num):" /proc/mtd' 2>/dev/null |
+		sed -n 's/.*"rootfs\([01]\)".*/\1/p'
+}
+
+echo "Air: $AIR"
+bank=$(air_bank)
+[ -n "$bank" ] || die "no ssh to root@$AIR, or it isn't an A/B Ascent air unit (link up? AIR_SSH_PASS?)"
+air '. /etc/os-release; echo "  running bank '"$bank"': $GITHUB_VERSION $BUILD_ID"'
+
+sysupgrade=/usr/sbin/sysupgrade
+if [ -n "$sysupgrade_file" ]; then
+	sysupgrade=/tmp/ascent-ota-sysupgrade
+	air "cat > $sysupgrade && chmod +x $sysupgrade" <"$sysupgrade_file" || die "copying $sysupgrade_file to the air failed"
+fi
+air "$sysupgrade --help" 2>/dev/null | grep -q -- --copy-overlay ||
+	die "the air's sysupgrade has no --copy-overlay, so the new bank would boot unpaired.
+Flash a newer build once by USB, or pass --sysupgrade=<builder's sysupgrade>."
+
+# Served from a directory holding nothing but the image.
+name=$(basename "$img" | tr -c 'A-Za-z0-9._\n-' _)
+ln -s "$(realpath "$img")" "$work/$name"
+python3 -m http.server "$PORT" --bind "$GND" --directory "$work" >/dev/null 2>&1 &
+http_pid=$!
+url="http://$GND:$PORT/$name"
+i=0
+until curl -sfI -m 2 "$url" >/dev/null; do
+	i=$((i + 1))
+	[ $i -lt 10 ] && kill -0 "$http_pid" 2>/dev/null || die "HTTP server on $GND:$PORT did not come up"
+	sleep 0.5
+done
+
+if [ -n "$boost" ]; then
+	air "{ $BOOST_ON; } >/dev/null 2>&1 && { setsid sh -c 'sleep $BOOST_SECS; $BOOST_OFF' </dev/null >/dev/null 2>&1 & echo \$! > $BOOST_PID; }" ||
+		echo "ascent-ota: uplink boost failed, downloading at the normal rate" >&2
+	boosted=1
+fi
+
+echo "Image: $url ($(($(stat -L -c %s "$img") / 1024)) KiB)"
+air "rm -f $PROGRESS; SYSUPGRADE_PROGRESS=$PROGRESS $sysupgrade --asw=$url --copy-overlay -x"
+rc=$?
+
+# sysupgrade keeps going if the session drops once it is flashing; ask how it ended.
+if [ $rc -eq 255 ]; then
+	echo "ascent-ota: lost the session; waiting for the air's sysupgrade to finish" >&2
+	rc=1
+	i=0
+	while [ $i -lt 60 ]; do
+		case "$(air "tail -n 1 $PROGRESS" 2>/dev/null)" in
+			done) rc=0; break ;;
+			failed) break ;;
+		esac
+		i=$((i + 1))
+		sleep 5
+	done
+fi
+[ -n "$boosted" ] && boost_off
+kill "$http_pid" 2>/dev/null
+http_pid=
+[ $rc -eq 0 ] || die "sysupgrade failed (see above); the air stays on bank $bank"
+
+new_bank=$((1 - bank))
+if [ -n "$no_reboot" ]; then
+	echo "Bank $new_bank flashed and selected; reboot the air to start it."
+	exit 0
+fi
+
+echo "Rebooting the air into bank $new_bank"
+air 'busybox reboot -d 1 -f' >/dev/null 2>&1
+sleep 15
+deadline=$(($(date +%s) + 180))
+until now=$(air_bank) && [ -n "$now" ]; do
+	[ "$(date +%s)" -lt $deadline ] ||
+		die "the air is not back after 3 minutes (unpaired? stuck booting bank $new_bank?) -- check it over USB"
+	sleep 4
+done
+[ "$now" = "$new_bank" ] || die "the air came back on bank $now, not $new_bank"
+air '. /etc/os-release; echo "Air back on bank '"$now"': $GITHUB_VERSION $BUILD_ID"'
