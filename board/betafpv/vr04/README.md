@@ -67,4 +67,4 @@ on 2026-10-23: not working yet, use stock's control port.
 
 | unit | factory md5 | backup | notes |
 |---|---|---|---|
-| bench goggles (hw V2.0, stock 2.1.3 in slot B; slot A: OpenIPC since 2026-10-23, booted via U-Boot; GPT in gpt1, B active) | 0e398546c8f382ca7bbfdcd8944fa297 | betafpv/rev/backup-vr04-gnd-0e398546-2026-10-23 (+ -pass1) | panel nd043fhdm30p (stock's QY45043A0 detection fails; factory cfg says VoDevice lt9711); bad blocks: kernel1 1, userapp0 3, userapp1 3, usr_data 1 |
+| bench goggles (hw V2.0; slot A OpenIPC, ACTIVE since 2026-10-23 (cold boot verified); slot B stock 2.1.3; GPT now in gpt0; boot-ROM recovery image recovery-gpt0-B-active.bin in the backup) | 0e398546c8f382ca7bbfdcd8944fa297 | betafpv/rev/backup-vr04-gnd-0e398546-2026-10-23 (+ -pass1) | panel nd043fhdm30p (stock's QY45043A0 detection fails; factory cfg says VoDevice lt9711); bad blocks: kernel1 1, userapp0 3, userapp1 3, usr_data 1 |
