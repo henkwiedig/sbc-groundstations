@@ -1,0 +1,28 @@
+# betafpv_vr04 additions on top of ml-kernel's ml_defconfig (arm64 defconfig +
+# artosyn + trim + the betafpv-vr04-goggle fragments). trim.config drops most
+# of these to keep MissingLynk's own image small.
+
+# artosyn_gpio (its hogs: panel straps, panel/SD rail), the panel's reset and
+# enable lines, the AR8030 reset. No sysfs interface: userspace goes through
+# the character device (libgpiod), so the panel straps stay with their hogs.
+CONFIG_GPIOLIB=y
+
+# /init: overlay of rootfs_data over the read-only UBIFS rootfs; /tmp etc.
+CONFIG_OVERLAY_FS=y
+CONFIG_TMPFS=y
+
+# RAM boot through the stock U-Boot: the rootfs as a gzip'd initramfs
+CONFIG_BLK_DEV_INITRD=y
+CONFIG_RD_GZIP=y
+
+# usr/sbin/gadget composes RNDIS (Windows binds it driverless) + ACM;
+# trim.config turns RNDIS back off after artosyn.config enables it.
+CONFIG_USB_CONFIGFS_RNDIS=y
+
+# /media automount of the SD card (autofs, auto-dvr.sh); FAT as modules,
+# exFAT is built in by the exfat fragment
+CONFIG_AUTOFS_FS=y
+CONFIG_FAT_FS=m
+CONFIG_VFAT_FS=m
+CONFIG_NLS_CODEPAGE_437=y
+CONFIG_NLS_ISO8859_1=y
