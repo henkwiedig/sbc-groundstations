@@ -34,5 +34,22 @@ config BR2_PACKAGE_AR8030_TRANSPORT_RX
 	  air unit over the link: it serves an ASW image over HTTP on
 	  ar_net0 and runs the air's sysupgrade --asw=<url> --copy-overlay.
 
+if BR2_PACKAGE_AR8030_TRANSPORT_RX
+
+config BR2_PACKAGE_AR8030_TRANSPORT_RX_KMOD
+	bool "SDIO kernel module (artosyn_drv)"
+	depends on BR2_LINUX_KERNEL
+	depends on BR2_PACKAGE_AR8030_BUS_SDIO
+	help
+	  Builds ar8030-transport's clean-room kernel module (kmod/:
+	  artosyn_drv.ko, the SDIO chardev /dev/artosyn_sdio that ar8030d
+	  -i 1 talks to, plus the native ar_net0 net_device) for a board
+	  whose AR8030 sits on SDIO. It pushes the baseband firmware and
+	  config (fw_name=, cfg_name=) when the chip enumerates in boot-ROM
+	  mode and stays loaded. Same module OpenIPC/builder's
+	  ar8030-transport-tx builds for the air units.
+
+endif
+
 comment "ar8030-transport-rx needs ar8030 and a toolchain w/ threads"
 	depends on !BR2_PACKAGE_AR8030 || !BR2_TOOLCHAIN_HAS_THREADS

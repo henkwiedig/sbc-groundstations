@@ -104,4 +104,25 @@ define AR8030_TRANSPORT_RX_INSTALL_TARGET_CMDS
 		$(TARGET_DIR)/usr/bin/ascent-ota
 endef
 
+ifeq ($(BR2_PACKAGE_AR8030_TRANSPORT_RX_KMOD),y)
+# kmod/ (out-of-tree, the kernel's own kbuild): artosyn_drv.ko, built the
+# way OpenIPC/builder's ar8030-transport-tx does. AR8030_SDK_DRIVER_INC
+# reaches into the ar8030 package's extracted+patched SDK tree for the
+# shared ioctl/protocol header (driver/linux/bus/sdio.h); ar8030 is a
+# dependency, so it is there before this builds.
+AR8030_TRANSPORT_RX_MODULE_SUBDIRS = kmod
+AR8030_TRANSPORT_RX_MODULE_MAKE_OPTS = \
+	AR8030_SDK_DRIVER_INC=$(AR8030_DIR)/driver/linux/bus
+
+# request_firmware() for the boot-ROM push, the SDIO bus, ar_net0.
+define AR8030_TRANSPORT_RX_LINUX_CONFIG_FIXUPS
+	$(call KCONFIG_SET_OPT,CONFIG_FW_LOADER,y)
+	$(call KCONFIG_SET_OPT,CONFIG_MMC,y)
+	$(call KCONFIG_SET_OPT,CONFIG_NET,y)
+endef
+
+# kernel-module before generic-package: its eval adds "linux" to
+# DEPENDENCIES, which generic-package fixes into the rule when it runs.
+$(eval $(kernel-module))
+endif
 $(eval $(generic-package))

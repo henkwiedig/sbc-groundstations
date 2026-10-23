@@ -39,6 +39,32 @@ config BR2_PACKAGE_AR8030
 
 if BR2_PACKAGE_AR8030
 
+choice
+	prompt "host bus"
+	default BR2_PACKAGE_AR8030_BUS_USB
+
+config BR2_PACKAGE_AR8030_BUS_USB
+	bool "USB (Caddx VRX Pro)"
+	help
+	  The RF module on USB: artosyn_drv.ko from the SDK pushes
+	  firmware+config in boot-ROM mode and is unloaded, ar8030d
+	  then talks to the chip over USB (daemon -i 0). Everything above
+	  this choice describes this mode.
+
+config BR2_PACKAGE_AR8030_BUS_SDIO
+	bool "SDIO (BetaFPV VR04)"
+	help
+	  The AR8030 on an SDIO host: ar8030d talks to /dev/artosyn_sdio
+	  (daemon -i 1), the chardev of ar8030-transport's clean-room
+	  kernel module (BR2_PACKAGE_AR8030_TRANSPORT_RX_KMOD), which also
+	  pushes the firmware and stays loaded. The SDK's own kernel
+	  driver is not built, and the daemon gets the SDIO patches of
+	  OpenIPC/builder's air-side ar8030 package (sdio/*.patch). The
+	  board brings the chip up itself (reset line, module, daemon),
+	  so BR2_PACKAGE_AR8030_INIT does not apply.
+
+endchoice
+
 config BR2_PACKAGE_AR8030_FIRMWARE
 	bool "install the CX486-RF-2PA baseband firmware"
 	default y
@@ -64,6 +90,7 @@ config BR2_PACKAGE_AR8030_FIRMWARE
 config BR2_PACKAGE_AR8030_INIT
 	bool "install /etc/init.d/S97ar8030"
 	default y
+	depends on BR2_PACKAGE_AR8030_BUS_USB
 	help
 	  Boot script: runs the RF board's GPIO power-on sequence, loads
 	  artosyn_drv (with fw_name/cfg_name) to push firmware over USB,
@@ -89,6 +116,7 @@ config BR2_PACKAGE_AR8030_PAIR_TOOL
 config BR2_PACKAGE_AR8030_USB_LOADER
 	bool "USB rom-code firmware loader"
 	default y
+	depends on BR2_PACKAGE_AR8030_BUS_USB
 	help
 	  Installs ar8030_usb_test_tool as /usr/bin/ar8030-usb-loader,
 	  for USB-level diagnostics against an AR8030 sitting in USB

@@ -3,8 +3,14 @@ config BR2_PACKAGE_ARTLYNK_VR04_VENDOR_FIRMWARE
 	help
 	  Extracts the proprietary blobs the BetaFPV VR04 goggles (P1
 	  GND) need from BetaFPV's stock P1 GND OTA image into
-	  output/images/artlynk-vr04/ and installs the codec one:
+	  output/images/artlynk-vr04/ and installs:
 	    /lib/firmware/cnm/wave521c_k3_codec_fw.bin   (wave5 codec)
+	    /lib/firmware/ar8030/ascent_gnd.img          (AR8030 firmware:
+	        the Caddx Ascent L Gnd's, an SDIO ground of the Ascent
+	        generation, from Ascent_L_Gnd_*.img in the cache)
+	    /lib/firmware/ar8030/vr04_gnd.json           (baseband config:
+	        the Ascent ground config with the goggles' own power
+	        setup and PA calibration from the stock one)
 	  The stock SPL, U-Boot, DDR training firmware, env, kernel and
 	  DT stay in output/images/artlynk-vr04/: the board's
 	  post-image.sh packs the OpenIPC update image on the stock one

@@ -1,0 +1,10 @@
+# AR8030 baseband on the goggles' SDIO host (see /etc/init.d/S97ar8030).
+# false: no RF link at boot (S97ar8030 and S98ar8030-transport-rx skip).
+AR8030_ENABLED=true
+
+# Relative to /lib/firmware. The Ascent ground firmware (an SDIO one, the
+# Caddx Ascent L Gnd's) and the goggles' config (the Ascent ground config
+# with the VR04's power setup and PA calibration); lifecycled persists
+# pairing into BB_CFG.
+BB_FW=ar8030/ascent_gnd.img
+BB_CFG=ar8030/vr04_gnd.json
