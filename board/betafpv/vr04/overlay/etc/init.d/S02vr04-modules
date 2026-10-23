@@ -1,0 +1,17 @@
+#!/bin/sh
+#
+# The ml-kernel Artosyn drivers, before udev's coldplug loads the rest by DT
+# compatible: artosyn_gpio first, whose hogs drive the panel scan straps
+# (gpio 42/107) low and then gpio 100 high -- panel power and the SD card's
+# I/O rail -- then the SD/SDIO host glue, ADC (buttons), SoC temperature and
+# PWM (backlight, buzzer).
+
+case "$1" in
+start)
+	for m in artosyn_gpio dw_mci-artosyn artosyn_adc artosyn_protemp artosyn_pwm; do
+		modprobe $m || echo "S02vr04-modules: $m did not load"
+	done
+	;;
+stop) ;;
+*) echo "Usage: $0 {start|stop}"; exit 1 ;;
+esac
