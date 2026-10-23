@@ -1,0 +1,19 @@
+config BR2_PACKAGE_ARTLYNK_VR04_VENDOR_FIRMWARE
+	bool "artlynk-vr04-vendor-firmware"
+	help
+	  Extracts the proprietary blobs the BetaFPV VR04 goggles (P1
+	  GND) need from BetaFPV's stock P1 GND OTA image into
+	  output/images/artlynk-vr04/ and installs the codec one:
+	    /lib/firmware/cnm/wave521c_k3_codec_fw.bin   (wave5 codec)
+	  The stock SPL, U-Boot, DDR training firmware, env, kernel and
+	  DT stay in output/images/artlynk-vr04/: the board's
+	  post-image.sh packs the OpenIPC update image on the stock one
+	  and checks its kernel container against them. The stock AR8030
+	  ground firmware and configs are kept there for later.
+
+	  Nothing is committed and nothing is downloaded: the stock image
+	  comes from ARTLYNK_VR04_VENDOR_IMG, else
+	  cache/vendor-images/P1_GND_*.img (the pinned release first,
+	  then the newest). See extract.py for host prerequisites.
+	  Missing pieces are skipped with a warning, never a build
+	  failure.
