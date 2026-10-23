@@ -1,0 +1,85 @@
+daemon: clamp the -0x107 "force update write address" to never regress
+buf_wr_index behind buf_head_index
+
+Depends on 0013 (numbered after it; same function, dev_dat_so_write_proc()).
+
+Background: continuing to root-cause the SDIO-mode throughput stalls
+(see this project's ar8030-transport repo, README's "SDIO chardev"
+section) after 0013/0014 measurably reduced their frequency, a tight
+(sub-second-granularity) live capture of the daemon's own debug-pad log
+caught a *hard*, non-recovering lockup (throughput pinned at 0Mbit,
+every subsequent bb_socket_write() timing out, never self-recovering)
+in the act. The log showed sock_dev_push_data()'s own sanity-check
+warning ("buf_wr_index = 0x33aa6c6, buf_head_index = 0x33aceab") firing
+repeatedly with buf_head_index *greater* than buf_wr_index -- an
+inverted state that should be structurally impossible, since
+buf_head_index (confirmed-received) should never exceed buf_wr_index
+(dispatched-so-far).
+
+Once inverted, sock_dev_need_write()'s own
+`(uint32_t)(psock->buf_wr_index - psock->buf_head_index)` computation
+underflows (unsigned subtraction, negative operand) to a huge bogus
+offset, which it passes straight to ringbuffer_get_data() as the "how
+far into the ring buffer is unsent data" offset -- that call then
+(correctly, given the bogus input) finds nothing there and reports
+"nothing to send", permanently, for this socket, no matter how much
+genuinely new data (visible via add_new_wr_node()'s own logging) piles
+up behind it. Every other site that writes buf_wr_index (the normal
+pack->sta>=0 ack path in this same function, and the -0x108
+"force resend" path just below this one) explicitly guards against ever
+setting it below buf_head_index; the -0x107 "force update write
+address" handler was the one exception, accepting the chip-reported
+retmsg.pos completely unguarded. The capture showed a burst of dozens
+of -0x107 messages in a handful of milliseconds, all reporting the same
+already-superseded pos (behind buf_head_index) -- whatever exactly
+causes the chip to emit that burst, this daemon has no business trusting
+a report that contradicts data it has already confirmed received.
+
+Fix: clamp -- only accept retmsg.pos if it's not behind buf_head_index,
+otherwise use buf_head_index itself (a no-op update, restoring the
+invariant instead of violating it further).
+
+Confirmed on real hardware: this specific hard-lockup signature (the
+inverted buf_wr_index/buf_head_index pair, frozen, in
+sock_dev_push_data()'s warning log) has not been reproduced since. A
+second, distinct hard-lockup mechanism remains open, *not* fixed by
+this patch -- see the README's own writeup for the live evidence: the
+chip's own -0x108 wanted_pos can apparently freeze at a stale value
+already behind buf_head_index (so this daemon correctly declines to act
+on it, per the guard 0013 already added) while its own "written pos"
+keeps climbing, and nothing else exists to flush the genuinely-new
+backlog that piles up once that happens -- possibly a chip-firmware-side
+behavior rather than something fixable purely in this daemon's own
+bookkeeping. Keep digging there; this patch narrows the search but does
+not close it.
+
+--- a/daemon/sock_node.c
++++ b/daemon/sock_node.c
+@@ -116,7 +116,26 @@
+         } break;
+         case -0x107: {
+             // 强制更新写入地址
+-            psock->buf_wr_index = retmsg.pos;
++            /* Confirmed on real hardware (0015-*.patch): retmsg.pos here is
++             * a position reported *by the chip*, with no guarantee it's
++             * still ahead of what this daemon has already confirmed
++             * received (psock->buf_head_index) -- a stale/out-of-order
++             * -0x107 can report a pos *behind* buf_head_index. Every other
++             * site that writes buf_wr_index (the normal pack->sta>=0 ack
++             * path, the -0x108 force-resend path) maintains buf_wr_index
++             * >= buf_head_index as an invariant; this was the one
++             * exception, accepting retmsg.pos completely unguarded. Once
++             * buf_wr_index < buf_head_index, sock_dev_need_write()'s own
++             * (uint32_t)(buf_wr_index - buf_head_index) computation
++             * underflows to a huge bogus offset, permanently breaking its
++             * ringbuffer_get_data() "is there anything to send" check for
++             * this socket -- observed live as a hard, non-recovering
++             * lockup (throughput pinned at 0, every subsequent write
++             * timing out) once a burst of stale -0x107 messages (all
++             * reporting the same already-superseded pos) pinned
++             * buf_wr_index below buf_head_index. Clamping here restores
++             * the invariant every other write site already relies on. */
++            psock->buf_wr_index = (retmsg.pos >= psock->buf_head_index) ? retmsg.pos : psock->buf_head_index;
+             com_log(COM_SOCKET_DATA,
+                     "%d-%d send pending pos %#" PRIx64 ", len %" PRIx32 " , buf head pos = %#" PRIx64
+                     " wr head pos = %#" PRIx64,

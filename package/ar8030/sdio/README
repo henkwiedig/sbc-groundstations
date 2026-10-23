@@ -1,0 +1,3 @@
+OpenIPC/builder package/ar8030 patches (betafpv-p1 6418dec: 0001, 0013, 0015,
+0022; 0005 is our own), applied by ar8030.mk only for BR2_PACKAGE_AR8030_BUS_SDIO, after this
+package's own series. The numbers inside the patch texts are the builder's.

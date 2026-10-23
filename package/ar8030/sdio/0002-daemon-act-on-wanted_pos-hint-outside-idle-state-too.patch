@@ -1,0 +1,78 @@
+daemon: also act on the chip's wanted_pos resend hint while sock_can_send_data,
+not only while sock_wait_usb_data
+
+Background: chasing the SDIO-mode "bb_socket_write made no progress" stalls
+(ar8030-transport-tx's own log line -- see this project's ar8030-transport
+repo, tx/main.c) that cause visible video pauses under sustained load.
+Live-captured the daemon's own debug-pad log (/var/log/ar8030/daemon_log/)
+around a real stall and found dev_dat_so_write_proc()'s handling of the
+chip's -0x108 reply ("wanted pos" -- an idle-notify telling the daemon
+what position it should resend from if anything was dropped) firing
+almost immediately after the drop it was reporting (~2ms later), well
+before the client's own multi-second bb_socket_write() timeout. But the
+handler only acted on it when psock->sock_sta == sock_wait_usb_data --
+and _sock_dev_pack_make() (a different thread) hadn't necessarily flipped
+sock_sta to that state yet when this reply landed. When the race lost,
+the wantedpos hint was silently discarded and nothing else retried it:
+the socket just sat there until some later, unrelated event (typically
+the *next* client write, whose sock_dev_push_data() call happens to run
+while sock_sta is sock_wait_usb_data) coincidentally re-checked the same
+stale wantedpos -- observed on real hardware to take up to ~2.5s, which
+lines up exactly with bb_socket_write()'s own client-side timeout window.
+
+sock_can_send_data is a safe state to also act in here: it only means the
+tx side still believes it has more to package, which it will still go do
+via bn_tx_inotify() below either way -- forcing buf_wr_index back to
+wantedpos first just makes sure that next package starts from the
+position the chip actually confirmed, instead of blindly continuing past
+data the chip never received.
+
+Caveat (important for whoever picks this up next): this is a real, correct
+fix for a real race, confirmed to fire on real hardware. But it turned out
+NOT to be the dominant cause of the SDIO throughput stalls. A follow-up
+isolation test -- swapping in the vendor's own artosyn_sdio.ko kernel
+module while keeping this patched daemon -- still showed zero stalls
+across 22000+ writes (including a 33KB chunk) at the same throughput where
+our own kernel module + this same daemon still stalled repeatedly. So the
+remaining bug lives in our own kernel driver's /dev/artosyn_sdio chardev
+(see 0011/0012), not the daemon. Keep this patch (it's a genuine
+improvement and narrows the race window), but the next debugging session
+should go back into driver/linux/bus/sdio.c, not this file.
+
+--- a/daemon/sock_node.c
++++ b/daemon/sock_node.c
+@@ -148,7 +148,33 @@ static int dev_dat_so_write_proc(sock_dev* psock, struct usbpack* pack)
+                     retmsg.wanted_pos);
+             uint64_t wantedpos = retmsg.wanted_pos;
+             // 空闲状态
+-            if (psock->sock_sta == sock_wait_usb_data) {
++            /* Confirmed on real hardware (0013-*.patch): the chip's -0x108
++             * idle-notify carrying wantedpos can arrive within ~2ms of the
++             * dropped low-level write it's reporting -- well before the
++             * client's own multi-second write timeout -- but this handler
++             * used to require sock_sta == sock_wait_usb_data specifically.
++             * _sock_dev_pack_make() (the tx-side thread) and this reply
++             * handler (the rx-side thread) race on that same field: a
++             * -0x108 landing while the tx side still holds sock_sta at
++             * sock_can_send_data (e.g. it hasn't yet discovered there's
++             * nothing left to package and flipped to sock_wait_usb_data)
++             * used to fall straight through here with no resend and no
++             * retry -- silently discarding a wantedpos that was already
++             * telling us exactly what to resend. The socket then just sat
++             * there until some *unrelated* later event (the next client
++             * write, whose sock_dev_push_data() call happens to run while
++             * sock_sta is sock_wait_usb_data) coincidentally re-armed this
++             * same check with the same stale wantedpos -- observed on real
++             * hardware to take up to ~2.5s, exactly matching bb_socket_
++             * write()'s own client-side "made no progress" timeout window.
++             * sock_can_send_data is a safe state to also act in here: it
++             * only means the tx side still believes it has more to
++             * package, which it will still go do via bn_tx_inotify() below
++             * either way -- forcing buf_wr_index back to wantedpos first
++             * just makes sure that next package starts from the position
++             * the chip actually confirmed, instead of blindly continuing
++             * from data the chip never received. */
++            if (psock->sock_sta == sock_wait_usb_data || psock->sock_sta == sock_can_send_data) {
+                 // 发送位置错误
+                 if (wantedpos >= psock->buf_head_index) {
+                     uint32_t testpos = (uint32_t)(wantedpos - psock->buf_head_index);

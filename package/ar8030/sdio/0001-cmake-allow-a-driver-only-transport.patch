@@ -1,0 +1,28 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index ed9e0d3..91f289c 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -40,6 +40,14 @@ option(BUILD_UART_CFG_TEST "build uart cfg demo" OFF)
+ 
+ option(BUILD_NET_DEV_DEMO "build net device demo" ON)
+ 
++option(BUILD_USB_TEST_TOOL "build the usb rom-code firmware loader" ON)
++
++option(BUILD_OTA_UPGRADE "build the ota upgrade tool" ON)
++
++option(BUILD_CMD_DBG "build the cmd_dbg tool" ON)
++
++option(BUILD_BB_PAIR "build the bb_pair binding tool" ON)
++
+ if(USING_8030USB)
+     add_definitions(-DDEV_8030_USB)
+     message("daemon using 8030 usb")
+@@ -60,7 +68,7 @@ if(USING_8030DRV)
+     message("daemon using 8030 uart")
+ endif()
+ 
+-if(NOT USING_8030USB AND NOT USING_8030SDIO AND NOT USING_8030UART)
++if(NOT USING_8030USB AND NOT USING_8030SDIO AND NOT USING_8030UART AND NOT USING_8030DRV)
+     message(FATAL_ERROR "must choose dev mode first!!")
+ endif()
+ 

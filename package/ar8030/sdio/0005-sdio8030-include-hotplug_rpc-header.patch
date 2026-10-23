@@ -1,0 +1,21 @@
+daemon/dev8030/sdio8030: include hotplug_rpc.h
+
+sdio_dev.c calls dev8030_hotplug_event() (declared in the sibling
+daemon/dev8030/hotplug_rpc.h) without including that header, the same
+omission ../0002-drv8030-include-hotplug_rpc-header.patch fixes for the DRV
+backend. An error on GCC 14 (-Wimplicit-function-declaration is one by
+default there), a warning on older compilers:
+
+    sdio_dev.c:399:17: error: implicit declaration of function
+    'dev8030_hotplug_event' [-Wimplicit-function-declaration]
+
+--- a/daemon/dev8030/sdio8030/sdio_dev.c
++++ b/daemon/dev8030/sdio8030/sdio_dev.c
+@@ -1,6 +1,7 @@
+ 
+ #include "com_log.h"
+ #include "dev8030.h"
++#include "hotplug_rpc.h"
+ #include "list.h"
+ #include "rpc_node.h"
+ #include "timspec_helper.h"

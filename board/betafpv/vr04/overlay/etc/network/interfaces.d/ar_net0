@@ -1,0 +1,9 @@
+# ar_net0 is the AR8030's native net_device, registered by artosyn_drv.ko
+# (ar8030-transport kmod/artosyn_net.c) once the chip runs its firmware: bb
+# socket slot 0 port 3, the port the air unit's ar_net0 / ar8030-tun use
+# (port 2 is the video socket). lifecycled's connected/dropped hooks
+# (30-ifup.sh / 30-ifdown.sh) bring it up and down with the link. The air
+# unit is 192.168.100.1.
+iface ar_net0 inet static
+	address 192.168.100.2
+	netmask 255.255.255.0

@@ -52,11 +52,12 @@ endef
 AR8030_PRE_CONFIGURE_HOOKS += AR8030_FIX_LIBTUNTAP_TARBALL
 endif
 
+ifeq ($(BR2_PACKAGE_AR8030_BUS_USB),y)
 #
 # Kernel driver (driver/linux, out-of-tree, built by the kernel's own kbuild).
 #
-# This board's AR8030 is USB-attached only -- no SDIO wiring exists or is
-# planned, so this is hardcoded rather than exposed as a choice.
+# USB only: on an SDIO board the kernel side is ar8030-transport's own
+# clean-room module instead (ar8030-transport-rx, ..._RX_KMOD).
 AR8030_MODULE_SUBDIRS = driver/linux
 
 AR8030_MODULE_MAKE_OPTS = \
@@ -75,6 +76,7 @@ define AR8030_LINUX_CONFIG_FIXUPS
 	$(call KCONFIG_SET_OPT,CONFIG_NET,y)
 	$(call KCONFIG_SET_OPT,CONFIG_USB,y)
 endef
+endif
 
 #
 # Userspace (CMake).
@@ -88,12 +90,26 @@ endef
 # have to be compiled in (0002-*.patch and 0003-*.patch fix build failures
 # specific to having USING_8030DRV alongside USING_8030USB).
 #
+# SDIO (BR2_PACKAGE_AR8030_BUS_SDIO): daemon/main.c's INTF_TYPE_SDIO alone,
+# opening ar8030-transport's /dev/artosyn_sdio (-i 1); nothing creates
+# /dev/ar_mdev<N> there, so USING_8030DRV is off too. sdio/*.patch are
+# OpenIPC/builder's air-side ar8030 patches for exactly this build (0001
+# lets CMake accept an SDIO-only transport; the rest fix the daemon's SDIO
+# write path), applied after the common series and only in this mode.
+ifeq ($(BR2_PACKAGE_AR8030_BUS_SDIO),y)
+define AR8030_APPLY_SDIO_PATCHES
+	$(APPLY_PATCHES) $(@D) $(AR8030_PKGDIR)/sdio \*.patch
+endef
+AR8030_POST_PATCH_HOOKS += AR8030_APPLY_SDIO_PATCHES
+AR8030_BUS_OPTS = -DUSING_8030USB=OFF -DUSING_8030SDIO=ON -DUSING_8030DRV=OFF -DBUILD_RAM_INIT=OFF
+else
+AR8030_BUS_OPTS = -DUSING_8030USB=ON -DUSING_8030SDIO=OFF -DUSING_8030DRV=ON -DBUILD_RAM_INIT=ON
+endif
+
 AR8030_CONF_OPTS = \
 	-DCMAKE_EXE_LINKER_FLAGS="-static-libstdc++" \
-	-DUSING_8030USB=ON \
-	-DUSING_8030SDIO=OFF \
+	$(AR8030_BUS_OPTS) \
 	-DUSING_8030UART=OFF \
-	-DUSING_8030DRV=ON \
 	-DUSING_XDS_HDR=ON \
 	-DENABLE_UDS=ON \
 	-DENABLE_PYTHON=OFF \
@@ -101,7 +117,6 @@ AR8030_CONF_OPTS = \
 	-DDAEMON_STATIC_LIB=OFF \
 	-DAPP_STATIC_LIB=OFF \
 	-DBUILD_ARTOSYN_EXAMPLE=OFF \
-	-DBUILD_RAM_INIT=ON \
 	-DBUILD_TUNTAP=$(if $(BR2_PACKAGE_AR8030_TUNTAP),ON,OFF) \
 	-DBUILD_BW_UPDATE_DEMO=OFF \
 	-DBUILD_IMG_UPGRADE=OFF \
@@ -240,5 +255,7 @@ define AR8030_INSTALL_TARGET_CMDS
 	$(AR8030_INSTALL_INIT)
 endef
 
+ifeq ($(BR2_PACKAGE_AR8030_BUS_USB),y)
 $(eval $(kernel-module))
+endif
 $(eval $(cmake-package))
