@@ -1,0 +1,70 @@
+# BetaFPV VR04 HD goggles (betafpv_vr04)
+
+The P1 system's ground unit: Artosyn PROXIMA 9311 (AR9311, 2x Cortex-A53,
+256 MiB), AR8030 on SDIO, 128 MiB SPI-NAND, MIPI-DSI panel, SD card slot,
+ADC button ladder. Kernel: mainline 6.18.36 with MissingLynk's ml-kernel BSP
+(board `betafpv-vr04-goggle`, `linux/linux-ext-ml-kernel.mk`).
+
+Stage 1 (this state): backup, RAM boot through the stock U-Boot, install into
+NAND slot A next to stock. No AR8030 link, video or OSD yet. The display
+drivers are MissingLynk's QY45043A0 panel only; units with the nd043fhdm30p
+panel need a driver of their own (stock: libpn_nd043fhdm30p.so).
+
+## Flash layout and boot
+
+Same 20 partitions as the P1 air unit (`/proc/mtd`: mtd0 whole chip, gpt0
+mtd5, kernel0/1 13/14, dtb0/1 15/16, userapp0/1 17/18). The stock SPL boots
+the slot whose env/uboot/kernel/dtb/userapp the GPT marks active (bit 47,
+`openipc-bsel`), Falcon-style: kernelN + dtbN, command line from the dtb,
+`ubi.mtd=` rewritten to the slot's userapp. U-Boot only runs on the
+reboot-to-U-Boot path.
+
+This build: `uImage.ar9311` (OTRA + LZ4 uImage) for kernelN,
+`vr04-flash.dtb` for dtbN, `rootfs.ubi` for userappN (UBIFS `rootfs`,
+read-only, + `rootfs_data` overlay), all three in
+`P1_GND_<stock release>_OpenIPC_<sha>.img` (stock's update image format,
+packed on the stock image in `cache/vendor-images/`, see
+`package/artlynk-vr04-vendor-firmware`). `vr04-testboot/` is the RAM boot:
+`uImage`, `vr04.dtb` (`vr04-ram.dtb`), `initrd.gz`.
+
+Network: USB RNDIS + ACM (1d6b:0104), the goggles at 192.168.3.100, root
+password 12345; serial console ttyS0 at 1152000 baud.
+
+## Procedure
+
+Every unit needs its own backup first (factory = RF calibration, unique).
+Never activate a slot that has not booted once through U-Boot. Power-cycle
+rather than reboot: the SPL can hang after a warm reset.
+
+1. Backup from running stock (reads only; serial console + RNDIS):
+   `scripts/vr04-backup.py ../betafpv/rev/backup-vr04-gnd-<factory md5>-<date>`
+2. What the stock U-Boot can load from: `scripts/vr04-uboot-boot.py probe`.
+   The 2.1.3 U-Boot has no `mmc` command, so no SD card: loady/loadx/loadb,
+   `usb` (host), network (no PHY on the goggles) and `mtd read` only.
+3. RAM boot (stock untouched): `scripts/vr04-uboot-boot.py ram --source ymodem`
+   sends `vr04-testboot/*` over the console (YMODEM, ~37 KiB/s: about 7
+   minutes for kernel + initramfs; every 1 KiB block waits for its ACK over
+   the USB-serial adapter). `--no-drm` keeps the display drivers out.
+4. Into slot A, from the RAM-booted system:
+   `scripts/vr04-install.py --dry-run install <img> --backup <dir>`, then
+   without `--dry-run`. Stock's slot B stays active.
+5. Gate test: power-cycle (stock), then `scripts/vr04-uboot-boot.py slot-a`
+6. `scripts/vr04-install.py activate a --backup <dir>` (`--dry-run` first),
+   power-cycle. Back to stock: `openipc-bsel set 1`, power-cycle.
+
+If an active slot does not come up (the SPL boots it on its own, without
+U-Boot), the way back is MissingLynk's boot-ROM UART writer
+(`Missing-Lynk/MissingLynk/glue/recovery/RECOVERY.md`: 115200 baud on the
+console wires, magic "0123456" in the ~45 s after power-on, a bare-metal
+payload that rewrites gpt0), so a slot is activated only after it booted
+through U-Boot (step 5).
+
+`/usr/sbin/vr04-uboot` (0x0A106138 bit 0 + watchdog reset, MissingLynk's
+uboot-trigger) reset the bench unit straight into stock instead of U-Boot
+on 2026-10-23: not working yet, use stock's control port.
+
+## Unit log
+
+| unit | factory md5 | backup | notes |
+|---|---|---|---|
+| bench goggles (hw V2.0, stock 2.1.3 in slot B; slot A: OpenIPC since 2026-10-23, booted via U-Boot; GPT in gpt1, B active) | 0e398546c8f382ca7bbfdcd8944fa297 | betafpv/rev/backup-vr04-gnd-0e398546-2026-10-23 (+ -pass1) | panel nd043fhdm30p (stock's QY45043A0 detection fails; factory cfg says VoDevice lt9711); bad blocks: kernel1 1, userapp0 3, userapp1 3, usr_data 1 |

@@ -1,0 +1,56 @@
+#!/bin/sh
+# betafpv-vr04 /init (replaces board/common/overlay/init, which partitions a
+# block device). The root is one of:
+# - the initramfs: a RAM boot through the stock U-Boot (rdinit=/init), which
+#   is writable already and touches no flash
+# - the UBIFS "rootfs" volume of the running slot's userapp, read-only
+#   (root=ubi0:rootfs ro init=/init, from the slot's dtb): the "rootfs_data"
+#   volume of the same UBI device becomes the writable overlay. An empty one
+#   is formatted by its first mount; tmpfs stands in if it does not mount.
+# /overlay/.firstboot wipes the overlay, /overlay/.initshell stops in a shell.
+
+on_exit() {
+	mountpoint -q /proc && umount /proc
+	exec /sbin/init "$@"
+}
+
+mount -t proc proc /proc || exec /sbin/init "$@"
+trap 'on_exit "$@"' EXIT
+
+mountpoint -q /dev || mount -t devtmpfs devtmpfs /dev
+if [ "$(awk '$2 == "/" { t = $3 } END { print t }' /proc/mounts)" != ubifs ]; then
+	# initramfs: the console as Buildroot's cpio /init sets it up
+	exec 0</dev/console 1>/dev/console 2>/dev/console
+	exit 0
+fi
+
+mount -t sysfs sys /sys
+mount -t tmpfs tmpfs /tmp
+
+if ! mount -t ubifs ubi0:rootfs_data /overlay; then
+	echo "<1>init: no rootfs_data volume, changes are lost at power-off" > /dev/kmsg
+	mount -t tmpfs tmpfs /overlay
+fi
+
+if [ -f /overlay/.initshell ]; then
+	rm /overlay/.initshell
+	/bin/sh
+fi
+
+if [ -f /overlay/.firstboot ]; then
+	echo "<0>firstboot: wiping the overlay" > /dev/kmsg
+	rm -rf /overlay/root /overlay/work /overlay/.firstboot
+fi
+
+mkdir -p /overlay/root /overlay/work
+if ! mount -t overlay overlay -o lowerdir=/,upperdir=/overlay/root,workdir=/overlay/work /mnt; then
+	umount /overlay
+	exit 1
+fi
+
+/sbin/pivot_root /mnt /mnt/rom
+mount -o noatime,move /rom/proc /proc
+mount -o noatime,move /rom/sys /sys
+mount -o noatime,move /rom/dev /dev
+mount -o noatime,move /rom/overlay /overlay
+mount -o noatime,move /rom/tmp /tmp

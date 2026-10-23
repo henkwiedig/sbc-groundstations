@@ -1,0 +1,82 @@
+#!/bin/sh
+#
+# USB gadget of the VR04 goggles (replaces board/common/overlay/usr/sbin/gadget,
+# which drives the Rockchip dwc3): RNDIS + ACM on the AR9311's dwc2. The USB
+# port is the goggles' only wired network, so `gadget init` always composes it.
+#
+# RNDIS rather than NCM: Windows binds it driverless given the Microsoft OS
+# descriptors below. 1d6b:0104 and 192.168.3.100/24 (stock's own address) on
+# usb0, a DHCP server for the host; ttyGS0 gets a getty.
+#
+#   gadget init|up    compose and bind
+#   gadget down       unbind and remove
+
+G=/sys/kernel/config/usb_gadget/g1
+DEV_MAC=02:1a:11:00:01:01
+HOST_MAC=02:1a:11:00:01:02
+
+up() {
+	grep -q "/sys/kernel/config configfs" /proc/mounts || mount -t configfs none /sys/kernel/config
+	[ -d /sys/kernel/config/usb_gadget ] || modprobe libcomposite
+	[ -d $G ] && { echo "gadget: already composed"; return 0; }
+
+	mkdir $G
+	echo 0x1d6b > $G/idVendor	# Linux Foundation
+	echo 0x0104 > $G/idProduct	# Multifunction Composite Gadget
+	echo 0x0100 > $G/bcdDevice
+	echo 0x0200 > $G/bcdUSB
+	# IAD device class: Windows looks at the OS descriptors only then
+	echo 0xef > $G/bDeviceClass
+	echo 0x02 > $G/bDeviceSubClass
+	echo 0x01 > $G/bDeviceProtocol
+
+	mkdir -p $G/strings/0x409
+	echo OpenIPC > $G/strings/0x409/manufacturer
+	echo "BetaFPV VR04" > $G/strings/0x409/product
+	hostname -s > $G/strings/0x409/serialnumber
+
+	mkdir -p $G/configs/c.1/strings/0x409
+	echo "RNDIS + ACM" > $G/configs/c.1/strings/0x409/configuration
+	echo 250 > $G/configs/c.1/MaxPower
+
+	mkdir -p $G/functions/rndis.usb0
+	echo $DEV_MAC > $G/functions/rndis.usb0/dev_addr
+	echo $HOST_MAC > $G/functions/rndis.usb0/host_addr
+	# b_vendor_code 0xcd and MSFT100 are fixed by the OS descriptor protocol;
+	# 5162001 is Microsoft's RNDIS sub-compatible id.
+	if [ -d $G/os_desc ]; then
+		echo 1 > $G/os_desc/use
+		echo 0xcd > $G/os_desc/b_vendor_code
+		echo MSFT100 > $G/os_desc/qw_sign
+		echo RNDIS > $G/functions/rndis.usb0/os_desc/interface.rndis/compatible_id
+		echo 5162001 > $G/functions/rndis.usb0/os_desc/interface.rndis/sub_compatible_id
+	fi
+	mkdir -p $G/functions/acm.gs0
+
+	ln -s $G/functions/rndis.usb0 $G/configs/c.1/
+	ln -s $G/functions/acm.gs0 $G/configs/c.1/
+	[ -d $G/os_desc ] && ln -s $G/configs/c.1 $G/os_desc/
+
+	ls /sys/class/udc > $G/UDC || { echo "gadget: no UDC"; return 1; }
+
+	grep -q '^ttyGS0' /etc/inittab || echo 'ttyGS0::respawn:/sbin/getty -L ttyGS0 115200 vt100' >> /etc/inittab
+	kill -HUP 1
+	ifup usb0
+}
+
+down() {
+	[ -d $G ] || return 0
+	ifdown usb0
+	sed -i '/^ttyGS0/d' /etc/inittab
+	kill -HUP 1
+	echo "" > $G/UDC
+	rm -f $G/os_desc/c.1 $G/configs/c.1/rndis.usb0 $G/configs/c.1/acm.gs0
+	rmdir $G/configs/c.1/strings/0x409 $G/configs/c.1 $G/functions/rndis.usb0 $G/functions/acm.gs0 \
+		$G/strings/0x409 $G
+}
+
+case "$1" in
+init | up) up ;;
+down) down ;;
+*) echo "Usage: $0 {init|up|down}"; exit 1 ;;
+esac

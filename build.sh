@@ -98,7 +98,8 @@ build_project() {
     echo "Starting build..."
     $build_cmd $TARGET
 
-    if [ $TARGET = "all" ]
+    # Rockchip boards' artifacts; the others' post-image scripts write their own
+    if [ $TARGET = "all" ] && [ -f "$OUTPUT_DIR/$DEFCONFIG/images/u-boot-rockchip.bin" ]
     then
         cd $OUTPUT_DIR/$DEFCONFIG/images
         cp u-boot-rockchip.bin u-boot.bin

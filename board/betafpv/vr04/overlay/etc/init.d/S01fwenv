@@ -1,0 +1,13 @@
+#!/bin/sh
+#
+# An empty, valid environment in /etc/fw_env.bin (see /etc/fw_env.config) when
+# there is none yet: the CRC32 of 0xfffc zero bytes, then the zeros.
+
+case "$1" in
+start)
+	[ -s /etc/fw_env.bin ] ||
+		{ printf '\277\146\013\121'; printf '%65532s' '' | tr ' ' '\000'; } > /etc/fw_env.bin
+	;;
+stop) ;;
+*) echo "Usage: $0 {start|stop}"; exit 1 ;;
+esac

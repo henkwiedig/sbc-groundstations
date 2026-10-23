@@ -1,0 +1,355 @@
+#!/bin/sh
+#
+# sysupgrade for the BetaFPV VR04 goggles (betafpv_vr04, P1 GND): flashes an
+# update image in BetaFPV's stock format (Artosyn "ARTO", see /usr/sbin/arto)
+# into the slot that is NOT running, then makes that slot the active one.
+# Replaces sbc-groundstations' common /sbin/sysupgrade, which writes block
+# devices.
+#
+# The image decides what is installed: BetaFPV's own P1_GND_*.img brings stock
+# back, an OpenIPC one (P1_GND_*_OpenIPC_*.img, customer version "OpenIPC")
+# installs OpenIPC. Each carries one slot's uboot, env, kernel, dtb and userapp,
+# plus the SPL and the vendor partition that both slots share; those two are
+# compared, never written: an image that would change them is refused (the
+# stock flasher is for that). factory, usr_data and usr_log stay as they are,
+# so stock comes back with its own settings and pairing.
+#
+# Of the slot's partitions only --parts are written (default kernel, dtb,
+# userapp): uboot and env only run on the reboot-to-U-Boot path, and the stock
+# U-Boot already in the slot serves it. -d checks everything and writes
+# nothing. It never reboots: after a warm reboot the SPL can hang, so the new
+# slot is started by a power cycle.
+#
+# Slots: the stock SPL boots the env/uboot/kernel/dtb/userapp set the GPT marks
+# active (openipc-bsel); the other slot keeps the previous firmware, and
+# "openipc-bsel switch" goes back to it.
+#
+# An OpenIPC image also gets this system's settings: the U-Boot environment's
+# variables and, from the overlay, $OVERLAY_CARRY (passwords, ssh keys, the
+# AR8030 pairing, /etc/default). -n starts the new slot clean instead.
+#
+# --set-password sets root's password on what is flashed: in the new slot's
+# overlay for OpenIPC. Stock keeps its password in /etc/passwd on a read-only
+# squashfs; its run.sh runs /usrdata/run_dbg.sh instead of its own body when
+# /usrdata/buildtime matches the image's (and wipes /usrdata when it does not),
+# so that hook goes into usr_data: it bind-mounts a copy of /etc/passwd with
+# the new hash, then runs stock's run.sh with the hook check disabled.
+
+OVERLAY_CARRY="etc/shadow etc/passwd etc/group etc/hostname etc/TZ etc/custom.ok
+etc/default etc/dropbear root/.ssh lib/firmware/ar8030/ar8030.json"
+WORK=/tmp/sysupgrade
+UBI_DEV=7
+UBI_USRDATA=8
+
+image= url= password= force= carry=1 insecure= dry= activate=1 slot=
+parts_wanted="kernel dtb userapp"
+
+log() {
+	echo "sysupgrade: $*"
+}
+
+cleanup() {
+	for m in "$WORK/ovl" "$WORK/rofs" "$WORK/usrdata"; do
+		mountpoint -q "$m" 2>/dev/null && umount "$m"
+	done
+	[ -e /dev/ubiblock${UBI_DEV}_0 ] && ubiblock --remove /dev/ubi${UBI_DEV}_0 2>/dev/null
+	for d in $UBI_DEV $UBI_USRDATA; do
+		[ -e /sys/class/ubi/ubi$d ] && ubidetach -d $d 2>/dev/null
+	done
+	rm -rf "$WORK"
+}
+
+die() {
+	echo "sysupgrade: $*" >&2
+	cleanup
+	exit 1
+}
+
+print_usage() {
+	echo "
+Usage: $0 --image=FILE | --url=URL [options]
+
+Flashes a VR04 goggle update image -- BetaFPV's stock P1_GND_*.img or an
+OpenIPC P1_GND_*_OpenIPC_*.img -- into the slot that is not running, then
+makes it the active one. The running slot is never touched, nothing reboots.
+
+  --image=FILE          The update image (--archive=FILE works too).
+  --url=URL             Download it first.
+  --set-password=PASS   root's password on what is flashed. Visible in 'ps'
+                        and shell history on this device.
+  --parts=LIST          The slot's partitions to write, comma-separated, of
+                        uboot,env,kernel,dtb,userapp (default
+                        kernel,dtb,userapp).
+  --slot=0|1            Refuse unless this is the slot that gets written.
+  -d, --dry-run         All the checks, no writes.
+  --no-activate         Write the slot, leave the active slot as it is.
+  -n, --wipe_overlay    OpenIPC image: start the new slot without this
+                        system's settings.
+  -f, --force           Even if the running slot is not the active one.
+      --insecure        Skip TLS verification for an https --url.
+  -h, --help            Display this help and exit.
+"
+}
+
+# /dev/mtdN of the partition called $1.
+mtd() {
+	awk -v n="\"$1\"" '$4 == n { sub(":", "", $1); print "/dev/" $1 }' /proc/mtd
+}
+
+# md5 of the first $2 bytes of NAND partition $1 (bad blocks skipped).
+nand_md5() {
+	nanddump --bb=skipbad --omitoob -q -l "$2" "$1" 2>/dev/null | head -c "$2" | md5sum | cut -d' ' -f1
+}
+
+bank() {
+	openipc-bsel "$1" 2>/dev/null | sed -n 's/.*bank=\([01]\)$/\1/p'
+}
+
+# The image carries $1: its data length, empty if not.
+img_len() {
+	echo "$parts" | awk -v n="$1" '$1 == n { print $4 }'
+}
+
+# Shared partitions: the image's copy must be what is installed.
+check_shared() {
+	local name=$1 dev=$2 len want
+	len=$(img_len "$name")
+	[ -n "$len" ] || return 0
+	want=$(arto cat "$image" "$name" | md5sum | cut -d' ' -f1)
+	[ "$(nand_md5 "$dev" "$len")" = "$want" ] ||
+		die "the image carries a different $name than this unit has (shared by both slots): not flashed -- use the stock flasher for it"
+}
+
+# Writes the image's $1 to partition $2, unless it holds it already.
+write_raw() {
+	local src=$1 dst=$2 dev len want
+	dev=$(mtd "$dst")
+	[ -n "$dev" ] || die "no $dst partition"
+	arto cat "$image" "$src" > "$WORK/part" || die "cannot unpack $src"
+	len=$(wc -c < "$WORK/part")
+	want=$(md5sum < "$WORK/part" | cut -d' ' -f1)
+	if [ "$(nand_md5 "$dev" "$len")" = "$want" ]; then
+		log "$dst: already the image's"
+		return 0
+	fi
+	[ "$(cat /sys/class/mtd/${dev#/dev/}/bad_blocks)" = 0 ] ||
+		die "$dst has a bad block: not written (the SPL may not skip it)"
+	log "writing $dst ($len bytes) ..."
+	flash_erase -q "$dev" 0 0 && nandwrite -p -q "$dev" "$WORK/part" || die "writing $dst failed"
+	[ "$(nand_md5 "$dev" "$len")" = "$want" ] || die "$dst: readback differs -- the slot is not usable"
+	rm -f "$WORK/part"
+}
+
+wait_node() {
+	local i=0
+	while [ ! -e "$1" ] && [ $i -lt 50 ]; do
+		usleep 100000
+		i=$((i + 1))
+	done
+	[ -e "$1" ]
+}
+
+# The UBI volume called $2 on device $1: /dev/ubiN_M.
+ubi_vol() {
+	local v
+	for v in /sys/class/ubi/ubi$1_*; do
+		[ "$(cat "$v/name" 2>/dev/null)" = "$2" ] && { echo "/dev/${v##*/}"; return 0; }
+	done
+	return 1
+}
+
+hash_password() {
+	mkpasswd -m md5 "$password" || die "cannot hash the password"
+}
+
+# OpenIPC: this system's settings (unless -n) and --set-password into the new
+# slot's overlay.
+openipc_overlay() {
+	local p hash
+	[ -n "$carry" ] && [ -d /overlay/root ] || [ -n "$password" ] || return 0
+	ubi_vol $UBI_DEV rootfs_data >/dev/null || die "the new slot has no rootfs_data volume"
+	mkdir -p "$WORK/ovl" && mount -t ubifs ubi$UBI_DEV:rootfs_data "$WORK/ovl" ||
+		die "cannot mount the new slot's overlay"
+	mkdir -p "$WORK/ovl/root"
+	if [ -n "$carry" ] && [ -d /overlay/root ]; then
+		for p in $OVERLAY_CARRY; do
+			[ -e "/overlay/root/$p" ] || continue
+			mkdir -p "$WORK/ovl/root/${p%/*}"
+			cp -a "/overlay/root/$p" "$WORK/ovl/root/$p" || die "cannot carry $p over"
+		done
+		log "settings carried over"
+	fi
+	if [ -n "$password" ]; then
+		if [ ! -e "$WORK/ovl/root/etc/shadow" ]; then
+			mkdir -p "$WORK/rofs" "$WORK/ovl/root/etc"
+			mount -t ubifs -o ro ubi$UBI_DEV:rootfs "$WORK/rofs" &&
+				cp -a "$WORK/rofs/etc/shadow" "$WORK/ovl/root/etc/shadow" ||
+				die "cannot read the new rootfs's /etc/shadow"
+			umount "$WORK/rofs"
+		fi
+		hash=$(hash_password)
+		sed -i "s|^root:[^:]*:|root:$hash:|" "$WORK/ovl/root/etc/shadow" || die "cannot set the password"
+		log "root password set"
+	fi
+	sync
+	umount "$WORK/ovl"
+}
+
+# Stock: --set-password through stock's /usrdata/run_dbg.sh hook (see top).
+stock_password() {
+	local num buildtime vol hash
+	[ -n "$password" ] || return 0
+	ubi_vol $UBI_DEV userapp >/dev/null || die "the new slot has no userapp volume"
+	ubiblock --create "$(ubi_vol $UBI_DEV userapp)" && wait_node /dev/ubiblock${UBI_DEV}_0 &&
+		mkdir -p "$WORK/rofs" && mount -t squashfs -o ro /dev/ubiblock${UBI_DEV}_0 "$WORK/rofs" ||
+		die "cannot mount the stock rootfs"
+	buildtime=$(cat "$WORK/rofs/usr/usrdata/buildtime") || die "the stock rootfs has no buildtime"
+	umount "$WORK/rofs"
+	ubiblock --remove "$(ubi_vol $UBI_DEV userapp)"
+
+	num=$(mtd usr_data)
+	num=${num#/dev/mtd}
+	[ -n "$num" ] || die "no usr_data partition"
+	ubiattach -m "$num" -d $UBI_USRDATA >/dev/null || die "cannot attach usr_data"
+	wait_node /dev/ubi${UBI_USRDATA}_0 || die "usr_data has no volume"
+	vol=$(cat /sys/class/ubi/ubi${UBI_USRDATA}_0/name)
+	mkdir -p "$WORK/usrdata" && mount -t ubifs "ubi$UBI_USRDATA:$vol" "$WORK/usrdata" ||
+		die "cannot mount usr_data"
+	hash=$(hash_password)
+	printf '%s\n' "$buildtime" > "$WORK/usrdata/buildtime"
+	cat > "$WORK/usrdata/run_dbg.sh" <<EOF
+#!/bin/sh
+# Written by OpenIPC's sysupgrade --set-password: root's password for this
+# stock firmware (its /etc/passwd is on a read-only squashfs), then stock's own
+# run.sh with this hook skipped. Delete this file and buildtime for stock as
+# shipped.
+cp /etc/passwd /tmp/passwd.openipc &&
+	sed -i 's|^root:[^:]*:|root:$hash:|' /tmp/passwd.openipc &&
+	mount --bind /tmp/passwd.openipc /etc/passwd
+sed 's|/usrdata/run_dbg.sh|/usrdata/.run_dbg.sh.skipped|g' /usr/usrdata/run.sh > /tmp/run.openipc.sh
+exec sh /tmp/run.openipc.sh
+EOF
+	chmod 755 "$WORK/usrdata/run_dbg.sh"
+	sync
+	umount "$WORK/usrdata"
+	ubidetach -d $UBI_USRDATA
+	log "stock root password set (usr_data: run_dbg.sh, buildtime)"
+}
+
+while [ $# -gt 0 ]; do
+	case "$1" in
+	--image=* | --archive=*) image=${1#*=} ;;
+	--url=*) url=${1#*=} ;;
+	--set-password=*) password=${1#*=} ;;
+	--parts=*) parts_wanted=$(echo "${1#*=}" | tr ',' ' ') ;;
+	--slot=*) slot=${1#*=} ;;
+	-d | --dry-run) dry=1 ;;
+	--no-activate) activate= ;;
+	-n | --wipe_overlay) carry= ;;
+	-x | --no_reboot) ;;
+	-f | --force | --force_all) force=1 ;;
+	--insecure) insecure=-k ;;
+	-h | --help) print_usage; exit 0 ;;
+	*) print_usage; exit 1 ;;
+	esac
+	shift
+done
+[ -n "$image$url" ] || { print_usage; exit 1; }
+
+mkdir "$WORK" 2>/dev/null || { echo "sysupgrade: already running ($WORK exists)" >&2; exit 1; }
+trap cleanup INT TERM
+
+if [ -n "$url" ]; then
+	log "downloading $url ..."
+	curl -fL $insecure -o "$WORK/image.img" "$url" || die "download failed"
+	image=$WORK/image.img
+fi
+[ -f "$image" ] || die "$image: no such file"
+
+arto check "$image" || die "$image: not a sound ARTO image"
+info=$(arto info "$image")
+# P1_GND_VR04 up to 2.0.x, IGNORE since 2.1.x; not the VR04 PRO's image
+echo "$info" | grep -Eq '^product (P1_GND_VR04|IGNORE),' || die "$image: not a VR04 goggle image"
+case "$info" in
+*"customer version OpenIPC,"*) kind=openipc ;;
+*) kind=stock ;;
+esac
+parts=$(arto parts "$image")
+for p in uboot0 kernel0 dtb0 userapp0; do
+	[ -n "$(img_len $p)" ] || die "$image: no $p"
+done
+
+running=$(bank check_cmdline)
+active=$(bank check_flash)
+[ -n "$active" ] || die "the GPT marks no clear active slot (openipc-bsel check_flash)"
+if [ -n "$running" ] && [ "$running" != "$active" ] && [ -z "$force" ]; then
+	die "running slot $running, but slot $active is the active one: power-cycle first (-f flashes anyway)"
+fi
+target=$((1 - ${running:-$active}))
+[ -z "$slot" ] || [ "$slot" = "$target" ] || die "slot $target would be written, not slot $slot"
+for p in $parts_wanted; do
+	case $p in
+	uboot | env | kernel | dtb | userapp) ;;
+	*) die "--parts: no partition $p" ;;
+	esac
+done
+want() { echo " $parts_wanted " | grep -q " $1 "; }
+log "$kind image, slot $target: $parts_wanted (running: ${running:-RAM}, active: $active)"
+
+check_shared loader "$(mtd spl0)"
+check_shared vendor "$(mtd vendor)"
+
+userapp=$(mtd userapp$target)
+for d in /sys/class/ubi/ubi*/mtd_num; do
+	[ -e "$d" ] && [ "/dev/mtd$(cat "$d")" = "$userapp" ] && die "userapp$target is in use"
+done
+
+for p in uboot kernel dtb; do
+	want $p && [ "$(cat /sys/class/mtd/$(basename "$(mtd $p$target)")/bad_blocks)" != 0 ] &&
+		die "$p$target has a bad block: not written (the SPL may not skip it)"
+done
+if [ -n "$dry" ]; then
+	log "dry run: the image and this unit check out; nothing written"
+	cleanup
+	exit 0
+fi
+
+want uboot && write_raw uboot0 uboot$target
+want kernel && write_raw kernel0 kernel$target
+want dtb && write_raw dtb0 dtb$target
+if want userapp; then
+	log "writing userapp$target ..."
+	arto cat "$image" userapp0 | ubiformat "$userapp" -y -q -f - -S "$(img_len userapp0)" ||
+		die "writing userapp$target failed"
+	ubiattach -m "${userapp#/dev/mtd}" -d $UBI_DEV >/dev/null || die "the new userapp$target does not attach"
+	wait_node /dev/ubi${UBI_DEV}_0 || die "the new userapp$target has no volume"
+	if [ "$kind" = openipc ]; then
+		ubi_vol $UBI_DEV rootfs >/dev/null || die "the new slot has no rootfs volume"
+		openipc_overlay
+	else
+		ubi_vol $UBI_DEV userapp >/dev/null || die "the new slot has no userapp volume"
+		stock_password
+	fi
+	# udev probes the new volumes; detaching under it fails with EBUSY
+	udevadm settle 2>/dev/null
+	ubidetach -d $UBI_DEV
+fi
+
+if want env && [ -n "$(img_len env0)" ]; then
+	write_raw env0 env$target
+	if [ "$kind" = openipc ]; then
+		echo "$(mtd env$target) 0x0 0x8000 0x20000" > "$WORK/env.config"
+		fw_printenv 2>/dev/null | sed 's/=/ /' | fw_setenv -c "$WORK/env.config" -s - ||
+			die "cannot carry the U-Boot environment over"
+	fi
+fi
+
+if [ -n "$activate" ]; then
+	openipc-bsel set "$target" >/dev/null || die "cannot switch to slot $target"
+	[ "$(bank check_flash)" = "$target" ] || die "the GPT does not read back slot $target"
+	log "slot $target ($kind) is active from the next power cycle"
+else
+	log "slot $target ($kind) written; slot $active stays the active one"
+fi
+cleanup
+sync
