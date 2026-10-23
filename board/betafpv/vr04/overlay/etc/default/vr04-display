@@ -1,0 +1,2 @@
+# backlight level at boot, 0..9
+BRIGHTNESS=7

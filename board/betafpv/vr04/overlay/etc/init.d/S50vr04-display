@@ -1,0 +1,27 @@
+#!/bin/sh
+#
+# Backlight on once the panel shows the framebuffer console: the panel driver
+# leaves the backlight to userspace, so it does not light before the first
+# image. BRIGHTNESS (of /sys/class/backlight/backlight/max_brightness) from
+# /etc/default/vr04-display.
+
+BRIGHTNESS=7
+[ -r /etc/default/vr04-display ] && . /etc/default/vr04-display
+BL=/sys/class/backlight/backlight
+
+case "$1" in
+start)
+	i=0
+	while [ ! -e /dev/fb0 ] || [ ! -e $BL/bl_power ]; do
+		[ $i -ge 50 ] && { echo "S50vr04-display: no panel"; exit 0; }
+		usleep 100000
+		i=$((i + 1))
+	done
+	echo "$BRIGHTNESS" > $BL/brightness
+	echo 0 > $BL/bl_power
+	;;
+stop)
+	[ -e $BL/bl_power ] && echo 4 > $BL/bl_power
+	;;
+*) echo "Usage: $0 {start|stop}"; exit 1 ;;
+esac
