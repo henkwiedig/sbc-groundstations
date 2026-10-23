@@ -1,0 +1,11 @@
+config BR2_PACKAGE_ARTO_IMAGE
+	bool "arto-image"
+	select BR2_PACKAGE_LZO
+	help
+	  /usr/sbin/arto: reads Artosyn "ARTO" update images, the stock
+	  firmware container of the BetaFPV P1 (Artosyn PROXIMA 9311) and
+	  the OpenIPC images built in its layout. Lists the header, the
+	  partitions and the segments, checks the SHA-256, and streams one
+	  partition's data, LZO-decompressed, for sysupgrade to write.
+
+	  Enabled by betafpv_vr04_defconfig.

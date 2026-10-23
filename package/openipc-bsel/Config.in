@@ -1,0 +1,27 @@
+config BR2_PACKAGE_OPENIPC_BSEL
+	bool "openipc-bsel"
+	depends on BR2_arm || BR2_aarch64
+	help
+	  A/B bank selector for boards whose stock bootloader picks which
+	  kernel/rootfs bank to boot next, so an OpenIPC image running on
+	  either bank can flip which bank boots next, without the stock
+	  bootloader's own userspace tool or its rootfs. Two formats, picked
+	  by the partition the board has:
+
+	  - "sel" (CADDX Ascent's "fpvboot" u-boot command): a small "BSEL"
+	    magic record, reverse-engineered from the stock ar_bsel binary
+	  - "gpt0"/"gpt1" (Artosyn PROXIMA 9311, BetaFPV P1): the GPT,
+	    whose attribute bit 47 marks the active member of each env,
+	    uboot, kernel, dtb and userapp pair for the stock SPL. It lives
+	    in one of the two (primary form in gpt0, backup form in gpt1);
+	    a switch writes it into the other and then erases the old one,
+	    as the stock U-Boot's upgrade does
+
+	  Installs /usr/bin/openipc-bsel, CLI-compatible with the stock tool:
+	    openipc-bsel check_flash      read the bank the bootloader boots
+	    openipc-bsel check_cmdline    read the running bank (fpvbsel=N,
+	                                  or the userapp ubi.mtd= names)
+	    openipc-bsel set 0|1          switch the next boot to bank 0/1
+
+	  Enabled by betafpv_vr04_defconfig. Not device-specific by
+	  construction: it locates the partition by name.

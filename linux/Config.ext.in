@@ -1,0 +1,11 @@
+config BR2_LINUX_KERNEL_EXT_ML_KERNEL
+	bool "ml-kernel (MissingLynk Artosyn Proxima-9311 BSP)"
+	select BR2_PACKAGE_ML_KERNEL
+	help
+	  Applies MissingLynk's Artosyn Proxima-9311 (AR9311) BSP
+	  (package/ml-kernel) to a mainline 6.18.36 tree: Artosyn
+	  drivers, patches, an in-tree ml_defconfig from the board's
+	  fragment list, and the board's device trees under
+	  arch/arm64/boot/dts/artosyn/.
+
+	  https://github.com/Missing-Lynk/ml-kernel
