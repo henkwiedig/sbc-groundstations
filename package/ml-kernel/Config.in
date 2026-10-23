@@ -1,0 +1,28 @@
+config BR2_PACKAGE_ML_KERNEL
+	bool "ml-kernel (Artosyn Proxima-9311 BSP)"
+	depends on BR2_LINUX_KERNEL
+	help
+	  MissingLynk's open kernel BSP for the Artosyn Proxima-9311
+	  (AR9311) SoC: Artosyn driver sources, patches against
+	  mainline 6.18.36, config fragments and board device trees.
+
+	  Source only. The ml-kernel linux extension
+	  (BR2_LINUX_KERNEL_EXT_ML_KERNEL, linux/linux-ext-ml-kernel.mk)
+	  copies it into the kernel tree before Buildroot patches and
+	  configures it, and turns the board's fragment list into an
+	  in-tree ml_defconfig. Use with BR2_LINUX_KERNEL_USE_DEFCONFIG,
+	  BR2_LINUX_KERNEL_DEFCONFIG "ml" and
+	  BR2_LINUX_KERNEL_INTREE_DTS_NAME "artosyn/<dts>".
+
+	  https://github.com/Missing-Lynk/ml-kernel
+
+if BR2_PACKAGE_ML_KERNEL
+
+config BR2_PACKAGE_ML_KERNEL_BOARD
+	string "ml-kernel board"
+	default "betafpv-vr04-goggle"
+	help
+	  Directory under ml-kernel's devices/ whose device tree and
+	  config-fragment list are used.
+
+endif
