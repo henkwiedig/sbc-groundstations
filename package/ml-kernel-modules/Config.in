@@ -1,0 +1,38 @@
+config BR2_PACKAGE_ML_KERNEL_MODULES
+	bool "ml-kernel-modules"
+	depends on BR2_LINUX_KERNEL
+	depends on BR2_PACKAGE_ML_KERNEL
+	help
+	  MissingLynk's out-of-tree Artosyn Proxima-9311 kernel modules
+	  (ml-kernel modules/): the SD/SDIO host glue (dw_mci-artosyn,
+	  needed for the AR8030 on SDIO), GPIO, ADC, PWM, SoC temperature,
+	  the AR8030 SDIO driver (artosyn_sdio) and the MMZ/DMA helpers.
+
+	  The MPP-stack reimplementations (ar_osal, ar_sys, ...) are
+	  reference-only upstream and are not installed.
+
+if BR2_PACKAGE_ML_KERNEL_MODULES
+
+config BR2_PACKAGE_ML_KERNEL_MODULES_PRUNE
+	bool "keep only the Proxima-9311 in-tree module set"
+	default y
+	help
+	  Remove every in-tree kernel module except the set ml-kernel's
+	  own modules/stage.sh ships (media/V4L2/wave5/Artosyn camera,
+	  pstore, reed_solomon) and what those and the
+	  out-of-tree modules depend on. arm64 defconfig leaves several
+	  hundred unrelated drivers as modules (~10 MB).
+
+config BR2_PACKAGE_ML_KERNEL_MODULES_KEEP_EXTRA
+	string "extra in-tree module dirs to keep"
+	depends on BR2_PACKAGE_ML_KERNEL_MODULES_PRUNE
+	help
+	  Space-separated directories under lib/modules/<version>/ whose
+	  modules survive the prune as well (with their dependencies),
+	  e.g. "kernel/drivers/gpu/drm/artosyn kernel/fs/fat" for the
+	  goggle's display and the SD card's FAT.
+
+endif
+
+comment "ml-kernel-modules needs a Linux kernel and ml-kernel"
+	depends on !BR2_LINUX_KERNEL || !BR2_PACKAGE_ML_KERNEL
