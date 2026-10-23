@@ -10,7 +10,8 @@ stock U-Boot over the serial console, without writing the NAND.
 
 Getting to the prompt: with stock running, the reboot-to-U-Boot command on
 its control port (--trigger stock, /dev/ttyACM0); with this build running,
-`vr04-uboot` on the goggles; or by hand (--trigger none). U-Boot then sits
+`vr04-uboot` on the goggles over SSH (--trigger openipc, root password from
+$VR04_PASSWORD, default 12345); or by hand (--trigger none). U-Boot then sits
 in its USB download gadget; Ctrl-C on the console gives the prompt.
 
 ram: uImage, vr04.dtb and initrd.xz (else initrd.gz) of
@@ -176,8 +177,15 @@ def nand_touch(ub):
     ub.cmd(f"mtd read spi-nand0 {DTADDR:#x} 0x100000 0x800")
 
 
-def trigger(how, ctl):
-    if how == "stock":
+def trigger(how, ctl, host):
+    if how == "openipc":
+        # the goggles reset under the command, so its SSH session never returns
+        subprocess.Popen(["sshpass", "-p", os.environ.get("VR04_PASSWORD", "12345"), "ssh",
+                          "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null",
+                          "-o", "LogLevel=ERROR", "-o", "ConnectTimeout=5", f"root@{host}",
+                          "/usr/sbin/vr04-uboot"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        print("vr04-uboot started on the goggles")
+    elif how == "stock":
         if not os.path.exists(ctl):
             sys.exit(f"{ctl} missing: is stock running? (--trigger none if U-Boot is up already)")
         with serial.Serial(ctl, 1152000, timeout=1) as c:
@@ -190,8 +198,9 @@ def main():
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("mode", choices=("probe", "ram", "slot-a"))
     ap.add_argument("--serial", default="/dev/ttyUSB0")
-    ap.add_argument("--trigger", choices=("stock", "none"), default="stock",
+    ap.add_argument("--trigger", choices=("stock", "openipc", "none"), default="stock",
                     help="how U-Boot is reached (default: stock's control port)")
+    ap.add_argument("--host", default="192.168.3.100", help="the goggles, for --trigger openipc")
     ap.add_argument("--ctl", default="/dev/ttyACM0", help="stock's control port")
     ap.add_argument("--source", choices=("sd", "ymodem"), default="sd")
     ap.add_argument("--mmc", default=None, help="SD card as DEV:PART for U-Boot (default: from probe)")
@@ -214,7 +223,7 @@ def main():
             sys.exit("initrd.gz is larger than the RAM boot's window")
 
     ub = UBoot(a.serial, a.log)
-    trigger(a.trigger, a.ctl)
+    trigger(a.trigger, a.ctl, a.host)
     ub.attach()
 
     if a.mode == "probe":
