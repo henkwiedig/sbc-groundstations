@@ -1,0 +1,138 @@
+daemon: retry SDIO writes on EBUSY/EAGAIN, log stuck reattach attempts
+
+sdio_write()'s failure branch checked no errno at all: any write()
+returning anything other than the full length -- including a transient
+-EBUSY while sdio_ev_loop()'s read thread has a transaction in flight
+on the same fd, or a shared busy-flag in the vendor's own kernel driver
+-- was treated identically to a real disconnect, immediately tearing
+the whole SDIO device down (sdiorpc_8030_poll() sees error_no set and
+calls stop_sdio()). Confirmed live (ar8030-transport project) that the
+chip is fine moments later in exactly this case. Retrying on
+EBUSY/EAGAIN with a short backoff (up to 20 attempts * 2ms = 40ms
+worst case) rides out one in-flight transaction on the other direction
+instead of tearing the device down for it; any other errno keeps
+today's behavior (declare it dead).
+
+Separately: start_sdio_proc()'s reattach after a detach can keep
+failing silently for many seconds (ENOENT while the kernel driver is
+mid re-enumeration, ENODEV once it's given up) with zero visibility in
+the log -- sdiorpc_8030_poll() retries the open() every ~100ms on
+failure without logging anything, so a stuck reattach looked identical
+to "not even trying." Logging the errno (throttled to 1-in-10 attempts,
+since that retry rate would otherwise flood the log) turns that into a
+diagnosable condition instead of a silent one.
+
+Air-side only: ground doesn't build this file (USING_8030SDIO=OFF,
+USB transport instead).
+
+diff --git a/daemon/dev8030/sdio8030/sdio_dev.c b/daemon/dev8030/sdio8030/sdio_dev.c
+index bb7c96c..ae49917 100644
+--- a/daemon/dev8030/sdio8030/sdio_dev.c
++++ b/daemon/dev8030/sdio8030/sdio_dev.c
+@@ -5,6 +5,7 @@
+ #include "rpc_node.h"
+ #include "timspec_helper.h"
+ #include "usb_event_list.h"
++#include <errno.h>
+ #include <fcntl.h>
+ #include <poll.h>
+ #include <pthread.h>
+@@ -13,6 +14,19 @@
+ #include <string.h>
+ #include <sys/ioctl.h>
+
++/*
++ * sdio_write()'s retry budget for a transient write failure (-EBUSY/-EAGAIN)
++ * before giving up and declaring the device dead -- confirmed live (FPV
++ * link project, ar8030-transport) that a same-fd write racing a concurrent
++ * sdio_ev_loop() read (or a shared busy-flag in the vendor's own kernel
++ * driver) produces exactly this errno, and the chip is fine moments later.
++ * 20 attempts * 2ms = 40ms worst case, long enough to ride out one
++ * in-flight transaction on the other direction, short enough not to
++ * visibly stall a real send.
++ */
++#define SDIO_WRITE_EBUSY_RETRIES    20
++#define SDIO_WRITE_EBUSY_DELAY_US   2000
++
+ #define SDIO_DEBUG           0
+ #define SDIO_USE_BLOCK_ALIGN 1
+
+@@ -62,17 +76,20 @@ static int sdio_write(void* handle, unsigned char* buff, int len, int timeout)
+     com_log(COM_SDIO_COM, "sdio : try write len = %d", len);
+ #endif
+
+-    while (1) {
+-        int realwr = len;
++    int realwr = len;
+ #if SDIO_USE_BLOCK_ALIGN
+-        if (len <= 512) {
+-            realwr = len;
+-        } else {
+-            realwr = (len + 511) / 512 * 512;
+-            memset(buff + len, 0, realwr - len);
+-        }
++    if (len <= 512) {
++        realwr = len;
++    } else {
++        realwr = (len + 511) / 512 * 512;
++        memset(buff + len, 0, realwr - len);
++    }
+ #endif
+-        int ret = write(psdio->sdio_fd, buff, realwr);
++
++    for (int attempt = 0; attempt < SDIO_WRITE_EBUSY_RETRIES; attempt++) {
++        errno    = 0;
++        int ret  = write(psdio->sdio_fd, buff, realwr);
++        int werr = errno;
+
+         if (ret == realwr) {
+ #if SDIO_DEBUG
+@@ -86,14 +103,26 @@ static int sdio_write(void* handle, unsigned char* buff, int len, int timeout)
+             // disp_hex(buff, len);
+ #endif
+             return ret;
+-        } else {
+-            com_log(COM_SDIO_COM, "sdio : write err = %d", ret);
+-            psdio->error_no = -1;
+-            return -1;
+         }
++
++        if (ret == -1 && (werr == EBUSY || werr == EAGAIN)) {
++            /* Transient: another transaction (most likely a concurrent
++             * sdio_ev_loop() read on the same fd) is in flight right now,
++             * not a real disconnect -- retry instead of tearing the whole
++             * device down. */
++            com_log(COM_SDIO_COM, "sdio : write busy (errno=%d), retry %d/%d", werr, attempt + 1, SDIO_WRITE_EBUSY_RETRIES);
++            usleep(SDIO_WRITE_EBUSY_DELAY_US);
++            continue;
++        }
++
++        com_log(COM_SDIO_COM, "sdio : write err = %d (errno=%d)", ret, werr);
++        psdio->error_no = -1;
++        return -1;
+     }
+
+-    return 0;
++    com_log(COM_SDIO_COM, "sdio : write still busy after %d retries, giving up", SDIO_WRITE_EBUSY_RETRIES);
++    psdio->error_no = -1;
++    return -1;
+ }
+
+ static int sdio_ev_loop(void* handle)
+@@ -292,6 +321,17 @@ static int start_sdio_proc(sdio8030_info* psdio)
+ {
+     int fd = open(psdio->sdio_file_name, O_RDWR);
+     if (fd < 0) {
++        /* Confirmed live: after a detach, this reopen can keep failing
++         * (ENOENT while the kernel driver is mid re-enumeration, ENODEV
++         * once it's given up) for many seconds with zero prior visibility
++         * -- sdiorpc_8030_poll() retries this every ~100ms silently on
++         * failure otherwise, so a stuck reattach looked identical to "not
++         * even trying" from the log alone. Throttled to 1-in-10 attempts
++         * since that retry rate would otherwise flood the log. */
++        static int fail_count = 0;
++        if ((fail_count++ % 10) == 0) {
++            com_log(COM_SDIO_COM, "sdio : reopen %s failed (attempt %d), errno=%d (%s)", psdio->sdio_file_name, fail_count, errno, strerror(errno));
++        }
+         return -1;
+     }

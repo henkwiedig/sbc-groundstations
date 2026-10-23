@@ -21,7 +21,7 @@ grep -q "betafpv-vr04 /init" init || { echo "post-build: /init is not the VR04 o
 
 missing=
 for m in artosyn_gpio dw_mci-artosyn artosyn_adc artosyn_protemp artosyn_pwm \
-	artosyn_vo artosyn_dsi panel-qy45043a0 fat vfat wave5; do
+	artosyn_vo artosyn_dsi panel-qy45043a0 fat vfat wave5 artosyn_drv; do
 	find lib/modules -name "$m.ko*" | grep -q . || missing="$missing $m"
 done
 [ -z "$missing" ] || { echo "post-build: kernel modules missing:$missing"; exit 1; }

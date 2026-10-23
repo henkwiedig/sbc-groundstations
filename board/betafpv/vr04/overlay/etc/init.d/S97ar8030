@@ -1,0 +1,132 @@
+#!/bin/sh
+#
+# AR8030 on the goggles' SDIO host (mmc@1b00000), replacing package/ar8030's
+# VRX Pro script (USB): the chip sits in reset from power-on (GPIO 23,
+# ar-gpio1 line 0, active low). Releasing it brings it up in boot-ROM mode
+# (SDIO 4152:8030); artosyn_drv (ar8030-transport's kernel module) then
+# pushes BB_FW and BB_CFG, the chip re-enumerates running its firmware
+# (anything but 4152:8030) and ar8030d takes /dev/artosyn_sdio (-i 1).
+# ar8030-lifecycled and the video bridge are S98ar8030-transport-rx's.
+#
+# BB_FW has to be a firmware for an SDIO host: ascent_gnd.img is the Caddx
+# Ascent L Gnd's (package/artlynk-vr04-vendor-firmware); the VRX Pro's
+# bb_demo_cx485_2PA.img talks USB -- the chip boots it and never shows up on
+# SDIO again.
+#
+# udev loads artosyn_drv by its SDIO id as soon as the chip shows up, so the
+# firmware names go into /run/modprobe.d first: every load gets them. The
+# host has no card-detect line and polls: after the reset pulse its old card
+# stays until the next poll finds it gone, then the boot-ROM card appears.
+# The host is not unbound and bound again for this: dw_mmc then reads its
+# FIFO depth back from what it programmed and halves it on every bind.
+
+test -r /etc/default/ar8030 && . /etc/default/ar8030
+
+BB_FW=${BB_FW:-ar8030/ascent_gnd.img}
+BB_CFG=${BB_CFG:-ar8030/vr04_gnd.json}
+MODULE=artosyn_drv
+RESET_CHIP=ar-gpio1
+RESET_LINE=0
+RUNDIR=/tmp/ar8030
+PIDFILE=/var/run/ar8030d.pid
+# firmware push and the chip's boot take a few seconds
+RTOS_WAIT_S=30
+STALE_CARD_WAIT_S=3
+
+reset_chip() {
+	chip=$(gpiodetect | awk -v l="[$RESET_CHIP]" '$2 == l { print $1 }')
+	[ -n "$chip" ] || { echo "S97ar8030: no gpiochip $RESET_CHIP"; return 1; }
+	gpioset "$chip" $RESET_LINE=$1
+}
+
+# A chip that was running its firmware keeps its old card until the host's
+# next poll; loading the module before it is gone binds the stale card.
+wait_stale_card() {
+	i=0
+	while [ $i -lt $((STALE_CARD_WAIT_S * 10)) ]; do
+		stale=
+		for d in /sys/bus/sdio/devices/*:*; do
+			[ -e "$d/vendor" ] || continue
+			[ "$(cat "$d/vendor"):$(cat "$d/device")" = "0x4152:0x8030" ] || stale=1
+		done
+		[ -z "$stale" ] && return 0
+		usleep 100000
+		i=$((i + 1))
+	done
+	logger -t S97ar8030 "old SDIO card still there ${STALE_CARD_WAIT_S}s after the reset"
+}
+
+rtos_ready() {
+	[ -c /dev/artosyn_sdio ] || return 1
+	for d in /sys/bus/sdio/drivers/$MODULE/*:*; do
+		[ -e "$d/vendor" ] || continue
+		[ "$(cat "$d/vendor"):$(cat "$d/device")" = "0x4152:0x8030" ] && continue
+		return 0
+	done
+	return 1
+}
+
+# ar8030d must not open /dev/artosyn_sdio before the chip runs its firmware:
+# the node exists in boot-ROM mode too, and the re-enumeration under an open
+# node leaves ar8030d detached for good.
+start_daemon() {
+	i=0
+	while ! rtos_ready; do
+		if [ $i -ge $((RTOS_WAIT_S * 5)) ]; then
+			logger -t S97ar8030 "AR8030 not running its firmware after ${RTOS_WAIT_S}s"
+			return 1
+		fi
+		usleep 200000
+		i=$((i + 1))
+	done
+	usleep 500000
+	mkdir -p "$RUNDIR"
+	cd "$RUNDIR" || return 1
+	start-stop-daemon -S -b -q -m -p "$PIDFILE" -x /usr/bin/ar8030d -- -i 1
+	logger -t S97ar8030 "AR8030 up after ~$((i / 5))s, ar8030d started"
+}
+
+start() {
+	if [ "x$AR8030_ENABLED" = "xfalse" ]; then
+		echo "Starting ar8030... skipped (disabled)"
+		return 0
+	fi
+	printf "Starting ar8030... "
+	mkdir -p /run/modprobe.d
+	echo "options $MODULE fw_name=$BB_FW cfg_name=$BB_CFG" > /run/modprobe.d/$MODULE.conf
+	rmmod $MODULE 2>/dev/null
+	reset_chip 0 || return 1
+	usleep 3000
+	reset_chip 1
+	wait_stale_card
+	modprobe $MODULE || { echo "FAIL (no $MODULE)"; return 1; }
+	(start_daemon) </dev/null >/dev/null 2>&1 &
+	echo "OK"
+}
+
+stop() {
+	printf "Stopping ar8030... "
+	start-stop-daemon -K -q -p "$PIDFILE"
+	rm -f "$PIDFILE"
+	usleep 200000
+	# ar_net0 goes with the module; ifupdown would still count it as up
+	ifdown -f ar_net0 >/dev/null 2>&1
+	rmmod $MODULE 2>/dev/null
+	# keeps the chip, and with it the radio, off
+	reset_chip 0
+	echo "OK"
+}
+
+case "$1" in
+start) start ;;
+stop) stop ;;
+restart | reload)
+	stop
+	sleep 1
+	start
+	;;
+*)
+	echo "Usage: $0 {start|stop|restart}"
+	exit 1
+	;;
+esac

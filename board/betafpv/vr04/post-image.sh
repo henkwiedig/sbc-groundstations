@@ -23,7 +23,9 @@
 #                   no "ubi.mtd=" anywhere -- with that in its bootargs U-Boot
 #                   regenerates its bootcmd to boot the active slot instead.
 # Both mark spl0-3, vendor and factory read-only: shared by both slots, or
-# unique to the unit.
+# unique to the unit, and give both SD/SDIO hosts their FIFO depth: without
+# fifo-depth, dw_mmc reads it back from the FIFOTH value it programmed at
+# its previous bind, half the real 128, and halves it again on every bind.
 #
 # rootfs.ubi (ubinize.cfg) for userapp0/1; vr04-testboot/ for the RAM boot
 # (scripts/vr04-uboot-boot.py: SD card or YMODEM); and on the stock image
@@ -72,6 +74,9 @@ for variant in flash ram; do
 	"${FDTPUT}" -t s vr04-${variant}.dtb /chosen bootargs "${args}"
 	for p in 0 40000 80000 c0000 180000 200000; do
 		"${FDTPUT}" vr04-${variant}.dtb ${PARTS}/partition@${p} read-only
+	done
+	for mmc in mmc@1b00000 mmc@1c00000; do
+		"${FDTPUT}" -t i vr04-${variant}.dtb /soc/${mmc} fifo-depth 128
 	done
 done
 [ "$("${FDTGET}" vr04-flash.dtb /chosen bootargs | grep -o 'ubi\.mtd=[0-9]*')" = ubi.mtd=17 ] ||
