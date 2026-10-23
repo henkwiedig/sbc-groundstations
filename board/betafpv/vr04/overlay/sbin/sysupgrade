@@ -80,7 +80,8 @@ makes it the active one. The running slot is never touched, nothing reboots.
   --parts=LIST          The slot's partitions to write, comma-separated, of
                         uboot,env,kernel,dtb,userapp (default
                         kernel,dtb,userapp).
-  --slot=0|1            Refuse unless this is the slot that gets written.
+  --slot=0|1            Refuse unless this is the slot that gets written;
+                        from a RAM boot it may be the active one.
   -d, --dry-run         All the checks, no writes.
   --no-activate         Write the slot, leave the active slot as it is.
   -n, --wipe_overlay    OpenIPC image: start the new slot without this
@@ -286,7 +287,13 @@ if [ -n "$running" ] && [ "$running" != "$active" ] && [ -z "$force" ]; then
 	die "running slot $running, but slot $active is the active one: power-cycle first (-f flashes anyway)"
 fi
 target=$((1 - ${running:-$active}))
-[ -z "$slot" ] || [ "$slot" = "$target" ] || die "slot $target would be written, not slot $slot"
+if [ -n "$slot" ] && [ "$slot" != "$target" ]; then
+	# From RAM nothing runs from the active slot: --slot may name it, to
+	# update it in place (the other slot keeps its firmware).
+	[ -z "$running" ] || die "slot $target would be written, not slot $slot"
+	log "RAM boot: writing the active slot $slot in place"
+	target=$slot
+fi
 for p in $parts_wanted; do
 	case $p in
 	uboot | env | kernel | dtb | userapp) ;;
