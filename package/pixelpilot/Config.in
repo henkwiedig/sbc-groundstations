@@ -1,7 +1,16 @@
 config BR2_PACKAGE_PIXELPILOT
 	bool "pixelpilot"
-	select BR2_PACKAGE_ROCKCHIP_MPP
+	select BR2_PACKAGE_ROCKCHIP_MPP if !BR2_PACKAGE_PIXELPILOT_V4L2
 	help
 	  Application that decodes an RTP Video Stream and displays it on screen, for Rockchip devices.
 
 	  https://github.com/OpenIPC/PixelPilot_rk
+
+config BR2_PACKAGE_PIXELPILOT_V4L2
+	bool "V4L2 codec platform"
+	depends on BR2_PACKAGE_PIXELPILOT
+	help
+	  Decode (and re-encode for the DVR) with a stateful V4L2
+	  memory-to-memory codec, such as wave5 on the Artosyn AR9311,
+	  and show the frames with plain DRM/KMS: no Rockchip MPP, RGA
+	  or GPU.

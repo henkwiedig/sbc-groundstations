@@ -10,7 +10,12 @@ PIXELPILOT_SITE_METHOD = git
 PIXELPILOT_GIT_SUBMODULES = YES
 PIXELPILOT_INSTALL_STAGING = NO
 PIXELPILOT_INSTALL_TARGET = YES
+ifeq ($(BR2_PACKAGE_PIXELPILOT_V4L2),y)
+PIXELPILOT_DEPENDENCIES = libdrm libpng fmt spdlog json-for-modern-cpp yaml-cpp libgpiod gstreamer1 gst1-plugins-base msgpack
+PIXELPILOT_CONF_OPTS += -DPIXELPILOT_PLATFORM=v4l2
+else
 PIXELPILOT_DEPENDENCIES = rockchip-mpp librga mali-driver-custom mesa3d libdrm cairo spdlog json-for-modern-cpp yaml-cpp libgpiod gstreamer1 gst1-plugins-base msgpack
+endif
 
 PIXELPILOT_CMAKE_OPTS += -DCMAKE_PREFIX_PATH=$(STAGING_DIR)/usr
 
