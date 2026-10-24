@@ -108,10 +108,24 @@ check uImage.ar9311 $((0x600000))
 check vr04-flash.dtb $((0x60000))
 check rootfs.ubifs $((28 * 1024 * 1024))
 check rootfs.ubi $((336 * 0x20000))
-check rootfs.cpio.gz $((0x2000000))
-# A RAM boot unpacks the initramfs into a tmpfs limited to half the RAM the
-# kernel gets (61 MB next to the MMZ carveout and the ramoops area).
-check rootfs.cpio $((28 * 1024 * 1024))
+
+# The RAM boot only installs: its initramfs is the rootfs without the video
+# stack (PixelPilot, GStreamer, the codec firmware). It unpacks into a tmpfs
+# limited to half the RAM the kernel gets (61 MB next to the MMZ carveout and
+# the ramoops area).
+"${SYSPY}" "${BOARD_DIR}/cpio-filter.py" rootfs.cpio ramboot.cpio \
+	usr/bin/pixelpilot usr/bin/pixelpilot.sh etc/init.d/S99pixelpilot \
+	usr/share/pixelpilot/ etc/pixelpilot/ lib/firmware/cnm/ \
+	usr/lib/gstreamer-1.0/ usr/libexec/gstreamer-1.0/ usr/bin/gst-\* \
+	usr/share/gstreamer-1.0/ usr/share/gst-plugins-base/ 'usr/lib/libgst*' \
+	'usr/lib/libglib-2.0*' 'usr/lib/libgio-2.0*' 'usr/lib/libgobject-2.0*' \
+	'usr/lib/libgmodule-2.0*' 'usr/lib/libgthread-2.0*' usr/lib/gio/ \
+	'usr/lib/liblvgl*' 'usr/lib/libspdlog*' 'usr/lib/libfmt*' 'usr/lib/libyaml-cpp*' \
+	'usr/lib/libpng*' 'usr/lib/libmsgpack*' 'usr/lib/liborc*' 'usr/lib/libpcre2*' \
+	'usr/lib/libffi*' '*/libgfortran.so*' '*/libgomp.so*'
+gzip -9 -n -c ramboot.cpio > ramboot.cpio.gz
+check ramboot.cpio.gz $((0x2000000))
+check ramboot.cpio $((28 * 1024 * 1024))
 
 # RAM boot bundle: copy the directory's files onto a FAT SD card, or let
 # vr04-uboot-boot.py send them with YMODEM
@@ -119,10 +133,10 @@ rm -rf vr04-testboot
 mkdir vr04-testboot
 cp uImage.ar9311 vr04-testboot/uImage
 cp vr04-ram.dtb vr04-testboot/vr04.dtb
-cp rootfs.cpio.gz vr04-testboot/initrd.gz
+cp ramboot.cpio.gz vr04-testboot/initrd.gz
 # a third smaller than the gzip one: YMODEM over the console is ~37 KiB/s.
 # The kernel's unxz wants CRC32 and allocates the whole dictionary.
-"${HOST_DIR}/bin/xz" -9e --check=crc32 --lzma2=preset=9e,dict=8MiB -T1 -c rootfs.cpio > vr04-testboot/initrd.xz
+"${HOST_DIR}/bin/xz" -9e --check=crc32 --lzma2=preset=9e,dict=8MiB -T1 -c ramboot.cpio > vr04-testboot/initrd.xz
 (cd vr04-testboot && md5sum uImage vr04.dtb initrd.gz initrd.xz > MD5SUMS)
 tar -C vr04-testboot -cf "${PLATFORM}_testboot.tar" .
 
