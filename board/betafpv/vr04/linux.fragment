@@ -7,6 +7,9 @@
 # the character device (libgpiod), so the panel straps stay with their hogs.
 CONFIG_GPIOLIB=y
 
+# ar_net0, ar8030-tun's TUN interface over the RF link
+CONFIG_TUN=y
+
 # /init: overlay of rootfs_data over the read-only UBIFS rootfs; /tmp etc.
 CONFIG_OVERLAY_FS=y
 CONFIG_TMPFS=y

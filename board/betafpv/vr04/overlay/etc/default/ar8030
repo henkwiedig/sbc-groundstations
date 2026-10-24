@@ -8,3 +8,9 @@ AR8030_ENABLED=true
 # pairing into BB_CFG.
 BB_FW=ar8030/ascent_gnd.img
 BB_CFG=ar8030/vr04_gnd.json
+
+# More artosyn_drv parameters. native_net=0: no native ar_net0 netdev --
+# in DEV role its own bb socket open (slot 0 port 3) stalls the chip's TX
+# path, ar8030d's writes then time out and it drops the device. ar_net0 is
+# ar8030-tun's (package/ar8030, BR2_PACKAGE_AR8030_TUNTAP) instead.
+AR8030_MODULE_ARGS="native_net=0"
