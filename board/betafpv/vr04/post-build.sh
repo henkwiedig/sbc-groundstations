@@ -16,6 +16,11 @@ rm -rf boot/extlinux boot/uboot-menu.env usr/share/splash.bmp usr/share/splash-b
 # output tree, which keeps the files.
 rm -rf etc/udev/hwdb.d lib/udev/hwdb.d lib/udev/hwdb.bin etc/udev/hwdb.bin
 
+# DVR re-encode at 20 Mbit/s (stock records at 8 or 20): the package's 50
+# with the OSD running saturates both cores and the recording stays empty.
+[ ! -f etc/default/pixelpilot ] ||
+	sed -i 's/^PIXELPILOT_DVR_BITRATE=.*/PIXELPILOT_DVR_BITRATE="20000"/' etc/default/pixelpilot
+
 grep -q "betafpv-vr04 /init" init || { echo "post-build: /init is not the VR04 one"; exit 1; }
 [ ! -e boot/Image ] || { echo "post-build: the kernel Image is in the rootfs"; exit 1; }
 
