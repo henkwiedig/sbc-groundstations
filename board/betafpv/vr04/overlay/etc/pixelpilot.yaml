@@ -1,0 +1,22 @@
+gsmenu:
+  enabled: true
+  # BetaFPV VR04: all eight buttons are one resistor ladder on the AR9311's
+  # ADC, channel 0 (the kernel's adc-keys reads the same channel), so they
+  # go through the VRX Pro's ladder reader (vrx_adc) with this table:
+  # millivolts measured on the bench unit, 2026-10-24, each ~20 mV under the
+  # device tree's adc-keys thresholds; released, the channel reads 0. Back
+  # acts as left (a step back); bind opens the bind dialog (/usr/bin/bind).
+  vrx_adc:
+    enabled: true
+    device: /sys/bus/iio/devices/iio:device0/in_voltage0_raw
+    scale_mv: auto
+    bind_device: ""
+    keys:
+      - { name: bind,   mv: 219 }
+      - { name: back,   mv: 380 }
+      - { name: record, mv: 582 }
+      - { name: up,     mv: 780 }
+      - { name: left,   mv: 978 }
+      - { name: right,  mv: 1180 }
+      - { name: enter,  mv: 1376 }
+      - { name: down,   mv: 1570 }
