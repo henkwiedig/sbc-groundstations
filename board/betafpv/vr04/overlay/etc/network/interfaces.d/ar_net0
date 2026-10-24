@@ -1,0 +1,29 @@
+# betafpv_vr04: package/ar8030's ar_net0 with a 4 KiB TX buffer (-t 4096)
+# instead of ar8030-tun's 60000 bytes. The goggles' AR8030 firmware (the
+# Ascent L Gnd's) cannot hold a 60000-byte TX buffer for a second DEV
+# socket next to the video one: once it is opened the chip stops reporting
+# TX room, ar8030d's writes time out and it drops the device. The native
+# ar_net0 of artosyn_drv (net_tx_buf, same default) does the same, so it
+# stays off (native_net=0, /etc/default/ar8030).
+#
+# Manual interface: brings up the AR8030 TUN bridge over the RF link
+# (dev_helper/tuntap_bb/test_bb_tun.cpp). ar8030-tun assigns the IP itself
+# (-i, tuntap::tap::ip()) and never returns on its own -- it pumps packets
+# between the TUN device and the bb socket in two threads for as long as
+# it runs -- so it's started detached via start-stop-daemon instead of as
+# a synchronous pre-up command, and torn down the same way in post-down.
+# "manual", not "static", so ifupdown doesn't also try to assign the
+# address itself.
+#
+# slot 0 / port 3 has to match the peer's ar8030-tun invocation exactly;
+# see OpenIPC/builder's
+# devices/hi3516cv6xx_fpv_caddx-ascent-lite/general/overlay/etc/network/interfaces.d/ar_net0.
+# Port 3, not 2: air used to run the vendor's kernel-netdev demo
+# (ar8030-netdev-demo) here instead of ar8030-tun, hence the old port 2 --
+# now both ends run ar8030-tun, and port 2 belongs to ar8030-transport-tx/
+# -rx's own video socket (ar8030-transport/tx/main.c's DEFAULT_VIDEO_PORT),
+# which has to coexist with this on the same slot.
+iface ar_net0 inet manual
+	pre-up modprobe tun
+	pre-up start-stop-daemon -S -b -q -m -p /var/run/ar8030-tun.pid -x /usr/bin/ar8030-tun -- -d ar_net0 -i 192.168.100.2 -u 0 -p 3 -t 4096
+	post-down start-stop-daemon -K -q -p /var/run/ar8030-tun.pid
