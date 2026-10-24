@@ -6,7 +6,9 @@
 # (SDIO 4152:8030); artosyn_drv (ar8030-transport's kernel module) then
 # pushes BB_FW and BB_CFG, the chip re-enumerates running its firmware
 # (anything but 4152:8030) and ar8030d takes /dev/artosyn_sdio (-i 1).
-# ar8030-lifecycled and the video bridge are S98ar8030-transport-rx's.
+# ar8030-lifecycled and the video bridge are S98ar8030-transport-rx's, ar_net0
+# (ar8030-tun) its connected/dropped hooks'. AR8030_MODULE_ARGS (see
+# /etc/default/ar8030) passes more artosyn_drv parameters.
 #
 # BB_FW has to be a firmware for an SDIO host: ascent_gnd.img is the Caddx
 # Ascent L Gnd's (package/artlynk-vr04-vendor-firmware); the VRX Pro's
@@ -93,7 +95,7 @@ start() {
 	fi
 	printf "Starting ar8030... "
 	mkdir -p /run/modprobe.d
-	echo "options $MODULE fw_name=$BB_FW cfg_name=$BB_CFG" > /run/modprobe.d/$MODULE.conf
+	echo "options $MODULE fw_name=$BB_FW cfg_name=$BB_CFG $AR8030_MODULE_ARGS" > /run/modprobe.d/$MODULE.conf
 	rmmod $MODULE 2>/dev/null
 	reset_chip 0 || return 1
 	usleep 3000
@@ -109,7 +111,7 @@ stop() {
 	start-stop-daemon -K -q -p "$PIDFILE"
 	rm -f "$PIDFILE"
 	usleep 200000
-	# ar_net0 goes with the module; ifupdown would still count it as up
+	# the link is gone with the chip; ifupdown would still count ar_net0 as up
 	ifdown -f ar_net0 >/dev/null 2>&1
 	rmmod $MODULE 2>/dev/null
 	# keeps the chip, and with it the radio, off
