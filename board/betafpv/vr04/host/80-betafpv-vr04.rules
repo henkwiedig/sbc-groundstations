@@ -1,0 +1,8 @@
+# /etc/udev/rules.d/80-betafpv-vr04.rules
+# BetaFPV VR04 goggles running OpenIPC (sbc-groundstations betafpv_vr04): RNDIS +
+# ACM gadget 1d6b:0104 like the air units, told apart by the product string. The
+# goggles are 192.168.3.100 in the same /24 as the air units (.104 on ascent-vtx0),
+# so this end gets a /32 and a host route rather than a second 192.168.3.0/24.
+SUBSYSTEM=="net", ACTION=="add", ATTRS{idVendor}=="1d6b", ATTRS{idProduct}=="0104", ATTRS{product}=="BetaFPV VR04", NAME="vr04-gnd0", ENV{NM_UNMANAGED}="1", RUN+="/sbin/ip addr add 192.168.3.205/32 dev vr04-gnd0", RUN+="/sbin/ip link set dev vr04-gnd0 up", RUN+="/sbin/ip route add 192.168.3.100/32 dev vr04-gnd0"
+# its ttyACM is a console, not a modem
+ATTRS{idVendor}=="1d6b", ATTRS{idProduct}=="0104", ATTRS{product}=="BetaFPV VR04", ENV{ID_MM_DEVICE_IGNORE}="1"
