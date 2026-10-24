@@ -28,7 +28,12 @@ packed on the stock image in `cache/vendor-images/`, see
 `uImage`, `vr04.dtb` (`vr04-ram.dtb`), `initrd.gz`.
 
 Network: USB RNDIS + ACM (1d6b:0104), the goggles at 192.168.3.100, root
-password 12345; serial console ttyS0 at 1152000 baud.
+password 12345; serial console ttyS0 at 1152000 baud. The air units' OpenIPC
+gadgets use the same id and the same /24 (.104): `host/80-betafpv-vr04.rules`
+(into /etc/udev/rules.d) names the goggles `vr04-gnd0` by their product string
+and gives the host 192.168.3.205/32 with a host route to .100, so both can be
+plugged in at once (an ascent-vtx0 rule for 1d6b:0104 then needs
+`ATTRS{product}!="BetaFPV VR04"`).
 
 ## Procedure
 
