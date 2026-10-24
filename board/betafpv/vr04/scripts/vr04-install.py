@@ -255,9 +255,12 @@ def cmd_install(a):
         if r.returncode:
             sys.exit("sysupgrade failed")
         if not a.dry_run:
-            print(f"slot {a.slot.upper()} written; slot {SLOT_NAME.get(board.active_slot(), '?')} "
-                  "stays active. Boot the new slot once through U-Boot "
-                  "(vr04-uboot-boot.py --mode slot-a) before activating it.")
+            active = SLOT_NAME.get(board.active_slot(), "?")
+            if active == a.slot.upper():
+                print(f"slot {active} (the active one) written in place: power-cycle to start it")
+            else:
+                print(f"slot {a.slot.upper()} written; slot {active} stays active. Boot the new slot "
+                      "once through U-Boot (vr04-uboot-boot.py slot-a) before activating it.")
 
 # ---------------------------------------------------------------- activate / status
 
