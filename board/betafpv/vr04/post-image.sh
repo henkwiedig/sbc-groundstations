@@ -17,8 +17,10 @@
 #                   slot itself (Falcon): it loads kernelN and dtbN and takes
 #                   the command line from the dtb, rewriting ubi.mtd= to the
 #                   slot's userapp (17 for userapp0, 18 for userapp1) in place,
-#                   so the number must stay numeric. init=/init puts the
-#                   rootfs_data overlay over the read-only rootfs.
+#                   so the number must stay numeric. The rootfs is squashfs on
+#                   the "rootfs" UBI volume, through a UBI block device, as in
+#                   stock's slots; init=/init puts the rootfs_data overlay
+#                   over it.
 #   vr04-ram.dtb    for a RAM boot through the stock U-Boot: initramfs, and
 #                   no "ubi.mtd=" anywhere -- with that in its bootargs U-Boot
 #                   regenerates its bootcmd to boot the active slot instead.
@@ -38,7 +40,7 @@ LOAD=0x200a0000
 BOARD_DIR=$(cd "$(dirname "$0")" && pwd)
 DTB=proxima-9311.dtb
 ARGS="earlycon console=ttyS0,1152000"
-FLASH_ARGS="${ARGS} ubi.mtd=17 root=ubi0:rootfs rootfstype=ubifs ro init=/init"
+FLASH_ARGS="${ARGS} ubi.mtd=17 ubi.block=0,rootfs root=/dev/ubiblock0_0 rootfstype=squashfs rootwait ro init=/init"
 RAM_ARGS="${ARGS} rdinit=/init"
 PLATFORM=$(sed -n 's|^BR2_DEFCONFIG=".*/\(.*\)_defconfig"$|\1|p' "${BR2_CONFIG}")
 # The host's python3, which has python-lzo (a host prerequisite); Buildroot's
@@ -90,8 +92,9 @@ done
 	"${BOARD_DIR}/ubinize.cfg"
 
 # Against the slot partitions. userapp holds 360 PEBs; UBI keeps 24 of them
-# (see ubinize.cfg), and a bad block takes one more. The initramfs has the
-# RAM boot's window from 0x26000000 to the dtb at 0x28000000.
+# (see ubinize.cfg), and a bad block takes one more. The rootfs volume is
+# 28 MiB. The initramfs has the RAM boot's window from 0x26000000 to the dtb
+# at 0x28000000.
 check() {
 	file=$1 limit=$2
 	size=$(stat -c %s "$file")
@@ -106,13 +109,13 @@ check() {
 }
 check uImage.ar9311 $((0x600000))
 check vr04-flash.dtb $((0x60000))
-check rootfs.ubifs $((28 * 1024 * 1024))
+check rootfs.squashfs $((28 * 1024 * 1024))
 check rootfs.ubi $((336 * 0x20000))
 
 # The RAM boot only installs: its initramfs is the rootfs without the video
-# stack (PixelPilot, msposd, GStreamer, the codec firmware). It unpacks into a tmpfs
-# limited to half the RAM the kernel gets (61 MB next to the MMZ carveout and
-# the ramoops area).
+# stack (PixelPilot, msposd, GStreamer, the codec firmware) and the time
+# zones. It unpacks into a tmpfs limited to half the RAM the kernel gets
+# (61 MB next to the MMZ carveout and the ramoops area).
 "${SYSPY}" "${BOARD_DIR}/cpio-filter.py" rootfs.cpio ramboot.cpio \
 	usr/bin/pixelpilot usr/bin/pixelpilot.sh etc/init.d/S99pixelpilot \
 	usr/share/pixelpilot/ etc/pixelpilot/ lib/firmware/cnm/ \
@@ -124,7 +127,8 @@ check rootfs.ubi $((336 * 0x20000))
 	'usr/lib/libpng*' 'usr/lib/libmsgpack*' 'usr/lib/liborc*' 'usr/lib/libpcre2*' \
 	'usr/lib/libffi*' '*/libgfortran.so*' '*/libgomp.so*' \
 	usr/bin/msposd etc/init.d/S98msposd usr/share/fonts/ 'usr/lib/libcairo*' \
-	'usr/lib/libpixman*' 'usr/lib/libsqlite3*' 'usr/lib/libevent*'
+	'usr/lib/libpixman*' 'usr/lib/libsqlite3*' 'usr/lib/libevent*' \
+	usr/share/zoneinfo/
 gzip -9 -n -c ramboot.cpio > ramboot.cpio.gz
 check ramboot.cpio.gz $((0x2000000))
 check ramboot.cpio $((28 * 1024 * 1024))
