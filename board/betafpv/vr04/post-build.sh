@@ -40,12 +40,6 @@ done
 	sed -i -e 's/^PIXELPILOT_DVR_BITRATE=.*/PIXELPILOT_DVR_BITRATE="20000"/' \
 		-e 's/^PIXELPILOT_DVR_FPS=.*/PIXELPILOT_DVR_FPS="30"/' \
 		-e 's/^PIXELPILOT_RX_MODE=.*/PIXELPILOT_RX_MODE="artosyn"/' etc/default/pixelpilot
-# No sound card on the goggles: audio goes to a USB one on the USB-C port,
-# and turning audio on in the menu puts the port into host mode for it.
-if [ -f etc/default/pixelpilot ] && ! grep -q '^PIXELPILOT_AUDIO_USB_HOST=' etc/default/pixelpilot; then
-	printf '%s\n' '' '# USB-C port to host mode while audio is on (BetaFPV VR04: USB sound card)' \
-		'PIXELPILOT_AUDIO_USB_HOST="true"' >> etc/default/pixelpilot
-fi
 
 # Artosyn is the receiver mode at boot: wfb-ng (this board's own lean
 # S98wifibroadcast) starts only once the menu switches to wfb.
