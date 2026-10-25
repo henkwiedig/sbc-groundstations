@@ -1,0 +1,6 @@
+config BR2_PACKAGE_WS2812_SPI
+	bool "ws2812-spi"
+	help
+	  Sets a WS2812/SK6812 LED chain driven from a spidev's MOSI
+	  (one SPI byte per LED bit at 6.25 MHz) to one colour, e.g. the
+	  BetaFPV VR04 goggles' status LED.

@@ -1,0 +1,54 @@
+#!/bin/sh
+#
+# The goggles' status LED (three WS2812 pixels on /dev/spidev0.0, set by
+# ws2812-spi) showing the link state ar8030-lifecycled reports through
+# /etc/ar8030/hooks.d, with the air units' LED convention:
+#   never bound                   solid red
+#   bound, no link ("searching")  slow green blink
+#   bind mode (pairing)           fast green blink
+#   connected                     solid green
+# Blinking is a background loop; the next state stops it (BLINK_PIDFILE).
+#
+# usage: status-led idle|pairing|connected|dropped|off
+
+[ -r /etc/default/ar8030 ] && . /etc/default/ar8030
+CFG="/lib/firmware/${BB_CFG:-ar8030/ar8030.json}"
+BLINK_PIDFILE=/run/status-led-blink.pid
+
+stop_blink() {
+	if [ -f "$BLINK_PIDFILE" ]; then
+		kill "$(cat "$BLINK_PIDFILE")" 2>/dev/null
+		rm -f "$BLINK_PIDFILE"
+		# a ws2812-spi of the loop's may still be writing
+		usleep 50000
+	fi
+}
+
+blink() {
+	colour=$1 interval=$2
+	(
+		while true; do
+			ws2812-spi "$colour"
+			sleep "$interval"
+			ws2812-spi off
+			sleep "$interval"
+		done
+	) </dev/null >/dev/null 2>&1 &
+	echo $! >"$BLINK_PIDFILE"
+}
+
+stop_blink
+case "$1" in
+	connected) ws2812-spi green ;;
+	pairing)   blink green 0.15 ;;
+	dropped)   blink green 0.5 ;;
+	idle)
+		if [ -f "$CFG.paired" ]; then
+			blink green 0.5
+		else
+			ws2812-spi red
+		fi
+		;;
+	off)       ws2812-spi off ;;
+	*)         echo "usage: status-led idle|pairing|connected|dropped|off" >&2; exit 2 ;;
+esac
