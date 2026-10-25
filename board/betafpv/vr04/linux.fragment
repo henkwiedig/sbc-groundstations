@@ -37,3 +37,11 @@ CONFIG_NLS_ISO8859_1=y
 CONFIG_WIRELESS=y
 CONFIG_CFG80211=m
 CONFIG_CFG80211_WEXT=y
+
+# USB headphones / sound cards on the USB-C port in host mode (PixelPilot's
+# Opus audio; Audio on in the menu switches the port, /usr/sbin/usb-host):
+# ALSA and the USB audio class driver as modules, kept by KEEP_EXTRA.
+CONFIG_SOUND=y
+CONFIG_SND=m
+CONFIG_SND_USB=y
+CONFIG_SND_USB_AUDIO=m
