@@ -1,0 +1,73 @@
+#!/bin/sh
+#
+# wfb-ng ground side of the BetaFPV VR04, without wfb-server: its Python
+# (twisted, pyroute2) takes ~40 MB, which the goggles' 132 MB don't hold next
+# to PixelPilot and msposd. As wfb-server's gs profile does, the cards
+# (WFB_NICS, /etc/default/wifibroadcast) go to monitor mode on
+# /etc/wifibroadcast.cfg's wifi_channel and bandwidth, and wfb_rx hands the
+# video (radio port 0) to PixelPilot on UDP 5600 and the air unit's
+# telemetry (port 16, msposd/mavlink) to msposd on UDP 14551. No uplink, no
+# tunnel, no link statistics for the OSD.
+
+test -r /etc/default/wifibroadcast && . /etc/default/wifibroadcast
+
+CFG=/etc/wifibroadcast.cfg
+KEY=/etc/gs.key
+LINK_ID=7669206		# wfb-ng's link_domain "default"
+
+# A "key = value" of wifibroadcast.cfg (first one, quotes and comment dropped)
+cfg() {
+	sed -n "s/^$1 *= *\([^ #]*\).*/\1/p" $CFG | head -n 1 | tr -d "'\""
+}
+
+setup_nics() {
+	channel=$(cfg wifi_channel)
+	bandwidth=$(cfg bandwidth)
+	case "${bandwidth:-20}" in
+	5) ht=5MHz ;; 10) ht=10MHz ;; 40) ht=HT40+ ;; 80) ht=80MHz ;; *) ht=HT20 ;;
+	esac
+	[ "${channel:-161}" -gt 2000 ] && set_cmd=freq || set_cmd=channel
+	for nic in $WFB_NICS; do
+		ip link set $nic down
+		iw dev $nic set monitor otherbss
+		ip link set $nic up
+		iw dev $nic set $set_cmd ${channel:-161} $ht
+	done
+}
+
+rx() {
+	# rx PORT UDP_PORT: one wfb_rx over all cards (diversity)
+	start-stop-daemon -S -b -q -m -p /var/run/wfb_rx_$1.pid -x /usr/bin/wfb_rx -- \
+		-p $1 -c 127.0.0.1 -u $2 -K $KEY -i $LINK_ID $WFB_NICS
+}
+
+start() {
+	if [ "x$WIFIBROADCAST_ENABLED" = "xfalse" ]; then
+		echo "Starting wifibroadcast... skipped (disabled)"
+		return 0
+	fi
+	if [ -z "$WFB_NICS" ]; then
+		echo "Starting wifibroadcast... no WiFi card"
+		return 1
+	fi
+	printf "Starting wifibroadcast on %s: " "$WFB_NICS"
+	setup_nics
+	rx 0 5600 && rx 16 14551
+	[ $? = 0 ] && echo "OK" || echo "FAIL"
+}
+
+stop() {
+	printf "Stopping wifibroadcast: "
+	for p in 0 16; do
+		start-stop-daemon -K -q -p /var/run/wfb_rx_$p.pid
+		rm -f /var/run/wfb_rx_$p.pid
+	done
+	echo "OK"
+}
+
+case "$1" in
+start) start ;;
+stop) stop ;;
+restart|reload) stop; sleep 1; start ;;
+*) echo "Usage: $0 {start|stop|restart}"; exit 1 ;;
+esac
