@@ -249,10 +249,24 @@ def cmd_install(a):
         opts += (["-n"] if a.wipe_overlay else []) + (["-d"] if a.dry_run else [])
         if a.set_password:
             opts.append("--set-password='" + a.set_password.replace("'", "'\\''") + "'")
-        r = board.run(f"sysupgrade --image={STAGE} {' '.join(opts)}; rc=$?; rm -f {STAGE}; exit $rc",
-                      check=False, stdout=None)
-        sys.stderr.write(r.stderr.decode(errors="replace"))
-        if r.returncode:
+        # Detached from the SSH session: when the USB link drops (it did right
+        # after re-cabling) the session's SIGHUP must not stop sysupgrade
+        # halfway through userapp, which leaves the slot unbootable. Polled,
+        # reconnecting, until it has written its exit status.
+        board.run(f"cat > {STAGE}.sh", input=(
+            f"sysupgrade --image={STAGE} {' '.join(opts)} > {STAGE}.log 2>&1\n"
+            f"echo $? > {STAGE}.rc\nrm -f {STAGE}\n").encode())
+        board.run(f"rm -f {STAGE}.rc; setsid sh {STAGE}.sh < /dev/null > /dev/null 2>&1 &")
+        rc, t0 = None, time.time()
+        while rc is None:
+            time.sleep(2)
+            r = board.run(f"cat {STAGE}.rc 2>/dev/null", check=False)
+            if r.returncode == 0 and r.stdout.strip():
+                rc = int(r.stdout)
+            elif r.returncode == 255 and time.time() - t0 > 600:
+                sys.exit(f"lost the goggles during sysupgrade; its log is {STAGE}.log there")
+        sys.stdout.write(board.text(f"cat {STAGE}.log; rm -f {STAGE}.sh {STAGE}.rc {STAGE}.log"))
+        if rc:
             sys.exit("sysupgrade failed")
         if not a.dry_run:
             active = SLOT_NAME.get(board.active_slot(), "?")
