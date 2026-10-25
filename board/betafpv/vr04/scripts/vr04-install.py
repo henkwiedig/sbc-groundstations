@@ -299,7 +299,8 @@ def slot_content(board, parts, n):
     head = board.run(f"nanddump --bb=skipbad --omitoob -q -l 2048 /dev/mtd{parts[f'kernel{n}'][0]} | head -c 4").stdout
     dtb = board.run(f"nanddump --bb=skipbad --omitoob -q -l 32768 /dev/mtd{parts[f'dtb{n}'][0]}").stdout
     ubi = board.run(f"nanddump --bb=skipbad --omitoob -q -l 2048 /dev/mtd{parts[f'userapp{n}'][0]} | head -c 4").stdout
-    return head == b"OTRA", dtb_model(dtb), ubi == b"UBI#", b"root=ubi0:rootfs" in dtb
+    return (head == b"OTRA", dtb_model(dtb), ubi == b"UBI#",
+            b"ubi.block=0,rootfs" in dtb or b"root=ubi0:rootfs" in dtb)
 
 
 def save_gpt(board, parts, backup):

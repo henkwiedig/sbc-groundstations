@@ -20,8 +20,9 @@ the slot whose env/uboot/kernel/dtb/userapp the GPT marks active (bit 47,
 reboot-to-U-Boot path.
 
 This build: `uImage.ar9311` (OTRA + LZ4 uImage) for kernelN,
-`vr04-flash.dtb` for dtbN, `rootfs.ubi` for userappN (UBIFS `rootfs`,
-read-only, + `rootfs_data` overlay), all three in
+`vr04-flash.dtb` for dtbN, `rootfs.ubi` for userappN (squashfs in the
+`rootfs` volume, mounted through a UBI block device like stock's, +
+`rootfs_data` UBIFS overlay), all three in
 `P1_GND_<stock release>_OpenIPC_<sha>.img` (stock's update image format,
 packed on the stock image in `cache/vendor-images/`, see
 `package/artlynk-vr04-vendor-firmware`). `vr04-testboot/` is the RAM boot:
