@@ -1,5 +1,15 @@
 #!/bin/sh
 # The bind button (PixelPilot's bind dialog). ar8030-lifecycled owns the
 # link, so pair through its API: the call returns when ar8030-pair is done,
-# 200 when it paired, 502 when it failed.
-wget -q -T 120 -O - --post-data="" http://127.0.0.1:8899/api/v1/pair
+# 200 when it paired, 502 when it failed. A tick a second meanwhile, as on
+# the VRX Pro.
+wget -q -T 120 -O - --post-data="" http://127.0.0.1:8899/api/v1/pair &
+PAIR_PID=$!
+
+while kill -0 "$PAIR_PID" 2>/dev/null
+do
+    beep.sh 1 5
+    sleep 1
+done
+
+wait "$PAIR_PID"

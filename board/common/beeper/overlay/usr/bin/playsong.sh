@@ -1,7 +1,8 @@
 #!/bin/sh
 
-# Plays RTTTL (RingTone Text Transfer Language) melodies on the Caddx VRX
-# Pro buzzer (pwmchip4/pwm0).
+# Plays RTTTL (RingTone Text Transfer Language) melodies on a goggle's PWM
+# buzzer: the one /etc/default/beeper names (see beep.sh); without that
+# file there is no buzzer and this does nothing.
 #
 # RTTTL is the classic Nokia composer ringtone format:
 #   Name:d=<default duration>,o=<default octave>,b=<bpm>:<notes,separated,by,commas>
@@ -21,14 +22,18 @@
 #   lines and lines starting with '#' are ignored. Use '-' or omit the
 #   argument to read from stdin.
 
-PWMCHIP="/sys/class/pwm/pwmchip4"
-PWM="${PWMCHIP}/pwm0"
+[ -r /etc/default/beeper ] && . /etc/default/beeper
+[ -n "${BEEPER_PWMCHIP}" ] || exit 0
+
+PWMCHIP="${BEEPER_PWMCHIP}"
+CHANNEL="${BEEPER_CHANNEL:-0}"
+PWM="${PWMCHIP}/pwm${CHANNEL}"
 GAP_PERCENT=10   # fraction of each note's duration left silent, for articulation
 
 FILE="${1:--}"
 
 if [ ! -e "${PWM}" ]; then
-	echo 0 > "${PWMCHIP}/export"
+	echo "${CHANNEL}" > "${PWMCHIP}/export"
 	for i in 1 2 3 4 5; do
 		[ -e "${PWM}" ] && break
 		sleep 0.05

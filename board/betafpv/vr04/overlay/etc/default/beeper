@@ -1,0 +1,6 @@
+# The buzzer for beep.sh / playsong.sh (board/common/beeper): PWM controller
+# 1 (pwm@1002000), channel 0; the vendor's device tree runs it at a 260 us
+# period (~3.8 kHz).
+BEEPER_PWMCHIP=/sys/class/pwm/pwmchip1
+BEEPER_CHANNEL=0
+BEEPER_PERIOD_NS=260000

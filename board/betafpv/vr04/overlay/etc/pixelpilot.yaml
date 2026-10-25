@@ -20,3 +20,6 @@ gsmenu:
       - { name: right,  mv: 1180 }
       - { name: enter,  mv: 1376 }
       - { name: down,   mv: 1570 }
+# enables collection of `os_mon.*` OSD facts: CPU load
+os_sensors:
+  cpu: true
