@@ -1,0 +1,16 @@
+#!/bin/sh
+# USB-C port mode at boot, matching the receiver mode: host for the external
+# WiFi card(s) of wfb / apfpv, gadget otherwise (see /usr/sbin/usb-host).
+# Runs after udev (driver load, wlx naming) and before networking and wfb.
+
+case "$1" in
+start)
+	. /etc/default/pixelpilot
+	case "$PIXELPILOT_RX_MODE" in
+	wfb|apfpv) usb-host on 4 ;;
+	*)         usb-host off ;;
+	esac
+	;;
+stop|restart|reload)
+	;;
+esac

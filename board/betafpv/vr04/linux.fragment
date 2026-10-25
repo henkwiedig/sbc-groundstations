@@ -10,7 +10,7 @@ CONFIG_GPIOLIB=y
 # ar_net0, ar8030-tun's TUN interface over the RF link
 CONFIG_TUN=y
 
-# /init: overlay of rootfs_data over the read-only UBIFS rootfs; /tmp etc.
+# /init: overlay of rootfs_data over the read-only squashfs rootfs; /tmp etc.
 CONFIG_OVERLAY_FS=y
 CONFIG_TMPFS=y
 
@@ -29,3 +29,11 @@ CONFIG_FAT_FS=m
 CONFIG_VFAT_FS=m
 CONFIG_NLS_CODEPAGE_437=y
 CONFIG_NLS_ISO8859_1=y
+
+# wfb / apfpv receiving with an external WiFi card on the USB port in host
+# mode (see /usr/sbin/usb-host): the out-of-tree Realtek drivers need the
+# wireless core (nl80211 for iw and wpa_supplicant; wext for the drivers'
+# own ioctls). A module: kept by BR2_PACKAGE_ML_KERNEL_MODULES_KEEP_EXTRA.
+CONFIG_WIRELESS=y
+CONFIG_CFG80211=m
+CONFIG_CFG80211_WEXT=y
