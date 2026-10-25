@@ -21,6 +21,9 @@ rm -rf etc/udev/hwdb.d lib/udev/hwdb.d lib/udev/hwdb.bin etc/udev/hwdb.bin
 # each, and msposd's cairo and sqlite bring their command line tools.
 rm -f lib/libgfortran.so* usr/lib/libgfortran.so* lib/libgomp.so* usr/lib/libgomp.so* \
 	lib/libstdc++.so.*-gdb.py usr/lib/libstdc++.so.*-gdb.py usr/bin/fc-* usr/bin/sqlite3
+# OpenSSH is here for the menu's ssh/scp to the air unit only
+rm -f usr/bin/sftp usr/bin/ssh-add usr/bin/ssh-agent usr/bin/ssh-copy-id \
+	usr/libexec/ssh-keysign usr/libexec/ssh-pkcs11-helper usr/libexec/sftp-server
 for f in lib/*.so*; do
 	[ -f "$f" ] && [ ! -L "$f" ] && [ -f "usr/$f" ] && [ ! -L "usr/$f" ] &&
 		cmp -s "$f" "usr/$f" && ln -sf "../usr/$f" "$f"
