@@ -23,6 +23,7 @@ source "$BR2_EXTERNAL_OPENIPC_SBC_GS_PATH/package/ml-kernel-modules/Config.in"
 source "$BR2_EXTERNAL_OPENIPC_SBC_GS_PATH/package/openipc-bsel/Config.in"
 source "$BR2_EXTERNAL_OPENIPC_SBC_GS_PATH/package/arto-image/Config.in"
 source "$BR2_EXTERNAL_OPENIPC_SBC_GS_PATH/package/artlynk-vr04-vendor-firmware/Config.in"
+source "$BR2_EXTERNAL_OPENIPC_SBC_GS_PATH/package/ws2812-spi/Config.in"
 
 choice
     prompt "GPIO configuration method"
