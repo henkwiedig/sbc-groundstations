@@ -1105,8 +1105,9 @@ case "$@" in
         emit_values "1\n100"
         ;;
     "get gs wfbng adaptivelink")
-        . /etc/default/adaptive-link
-        if [ x$ADAPTIVE_LINK_ENABLED = x"false" ]; then
+        # no adaptive-link on the board (BetaFPV VR04): off
+        [ -r /etc/default/adaptive-link ] && . /etc/default/adaptive-link
+        if [ x$ADAPTIVE_LINK_ENABLED != x"true" ]; then
            echo "0"
         else
             echo "1"
@@ -1151,11 +1152,11 @@ case "$@" in
         ;;
     "set gs wfbng adaptivelink"*)
         if [ "$5" = "on" ]; then
-            sed -i 's/ADAPTIVE_LINK_ENABLED.*/ADAPTIVE_LINK_ENABLED=true/' /etc/default/adaptive-link
-            /etc/init.d/S98adaptive-link start
+            [ -f /etc/default/adaptive-link ] && sed -i 's/ADAPTIVE_LINK_ENABLED.*/ADAPTIVE_LINK_ENABLED=true/' /etc/default/adaptive-link
+            [ -x /etc/init.d/S98adaptive-link ] && /etc/init.d/S98adaptive-link start
         else
-            /etc/init.d/S98adaptive-link stop
-            sed -i 's/ADAPTIVE_LINK_ENABLED.*/ADAPTIVE_LINK_ENABLED=false/' /etc/default/adaptive-link
+            [ -x /etc/init.d/S98adaptive-link ] && /etc/init.d/S98adaptive-link stop
+            [ -f /etc/default/adaptive-link ] && sed -i 's/ADAPTIVE_LINK_ENABLED.*/ADAPTIVE_LINK_ENABLED=false/' /etc/default/adaptive-link
         fi
         ;;
 
@@ -1337,10 +1338,10 @@ case "$@" in
             [ -x /etc/init.d/S98ar8030-transport-rx ] && /etc/init.d/S98ar8030-transport-rx stop
             [ -x /etc/init.d/S97ar8030 ] && /etc/init.d/S97ar8030 stop
             [ -f /etc/default/ar8030 ] && sed -i 's/^AR8030_ENABLED=.*/AR8030_ENABLED=false/' /etc/default/ar8030
-            /etc/init.d/S98adaptive-link stop
+            [ -x /etc/init.d/S98adaptive-link ] && /etc/init.d/S98adaptive-link stop
             /etc/init.d/S98wifibroadcast stop
             sed -i 's/WIFIBROADCAST_ENABLED.*/WIFIBROADCAST_ENABLED=false/' /etc/default/wifibroadcast
-            sed -i 's/ADAPTIVE_LINK_ENABLED.*/ADAPTIVE_LINK_ENABLED=false/' /etc/default/adaptive-link
+            [ -f /etc/default/adaptive-link ] && sed -i 's/ADAPTIVE_LINK_ENABLED.*/ADAPTIVE_LINK_ENABLED=false/' /etc/default/adaptive-link
             rmmod 8812eu
             rmmod 88XXau_wfb
             modprobe 8812eu
@@ -1386,15 +1387,15 @@ EOF
             modprobe 8812eu
             modprobe 88XXau_wfb
             sed -i 's/WIFIBROADCAST_ENABLED.*/WIFIBROADCAST_ENABLED=true/' /etc/default/wifibroadcast
-            sed -i 's/ADAPTIVE_LINK_ENABLED.*/ADAPTIVE_LINK_ENABLED=true/' /etc/default/adaptive-link
-            /etc/init.d/S98adaptive-link start
+            [ -f /etc/default/adaptive-link ] && sed -i 's/ADAPTIVE_LINK_ENABLED.*/ADAPTIVE_LINK_ENABLED=true/' /etc/default/adaptive-link
+            [ -x /etc/init.d/S98adaptive-link ] && /etc/init.d/S98adaptive-link start
             /etc/init.d/S98wifibroadcast start
         elif [ "$5" = "artosyn" ]; then
             # wfb-ng/adaptive-link off, same as the apfpv branch above.
-            /etc/init.d/S98adaptive-link stop
+            [ -x /etc/init.d/S98adaptive-link ] && /etc/init.d/S98adaptive-link stop
             /etc/init.d/S98wifibroadcast stop
             sed -i 's/WIFIBROADCAST_ENABLED.*/WIFIBROADCAST_ENABLED=false/' /etc/default/wifibroadcast
-            sed -i 's/ADAPTIVE_LINK_ENABLED.*/ADAPTIVE_LINK_ENABLED=false/' /etc/default/adaptive-link
+            [ -f /etc/default/adaptive-link ] && sed -i 's/ADAPTIVE_LINK_ENABLED.*/ADAPTIVE_LINK_ENABLED=false/' /etc/default/adaptive-link
             # Tear down any apfpv wlx interfaces, same as the wfb branch above.
             WIFI_IFACES=$(ip -o link show | awk -F': ' '{print $2}' | grep -E '^wlx' | grep -v "^$EXCLUDE_IFACE$")
             for IFACE in $WIFI_IFACES; do

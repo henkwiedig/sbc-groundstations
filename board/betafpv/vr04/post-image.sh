@@ -97,8 +97,8 @@ done
 
 # Against the slot partitions. userapp holds 360 PEBs; UBI keeps 24 of them
 # (see ubinize.cfg), and a bad block takes one more. The rootfs volume is
-# 34 MiB (the overlay gets the remaining ~7 MiB). The initramfs has the RAM
-# boot's window from 0x26000000 to the dtb at 0x28000000.
+# 28 MiB. The initramfs has the RAM boot's window from 0x26000000 to the dtb
+# at 0x28000000.
 check() {
 	file=$1 limit=$2
 	size=$(stat -c %s "$file")
@@ -113,14 +113,14 @@ check() {
 }
 check uImage.ar9311 $((0x600000))
 check vr04-flash.dtb $((0x60000))
-check rootfs.squashfs $((34 * 1024 * 1024))
+check rootfs.squashfs $((28 * 1024 * 1024))
 check rootfs.ubi $((336 * 0x20000))
 
 # The RAM boot only installs: its initramfs is the rootfs without the video
 # stack (PixelPilot, msposd, GStreamer, the codec firmware), the WiFi
-# receiving (wfb-ng with its Python, wpa_supplicant, the drivers) and the
-# time zones. It unpacks into a tmpfs limited to half the RAM the kernel gets
-# (61 MB next to the MMZ carveout and the ramoops area).
+# receiving (wfb-ng, wpa_supplicant, the drivers) and the time zones. It
+# unpacks into a tmpfs limited to half the RAM the kernel gets (61 MB next to
+# the MMZ carveout and the ramoops area).
 "${SYSPY}" "${BOARD_DIR}/cpio-filter.py" rootfs.cpio ramboot.cpio \
 	usr/bin/pixelpilot usr/bin/pixelpilot.sh etc/init.d/S99pixelpilot \
 	usr/share/pixelpilot/ etc/pixelpilot/ lib/firmware/cnm/ \
@@ -133,12 +133,9 @@ check rootfs.ubi $((336 * 0x20000))
 	'usr/lib/libffi*' '*/libgfortran.so*' '*/libgomp.so*' \
 	usr/bin/msposd etc/init.d/S98msposd usr/share/fonts/ 'usr/lib/libcairo*' \
 	'usr/lib/libpixman*' 'usr/lib/libsqlite3*' 'usr/lib/libevent*' \
-	usr/share/zoneinfo/ 'usr/lib/python3*' 'usr/bin/python3*' 'usr/bin/wfb*' \
-	usr/bin/alink_gs 'usr/sbin/wpa_*' 'lib/modules/*/updates/88*.ko' \
+	usr/share/zoneinfo/ 'usr/bin/wfb*' 'usr/sbin/wpa_*' 'lib/modules/*/updates/88*.ko' \
 	'lib/modules/*/updates/8812*.ko' 'lib/modules/*/kernel/net/wireless/*' \
-	'usr/lib/libpython3*' 'usr/lib/libcrypto*' 'usr/lib/libssl*' usr/lib/ossl-modules/ \
-	usr/lib/engines-3/ usr/bin/openssl 'usr/lib/libnl*' usr/sbin/iw 'usr/lib/libpcap*' \
-	'usr/lib/libsodium*'
+	'usr/lib/libnl*' usr/sbin/iw 'usr/lib/libpcap*' 'usr/lib/libsodium*'
 gzip -9 -n -c ramboot.cpio > ramboot.cpio.gz
 check ramboot.cpio.gz $((0x2000000))
 check ramboot.cpio $((28 * 1024 * 1024))
