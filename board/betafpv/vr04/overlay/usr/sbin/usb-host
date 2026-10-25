@@ -1,45 +1,74 @@
 #!/bin/sh
 # BetaFPV VR04: switch the USB-C port (the AR9311's dwc2, dr_mode "otg", a
 # usb-role-switch with default role peripheral in the dtb) between the RNDIS
-# gadget and host mode, for external WiFi cards in wfb / apfpv receiver mode.
+# gadget and host mode, for external WiFi cards in wfb / apfpv receiver mode
+# and for USB headphones / sound cards (Audio on in the menu).
 #
 # The port can't power a device: no VBUS switch. Host mode needs a USB-C to
 # USB-A adapter with 5V fed in from outside, as on the Caddx VRX Pro. RNDIS
 # is gone while in host mode: the serial console is the way in.
 #
-# usage: usb-host on|off|status [wait_s]   (the VRX Pro's interface)
+# usage: usb-host on|off|auto|status [wait_s]   (on/off/status: the VRX Pro's)
 #   on      take the gadget down, role -> host; with wait_s, wait up to that
 #           many seconds for a wlx* interface to appear
-#   off     role -> device, the gadget up again
+#   off     role -> device, the gadget up again -- unless something still
+#           needs host mode: the wfb/apfpv receiver mode or USB audio
+#   auto    whichever of the two the receiver mode and audio ask for (boot)
 #   status  print host|peripheral
 
 ROLE=$(ls /sys/class/usb_role/*/role 2>/dev/null | head -n 1)
 
 [ -w "$ROLE" ] || { echo "usb-host: no USB role switch" >&2; exit 1; }
 
-case "$1" in
-on)
+# What still needs host mode, if anything: "wifi", "audio" or nothing
+host_need() {
+	. /etc/default/pixelpilot
+	case "$PIXELPILOT_RX_MODE" in
+	wfb|apfpv) echo wifi; return ;;
+	esac
+	[ -n "$PIXELPILOT_AUDIO" ] && [ "$PIXELPILOT_AUDIO_USB_HOST" = true ] && echo audio
+}
+
+host() {
 	/usr/sbin/gadget down >/dev/null 2>&1
 	[ "$(cat $ROLE)" = host ] || echo host > $ROLE
-	if [ -n "$2" ]; then
+	if [ -n "$1" ]; then
 		i=0
-		while [ $i -lt $(( $2 * 10 )) ]; do
-			ls /sys/class/net | grep -q '^wlx' && exit 0
+		while [ $i -lt $(( $1 * 10 )) ]; do
+			ls /sys/class/net | grep -q '^wlx' && return 0
 			usleep 100000
 			i=$((i + 1))
 		done
 		echo "usb-host: no external WiFi card on the USB-C port (needs a 5V-injecting USB-A adapter)" >&2
 	fi
-	;;
-off)
+}
+
+device() {
 	[ "$(cat $ROLE)" = device ] || echo device > $ROLE
 	/usr/sbin/gadget up >/dev/null 2>&1
+}
+
+case "$1" in
+on)
+	host "$2"
+	;;
+off)
+	if [ -z "$(host_need)" ]; then
+		device
+	fi
+	;;
+auto)
+	case "$(host_need)" in
+	wifi)  host "$2" ;;
+	audio) host ;;
+	*)     device ;;
+	esac
 	;;
 status)
 	[ "$(cat $ROLE)" = host ] && echo host || echo peripheral
 	;;
 *)
-	echo "usage: $0 on|off|status [wait_s]" >&2
+	echo "usage: $0 on|off|auto|status [wait_s]" >&2
 	exit 2
 	;;
 esac
