@@ -1405,14 +1405,15 @@ EOF
             # VRX Pro: USB-C port back to gadget mode, no external cards needed
             [ -x /usr/sbin/usb-host ] && usb-host off
             # Bring the ar8030 RF link up: AR8030_ENABLED gates S97ar8030's
-            # GPIO/firmware-push sequence (see files/etc/init.d/S97ar8030), and
-            # ar_net0 is the TUN bridge to the air unit's REST API (192.168.100.1,
-            # see files/etc/network/interfaces.d/ar_net0 / the matching air-side
-            # overlay in OpenIPC/builder).
+            # GPIO/firmware-push sequence (see files/etc/init.d/S97ar8030).
+            # ar_net0, the TUN bridge to the air unit's REST API
+            # (192.168.100.1), comes up with the link: lifecycled's
+            # hooks.d/connected/30-ifup.sh. An ifup here, before the link, ran
+            # ar8030-tun into a chip still starting up; it quit at once and
+            # the stale "configured" turned the hook's ifup into a no-op.
             [ -f /etc/default/ar8030 ] && sed -i 's/^AR8030_ENABLED=.*/AR8030_ENABLED=true/' /etc/default/ar8030
             [ -x /etc/init.d/S97ar8030 ] && /etc/init.d/S97ar8030 restart
             [ -x /etc/init.d/S98ar8030-transport-rx ] && /etc/init.d/S98ar8030-transport-rx restart
-            ifup ar_net0 2>/dev/null
         fi
         ;;
     "set gs system gs_rendering"*)

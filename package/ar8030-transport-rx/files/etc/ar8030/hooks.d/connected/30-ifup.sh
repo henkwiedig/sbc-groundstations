@@ -10,4 +10,8 @@
 #
 # Best-effort: a no-op if this board doesn't build ar8030-tun at all.
 [ -x /usr/bin/ar8030-tun ] || exit 0
+# ifupdown still recording ar_net0 as up while ar8030-tun is gone (it quit
+# under a chip powered off or restarted) would make ifup a no-op.
+start-stop-daemon -K -t -q -p /var/run/ar8030-tun.pid ||
+	ifdown -f ar_net0 > /dev/null 2>&1
 ifup ar_net0 2>&1 | logger -t ar8030-lifecycled-hook
