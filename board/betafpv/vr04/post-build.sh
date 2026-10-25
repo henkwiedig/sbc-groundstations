@@ -8,7 +8,7 @@ set -e
 cd "${TARGET_DIR}"
 
 rm -rf boot/extlinux boot/uboot-menu.env usr/share/splash.bmp usr/share/splash-bg.bmp \
-	usr/share/splash.png etc/network/interfaces.d/eth0
+	etc/network/interfaces.d/eth0
 
 # eudev's hardware database (17 MB, nothing here looks names up in it):
 # a RAM boot unpacks the rootfs into a tmpfs of half the RAM, about 30 MB.

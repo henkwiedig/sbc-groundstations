@@ -1,0 +1,41 @@
+#!/bin/sh
+# Boot splash and backlight, from /init in the background (the other targets'
+# /init runs fbv itself): here the panel has no framebuffer until its drivers
+# are in, which udev's coldplug would load seconds later. So this loads them,
+# in S02vr04-modules' order (artosyn_gpio's hogs first: panel power), with the
+# backlight's PWM. Binding the framebuffer console is what powers the panel
+# up; it is unbound again before fbv draws, or its cursor and the tty1 getty
+# draw over the image. The kernel shows this buffer again whenever
+# PixelPilot exits. The backlight, which the panel driver leaves to
+# userspace, goes on once the splash is up: BRIGHTNESS (of
+# /sys/class/backlight/backlight/max_brightness) from /etc/default/vr04-display.
+
+BRIGHTNESS=7
+[ -r /etc/default/vr04-display ] && . /etc/default/vr04-display
+BL=/sys/class/backlight/backlight
+
+# up to 5 s for a condition
+wait_for() {
+	i=0
+	until eval "$1"; do
+		[ $i -ge 50 ] && return 1
+		usleep 100000
+		i=$((i + 1))
+	done
+}
+
+# a RAM boot's sysfs comes with inittab's mount -a
+wait_for '[ -d /sys/class ]' || exit 1
+for m in artosyn_gpio artosyn_pwm panel-qy45043a0 artosyn_dsi artosyn_vo; do
+	modprobe $m || echo "<3>vr04-splash: $m did not load" > /dev/kmsg
+done
+
+wait_for '[ -e /dev/fb0 ] && [ -e $BL/bl_power ]' ||
+	{ echo "<3>vr04-splash: no panel" > /dev/kmsg; exit 1; }
+if wait_for 'fbcon=$(grep -l "frame buffer" /sys/class/vtconsole/vtcon*/name 2>/dev/null) &&
+	[ "$(cat "${fbcon%/name}/bind")" = 1 ]'; then
+	echo 0 > "${fbcon%/name}/bind"
+fi
+fbv -c -u -i -y -f /usr/share/splash.png < /dev/null > /dev/null 2>&1
+echo "$BRIGHTNESS" > $BL/brightness
+echo 0 > $BL/bl_power

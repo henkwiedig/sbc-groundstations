@@ -15,6 +15,15 @@ on_exit() {
 	exec /sbin/init "$@"
 }
 
+# The boot splash and backlight, in the background. Its modprobes may run
+# after on_exit unmounted /proc, where they would not see a display blacklist
+# on the command line (/etc/modprobe.d/vr04.conf), so that is checked here.
+splash() {
+	if ! grep -qE 'modprobe\.blacklist=[^ ]*(artosyn_vo|artosyn_dsi|panel_qy45043a0)' /proc/cmdline; then
+		/usr/sbin/vr04-splash &
+	fi
+}
+
 mount -t proc proc /proc || exec /sbin/init "$@"
 trap 'on_exit "$@"' EXIT
 
@@ -22,6 +31,7 @@ mountpoint -q /dev || mount -t devtmpfs devtmpfs /dev
 if [ "$(awk '$2 == "/" { t = $3 } END { print t }' /proc/mounts)" != squashfs ]; then
 	# initramfs: the console as Buildroot's cpio /init sets it up
 	exec 0</dev/console 1>/dev/console 2>/dev/console
+	splash
 	exit 0
 fi
 
@@ -55,3 +65,4 @@ mount -o noatime,move /rom/sys /sys
 mount -o noatime,move /rom/dev /dev
 mount -o noatime,move /rom/overlay /overlay
 mount -o noatime,move /rom/tmp /tmp
+splash
