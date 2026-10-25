@@ -3,10 +3,11 @@
 # block device). The root is one of:
 # - the initramfs: a RAM boot through the stock U-Boot (rdinit=/init), which
 #   is writable already and touches no flash
-# - the UBIFS "rootfs" volume of the running slot's userapp, read-only
-#   (root=ubi0:rootfs ro init=/init, from the slot's dtb): the "rootfs_data"
-#   volume of the same UBI device becomes the writable overlay. An empty one
-#   is formatted by its first mount; tmpfs stands in if it does not mount.
+# - the squashfs in the "rootfs" volume of the running slot's userapp, read
+#   through a UBI block device (ubi.block=0,rootfs root=/dev/ubiblock0_0
+#   init=/init, from the slot's dtb): the "rootfs_data" volume of the same
+#   UBI device becomes the writable overlay. An empty one is formatted by its
+#   first mount; tmpfs stands in if it does not mount.
 # /overlay/.firstboot wipes the overlay, /overlay/.initshell stops in a shell.
 
 on_exit() {
@@ -18,7 +19,7 @@ mount -t proc proc /proc || exec /sbin/init "$@"
 trap 'on_exit "$@"' EXIT
 
 mountpoint -q /dev || mount -t devtmpfs devtmpfs /dev
-if [ "$(awk '$2 == "/" { t = $3 } END { print t }' /proc/mounts)" != ubifs ]; then
+if [ "$(awk '$2 == "/" { t = $3 } END { print t }' /proc/mounts)" != squashfs ]; then
 	# initramfs: the console as Buildroot's cpio /init sets it up
 	exec 0</dev/console 1>/dev/console 2>/dev/console
 	exit 0
