@@ -1528,23 +1528,6 @@ EOF
         else
             sed -i "s/^PIXELPILOT_AUDIO=.*/PIXELPILOT_AUDIO=\"\"/" /etc/default/pixelpilot
         fi
-        # BetaFPV VR04: the sound card is a USB one on the USB-C port. Host
-        # mode for it, and wait for it to register (PixelPilot turns audio on
-        # right after this); off gives the port back to the PC connection
-        # unless wfb/apfpv still needs it (usb-host off decides).
-        . /etc/default/pixelpilot
-        if [ "$PIXELPILOT_AUDIO_USB_HOST" = true ] && [ -x /usr/sbin/usb-host ]; then
-            if [ "$5" = "on" ]; then
-                usb-host on
-                i=0
-                while [ $i -lt 50 ] && ! ls -d /proc/asound/card[0-9]* > /dev/null 2>&1; do
-                    usleep 100000
-                    i=$((i + 1))
-                done
-            else
-                usb-host off
-            fi
-        fi
         ;;
 
 # ── GS: APFPV ───────────────────────────────────────────────────────────────

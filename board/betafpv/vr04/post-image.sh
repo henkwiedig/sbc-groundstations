@@ -119,8 +119,8 @@ check rootfs.ubi $((336 * 0x20000))
 # The RAM boot only installs: its initramfs is the rootfs without the video
 # stack (PixelPilot, msposd, GStreamer, the codec firmware), the WiFi
 # receiving (wfb-ng, wpa_supplicant, the drivers), the menu's air access
-# (OpenSSH client and its OpenSSL), USB audio and the time zones. It unpacks
-# into a tmpfs limited to half the RAM the kernel gets (61 MB next to the MMZ
+# (OpenSSH client and its OpenSSL) and the time zones. It unpacks into a
+# tmpfs limited to half the RAM the kernel gets (61 MB next to the MMZ
 # carveout and the ramoops area).
 "${SYSPY}" "${BOARD_DIR}/cpio-filter.py" rootfs.cpio ramboot.cpio \
 	usr/bin/pixelpilot usr/bin/pixelpilot.sh etc/init.d/S99pixelpilot \
@@ -138,8 +138,7 @@ check rootfs.ubi $((336 * 0x20000))
 	'lib/modules/*/updates/8812*.ko' 'lib/modules/*/kernel/net/wireless/*' \
 	'usr/lib/libnl*' usr/sbin/iw 'usr/lib/libpcap*' 'usr/lib/libsodium*' \
 	'usr/lib/libcrypto*' 'usr/lib/libssl*' usr/lib/ossl-modules/ usr/lib/engines-3/ \
-	usr/bin/openssl usr/bin/ssh usr/bin/scp usr/bin/sshpass usr/bin/yaml-cli \
-	'usr/lib/libasound*' usr/share/alsa/ 'usr/lib/libopus*' 'lib/modules/*/kernel/sound/*'
+	usr/bin/openssl usr/bin/ssh usr/bin/scp usr/bin/sshpass usr/bin/yaml-cli
 gzip -9 -n -c ramboot.cpio > ramboot.cpio.gz
 check ramboot.cpio.gz $((0x2000000))
 check ramboot.cpio $((28 * 1024 * 1024))
