@@ -75,8 +75,11 @@ Updating the active slot A in place: `vr04-uboot-boot.py ram --source ymodem
 slot A from RAM; B keeps stock), then power-cycle. Userspace-only changes can
 go straight into the running system's overlay (`cat > /path` over SSH).
 
-The panel comes up at boot (framebuffer console, S50vr04-display switches
-the backlight on); ml-kernel's QY45043A0 init also drives the nd043fhdm30p.
+The panel comes up early in /init: vr04-splash loads the display drivers
+(udev would only seconds later), draws /usr/share/splash.png with fbv and
+switches the backlight on (BRIGHTNESS in /etc/default/vr04-display). The
+kernel shows the splash again whenever PixelPilot exits. ml-kernel's
+QY45043A0 init also drives the nd043fhdm30p.
 
 ## Unit log
 
