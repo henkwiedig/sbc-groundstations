@@ -183,10 +183,12 @@ openipc_overlay() {
 	if [ -n "$password" ]; then
 		if [ ! -e "$WORK/ovl/root/etc/shadow" ]; then
 			mkdir -p "$WORK/rofs" "$WORK/ovl/root/etc"
-			mount -t ubifs -o ro ubi$UBI_DEV:rootfs "$WORK/rofs" &&
+			ubiblock --create "$(ubi_vol $UBI_DEV rootfs)" && wait_node /dev/ubiblock${UBI_DEV}_0 &&
+				mount -t squashfs -o ro /dev/ubiblock${UBI_DEV}_0 "$WORK/rofs" &&
 				cp -a "$WORK/rofs/etc/shadow" "$WORK/ovl/root/etc/shadow" ||
 				die "cannot read the new rootfs's /etc/shadow"
 			umount "$WORK/rofs"
+			ubiblock --remove "$(ubi_vol $UBI_DEV rootfs)"
 		fi
 		hash=$(hash_password)
 		sed -i "s|^root:[^:]*:|root:$hash:|" "$WORK/ovl/root/etc/shadow" || die "cannot set the password"
