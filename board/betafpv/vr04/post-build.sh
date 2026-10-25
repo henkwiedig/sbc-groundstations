@@ -16,10 +16,23 @@ rm -rf boot/extlinux boot/uboot-menu.env usr/share/splash.bmp usr/share/splash-b
 # output tree, which keeps the files.
 rm -rf etc/udev/hwdb.d lib/udev/hwdb.d lib/udev/hwdb.bin etc/udev/hwdb.bin
 
+# The rootfs volume is 28 MiB. Nothing here links libgfortran or libgomp,
+# the toolchain installs its libraries into /lib and /usr/lib as two copies
+# each, and msposd's cairo and sqlite bring their command line tools.
+rm -f lib/libgfortran.so* usr/lib/libgfortran.so* lib/libgomp.so* usr/lib/libgomp.so* \
+	lib/libstdc++.so.*-gdb.py usr/lib/libstdc++.so.*-gdb.py usr/bin/fc-* usr/bin/sqlite3
+for f in lib/*.so*; do
+	[ -f "$f" ] && [ ! -L "$f" ] && [ -f "usr/$f" ] && [ ! -L "usr/$f" ] &&
+		cmp -s "$f" "usr/$f" && ln -sf "../usr/$f" "$f"
+done
+
 # DVR re-encode at 20 Mbit/s (stock records at 8 or 20): the package's 50
 # with the OSD running saturates both cores and the recording stays empty.
+# The link is the AR8030 (no WiFi): the menu's link pages and the link
+# widgets come from lifecycled.
 [ ! -f etc/default/pixelpilot ] ||
-	sed -i 's/^PIXELPILOT_DVR_BITRATE=.*/PIXELPILOT_DVR_BITRATE="20000"/' etc/default/pixelpilot
+	sed -i -e 's/^PIXELPILOT_DVR_BITRATE=.*/PIXELPILOT_DVR_BITRATE="20000"/' \
+		-e 's/^PIXELPILOT_RX_MODE=.*/PIXELPILOT_RX_MODE="artosyn"/' etc/default/pixelpilot
 
 grep -q "betafpv-vr04 /init" init || { echo "post-build: /init is not the VR04 one"; exit 1; }
 [ ! -e boot/Image ] || { echo "post-build: the kernel Image is in the rootfs"; exit 1; }

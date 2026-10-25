@@ -1194,7 +1194,8 @@ case "$@" in
         emit_values "h264\nh265\nauto"
         ;;
     "get gs system rx_mode")
-        . /etc/default/wifibroadcast
+        # No wifibroadcast on the board (BetaFPV VR04): Artosyn is its only link.
+        [ -r /etc/default/wifibroadcast ] && . /etc/default/wifibroadcast
         . /etc/default/pixelpilot
         if [ x$PIXELPILOT_RX_MODE = x"artosyn" ]; then
             echo "artosyn"
@@ -1203,7 +1204,11 @@ case "$@" in
         else
             echo "wfb"
         fi
-        emit_values "wfb\napfpv\nartosyn"
+        if [ -r /etc/default/wifibroadcast ]; then
+            emit_values "wfb\napfpv\nartosyn"
+        else
+            emit_values "artosyn"
+        fi
         ;;
     "get gs system gs_rendering")
         . /etc/default/msposd

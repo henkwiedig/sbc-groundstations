@@ -1,0 +1,17 @@
+msposd: draw surface as high as the shared one
+
+The Rockchip ground build drew into a width x width surface and copied
+width x height of it into the shared region: 1920x1920 for a 1080p
+screen, 6.4 MB of RAM that every screen clear touches and nothing shows.
+
+--- a/osd/util/Render_gs.c	2026-10-25 12:04:00.342338714 +0100
++++ b/osd/util/Render_gs.c	2026-10-25 12:04:00.344349086 +0100
+@@ -464,7 +464,7 @@
+ 	}
+ 
+ 	// Create a Cairo surface for the image data
+-	surface = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, shm_width, shm_width);
++	surface = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, shm_width, shm_height);
+ 	if (cairo_surface_status(surface) != CAIRO_STATUS_SUCCESS) {
+ 		fprintf(stderr, "Failed to create Cairo surface\n");
+ 		return -1;
