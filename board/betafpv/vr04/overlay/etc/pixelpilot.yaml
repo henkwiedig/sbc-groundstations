@@ -20,6 +20,20 @@ gsmenu:
       - { name: right,  mv: 1180 }
       - { name: enter,  mv: 1376 }
       - { name: down,   mv: 1570 }
-# enables collection of `os_mon.*` OSD facts: CPU load
+# enables collection of `os_mon.*` OSD facts, the same ones the VRX Pro's OSD
+# shows (board/common/artosyn-osd):
 os_sensors:
-  cpu: true
+  # The battery: ADC channel 1 (calibrated mV) behind a 20.7:1 divider, as
+  # os_mon.power.voltage{sensor=vrx} like the VRX Pro's supply voltage.
+  power:
+    - type: iio
+      path: /sys/bus/iio/devices/iio:device0/in_voltage1_input
+      multiplier: 20.7
+      name: vrx
+  # The SoC temperature (artosyn_protemp: whole degrees C in in_temp_scale),
+  # os_mon.temperature{name=soc}.
+  temperature:
+    - type: iio
+      path: /sys/bus/iio/devices/iio:device1/in_temp_scale
+      multiplier: 1000
+      name: soc

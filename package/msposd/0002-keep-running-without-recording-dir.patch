@@ -1,0 +1,30 @@
+msposd: keep running when the recording directory is missing
+
+-subtitle names the DVR directory to watch for new recordings. When it
+does not exist (a ground station whose DVR storage is an SD card, without
+one inserted), msposd exited and no FC OSD was shown at all. Without the
+directory, show the OSD and record no SRT/OSD files.
+
+--- a/msposd.c	2026-10-25 11:37:07.100168928 +0100
++++ b/msposd.c	2026-10-25 11:37:07.116712738 +0100
+@@ -1354,9 +1354,11 @@
+ 		// Add a watch for the directory
+ 		watch_fd = inotify_add_watch(inotify_fd, recording_dir, IN_CREATE);
+ 		if (watch_fd < 0) {
++			// No DVR storage yet (e.g. no SD card): show the OSD anyway
+ 			perror("inotify_add_watch");
+ 			close(inotify_fd);
+-			return 1;
++			printf("SRT/OSD recording disabled: %s missing\n", recording_dir);
++			goto no_recording;
+ 		}
+ 
+ 		// Create an event for the inotify file descriptor
+@@ -1371,6 +1373,7 @@
+ 		// Add the event to the event base
+ 		event_add(inotify_event, NULL);		
+ 	}	
++no_recording:
+ 
+ 	if (temp) {
+ 		if (GetTempSigmaStar() > -90) {

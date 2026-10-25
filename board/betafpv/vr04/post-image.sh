@@ -110,7 +110,7 @@ check rootfs.ubifs $((28 * 1024 * 1024))
 check rootfs.ubi $((336 * 0x20000))
 
 # The RAM boot only installs: its initramfs is the rootfs without the video
-# stack (PixelPilot, GStreamer, the codec firmware). It unpacks into a tmpfs
+# stack (PixelPilot, msposd, GStreamer, the codec firmware). It unpacks into a tmpfs
 # limited to half the RAM the kernel gets (61 MB next to the MMZ carveout and
 # the ramoops area).
 "${SYSPY}" "${BOARD_DIR}/cpio-filter.py" rootfs.cpio ramboot.cpio \
@@ -122,7 +122,9 @@ check rootfs.ubi $((336 * 0x20000))
 	'usr/lib/libgmodule-2.0*' 'usr/lib/libgthread-2.0*' usr/lib/gio/ \
 	'usr/lib/liblvgl*' 'usr/lib/libspdlog*' 'usr/lib/libfmt*' 'usr/lib/libyaml-cpp*' \
 	'usr/lib/libpng*' 'usr/lib/libmsgpack*' 'usr/lib/liborc*' 'usr/lib/libpcre2*' \
-	'usr/lib/libffi*' '*/libgfortran.so*' '*/libgomp.so*'
+	'usr/lib/libffi*' '*/libgfortran.so*' '*/libgomp.so*' \
+	usr/bin/msposd etc/init.d/S98msposd usr/share/fonts/ 'usr/lib/libcairo*' \
+	'usr/lib/libpixman*' 'usr/lib/libsqlite3*' 'usr/lib/libevent*'
 gzip -9 -n -c ramboot.cpio > ramboot.cpio.gz
 check ramboot.cpio.gz $((0x2000000))
 check ramboot.cpio $((28 * 1024 * 1024))
