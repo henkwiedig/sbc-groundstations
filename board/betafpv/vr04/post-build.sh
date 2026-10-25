@@ -36,10 +36,16 @@ done
 # recording: 11 dropouts at 60 fps, 2 at 30).
 # The link is the AR8030 (no WiFi): the menu's link pages and the link
 # widgets come from lifecycled.
+# Vsync lock on, as on the VRX Pro: artosyn_vo's pclk_hz trims the panel's
+# pixel clock (+-1000 ppm measured exact, no DSI errors), so the panel
+# follows the camera.
 [ ! -f etc/default/pixelpilot ] ||
 	sed -i -e 's/^PIXELPILOT_DVR_BITRATE=.*/PIXELPILOT_DVR_BITRATE="20000"/' \
 		-e 's/^PIXELPILOT_DVR_FPS=.*/PIXELPILOT_DVR_FPS="30"/' \
-		-e 's/^PIXELPILOT_RX_MODE=.*/PIXELPILOT_RX_MODE="artosyn"/' etc/default/pixelpilot
+		-e 's/^PIXELPILOT_RX_MODE=.*/PIXELPILOT_RX_MODE="artosyn"/' \
+		-e 's/^PIXELPILOT_VSYNC_LOCK=.*/PIXELPILOT_VSYNC_LOCK="--vsync-lock"/' etc/default/pixelpilot
+grep -q '^PIXELPILOT_VSYNC_LOCK="--vsync-lock"' etc/default/pixelpilot ||
+	{ echo "post-build: no PIXELPILOT_VSYNC_LOCK in etc/default/pixelpilot"; exit 1; }
 
 # Artosyn is the receiver mode at boot: wfb-ng (this board's own lean
 # S98wifibroadcast) starts only once the menu switches to wfb.
