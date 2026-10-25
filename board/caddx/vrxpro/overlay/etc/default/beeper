@@ -1,0 +1,5 @@
+# The buzzer for beep.sh / playsong.sh (board/common/beeper): "vrx pro2"
+# hardware, pwmchip4/pwm0 (fe700010.pwm), the vendor's 250 us period (~4 kHz).
+BEEPER_PWMCHIP=/sys/class/pwm/pwmchip4
+BEEPER_CHANNEL=0
+BEEPER_PERIOD_NS=250000
