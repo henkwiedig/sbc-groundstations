@@ -1,1 +1,6 @@
 CONFIG_FEATURE_BLKID_TYPE=y
+# gsmenu.sh: every air command runs under "timeout -k 1 11", and the
+# camera/AALink commands go through "nc -w 11" to the air unit's port 12355
+CONFIG_TIMEOUT=y
+CONFIG_NC=y
+CONFIG_NC_EXTRA=y
