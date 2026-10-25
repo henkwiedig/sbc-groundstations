@@ -28,10 +28,14 @@ done
 
 # DVR re-encode at 20 Mbit/s (stock records at 8 or 20): the package's 50
 # with the OSD running saturates both cores and the recording stays empty.
+# And at 30 fps: decoding a 20 Mbit/s 1080p60 stream and encoding 1080p60
+# on the one wave5 core drops the live video every few seconds (30 s
+# recording: 11 dropouts at 60 fps, 2 at 30).
 # The link is the AR8030 (no WiFi): the menu's link pages and the link
 # widgets come from lifecycled.
 [ ! -f etc/default/pixelpilot ] ||
 	sed -i -e 's/^PIXELPILOT_DVR_BITRATE=.*/PIXELPILOT_DVR_BITRATE="20000"/' \
+		-e 's/^PIXELPILOT_DVR_FPS=.*/PIXELPILOT_DVR_FPS="30"/' \
 		-e 's/^PIXELPILOT_RX_MODE=.*/PIXELPILOT_RX_MODE="artosyn"/' etc/default/pixelpilot
 
 grep -q "betafpv-vr04 /init" init || { echo "post-build: /init is not the VR04 one"; exit 1; }
