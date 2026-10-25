@@ -185,7 +185,7 @@
         {
             "name": "Goggle supply voltage",
             "type": "IconTplTextWidget",
-            "__comment": "os_sensors power entry `name: vrx` in /etc/pixelpilot.yaml (SARADC ch5, stock's G-Volt)",
+            "__comment": "os_sensors power entry `name: vrx` in /etc/pixelpilot.yaml (VRX Pro: SARADC ch5, stock's G-Volt; VR04: ADC ch1, the battery)",
             "x": -250,
             "y": 155,
             "icon_path": "head_mounted_device.png",
@@ -206,6 +206,19 @@
             "facts": [
                 {"name": "os_mon.temperature", "tags": {"name": "soc-thermal"}, "convert": "x / 1000"},
                 {"name": "os_mon.temperature", "tags": {"name": "gpu-thermal"}, "convert": "x / 1000"}
+            ]
+        },
+        {
+            "name": "SoC temperature",
+            "type": "IconTplTextWidget",
+            "__comment": "Goggles with one chip temperature (VR04: os_sensors temperature `name: soc`), in place of the SoC/GPU pair",
+            "x": -250,
+            "y": 185,
+            "icon_path": "device_thermostat.png",
+            "template": "%.0f°C",
+            "hide_when_undefined": true,
+            "facts": [
+                {"name": "os_mon.temperature", "tags": {"name": "soc"}, "convert": "x / 1000"}
             ]
         },
         {
