@@ -1216,13 +1216,30 @@ case "$@" in
         [ x$MSPOSD_ENABLED = x"false" ] && echo 0 || echo 1
         ;;
     "get gs system connector")
-        echo HDMI
-        emit_values "HDMI"
+        # The BetaFPV VR04's panel is on DSI
+        if grep -qx connected /sys/class/drm/card*-DSI-*/status 2>/dev/null; then
+            echo DSI
+            emit_values "DSI"
+        else
+            echo HDMI
+            emit_values "HDMI"
+        fi
         ;;
     "get gs system resolution")
-        drm_info -j /dev/dri/card0 2>/dev/null | jq -r '."/dev/dri/card0".crtcs[0].mode| .name + "@" + (.vrefresh|tostring)'
-        printf '\x1e'
-        drm_info -j /dev/dri/card0 2>/dev/null | jq -r '."/dev/dri/card0".connectors[1].modes[] | select(.name | contains("i") | not) | .name + "@" + (.vrefresh|tostring)' | sort | uniq | head -c -1
+        if command -v drm_info > /dev/null; then
+            drm_info -j /dev/dri/card0 2>/dev/null | jq -r '."/dev/dri/card0".crtcs[0].mode| .name + "@" + (.vrefresh|tostring)'
+            printf '\x1e'
+            drm_info -j /dev/dri/card0 2>/dev/null | jq -r '."/dev/dri/card0".connectors[1].modes[] | select(.name | contains("i") | not) | .name + "@" + (.vrefresh|tostring)' | sort | uniq | head -c -1
+        else
+            # No drm_info (BetaFPV VR04): the connected display's own modes
+            # from sysfs (a panel has one), at PixelPilot's refresh rate
+            . /etc/default/pixelpilot
+            echo "$PIXELPILOT_SCREEN_MODE"
+            printf '\x1e'
+            for c in /sys/class/drm/card*-*; do
+                [ "$(cat "$c/status" 2>/dev/null)" = connected ] && cat "$c/modes"
+            done | sort -u | sed "s/\$/@${PIXELPILOT_SCREEN_MODE##*@}/" | head -c -1
+        fi
         ;;
     "get gs system video_scale")
         . /etc/default/pixelpilot
