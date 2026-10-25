@@ -65,4 +65,10 @@ mount -o noatime,move /rom/sys /sys
 mount -o noatime,move /rom/dev /dev
 mount -o noatime,move /rom/overlay /overlay
 mount -o noatime,move /rom/tmp /tmp
+
+# The RNG gets the seed the last boot saved before anything reads
+# /dev/urandom: until it is seeded, the kernel makes such a read wait for its
+# jitter entropy, about 4 s on these cores, and automount, the first reader,
+# held the boot up that long. S01seedrng runs again from rcS.
+seedrng
 splash
