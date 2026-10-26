@@ -56,16 +56,20 @@ artosyn_upgrade enforces the signature.
 
 ## Updates from the SD card
 
-With OpenIPC installed, the release archive `betafpv_vr04.tar.gz` (as
-published: the update image and its md5sum) in the root of the SD card is
-installed at the next power-on, before the system starts
-(`/usr/sbin/vr04-sdupdate` from `/init`): sysupgrade writes it into the slot
-that is not running, with this system's settings and pairing, makes that slot
-the active one, and the goggles restart into it. One beep when it starts, two
-when it is done (the archive is then deleted), a long one when it failed: the
-archive is renamed `.failed` and `sysupgrade.log` on the card says why, and
-the goggles boot on as they were. No card: no delay (the slot's card detect is
-read first).
+With OpenIPC installed, one update in the root of the SD card is installed at
+the next power-on, before the system starts (`/usr/sbin/vr04-sdupdate` from
+`/init`): the release archive `betafpv_vr04.tar.gz` (as published: the update
+image and its md5sum), or an update image `P1_GND_*.img` -- this build's
+`P1_GND_*_OpenIPC_*.img`, or BetaFPV's stock firmware to go back to stock
+(2.1.3 and 2.1.4 go in; 2.0.6 brings another SPL and vendor partition, which
+only the USB upgrade writes). sysupgrade writes it into the slot that is not
+running (OpenIPC with this system's settings and pairing), makes that slot the
+active one, and the goggles restart into it. One beep when it starts, two
+when it is done (the file is then deleted), a long one when it failed: the
+file is renamed `.failed` and `sysupgrade.log` on the card says why, and the
+goggles boot on as they were; so does more than one update on the card. No
+card: no delay (the slot's card detect is read first). From stock back to
+OpenIPC: `scripts/vr04-usbburn.py flash ... --from-stock`.
 
 ## Procedure
 
@@ -116,4 +120,4 @@ QY45043A0 init also drives the nd043fhdm30p.
 
 | unit | factory md5 | backup | notes |
 |---|---|---|---|
-| bench goggles (hw V2.0; slot A OpenIPC since 2026-10-23; slot B OpenIPC since 2026-10-26 (U-Boot USB upgrade, cold boot verified), ACTIVE, stock gone; GPT in gpt0; boot-ROM recovery images in the backup: recovery-gpt0-B-active.bin, gpt-after-activate-a/) | 0e398546c8f382ca7bbfdcd8944fa297 | betafpv/rev/backup-vr04-gnd-0e398546-2026-10-23 (+ -pass1) | panel nd043fhdm30p (stock's QY45043A0 detection fails; factory cfg says VoDevice lt9711); bad blocks: kernel1 1, userapp0 3, userapp1 3, usr_data 1 |
+| bench goggles (hw V2.0; slot A stock 2.1.3 again since 2026-10-26 (SD-card update test); slot B OpenIPC (U-Boot USB upgrade from stock, cold boot verified), ACTIVE; GPT in gpt0; boot-ROM recovery images in the backup: recovery-gpt0-B-active.bin, gpt-after-activate-a/) | 0e398546c8f382ca7bbfdcd8944fa297 | betafpv/rev/backup-vr04-gnd-0e398546-2026-10-23 (+ -pass1) | panel nd043fhdm30p (stock's QY45043A0 detection fails; factory cfg says VoDevice lt9711); bad blocks: kernel1 1, userapp0 3, userapp1 3, usr_data 1 |
