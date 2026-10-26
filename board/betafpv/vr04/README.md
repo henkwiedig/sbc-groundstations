@@ -36,6 +36,24 @@ and gives the host 192.168.3.205/32 with a host route to .100, so both can be
 plugged in at once (an ascent-vtx0 rule for 1d6b:0104 then needs
 `ATTRS{product}!="BetaFPV VR04"`).
 
+## Flashing over USB (no serial console, case closed)
+
+The stock U-Boot's USB upgrade takes the OpenIPC image as it is (it checks
+the RSA signature but does not enforce it):
+
+    scripts/vr04-usbburn.py flash P1_GND_<release>_OpenIPC_<sha>.img --from-stock
+    scripts/vr04-usbburn.py flash P1_GND_<release>_OpenIPC_<sha>.img --from-openipc
+
+with the goggles on USB to this host (and its udev rule for 1d6b:0100, see
+the script). `--from-stock` sends stock's reboot-to-U-Boot command on
+/dev/ttyACM0, `--from-openipc` runs `vr04-uboot` over SSH. U-Boot writes the
+slot that is not active, makes it the active one, and waits for a power cycle;
+the upload takes ~18 minutes, the write ~12 s. The new slot starts with an
+empty overlay: re-pair. BetaFPV's signed P1_GND_*.img goes back to stock the
+same way. Stock's own SD-card upgrade (bind held 2-10 s with
+artosyn-upgrade-ars31.img on the card) does not take it: its Linux-side
+artosyn_upgrade enforces the signature.
+
 ## Procedure
 
 Every unit needs its own backup first (factory = RF calibration, unique).
@@ -85,4 +103,4 @@ QY45043A0 init also drives the nd043fhdm30p.
 
 | unit | factory md5 | backup | notes |
 |---|---|---|---|
-| bench goggles (hw V2.0; slot A OpenIPC, ACTIVE since 2026-10-23 (cold boot verified); slot B stock 2.1.3; GPT now in gpt0; boot-ROM recovery image recovery-gpt0-B-active.bin in the backup) | 0e398546c8f382ca7bbfdcd8944fa297 | betafpv/rev/backup-vr04-gnd-0e398546-2026-10-23 (+ -pass1) | panel nd043fhdm30p (stock's QY45043A0 detection fails; factory cfg says VoDevice lt9711); bad blocks: kernel1 1, userapp0 3, userapp1 3, usr_data 1 |
+| bench goggles (hw V2.0; slot A OpenIPC since 2026-10-23; slot B OpenIPC since 2026-10-26 (U-Boot USB upgrade, cold boot verified), ACTIVE, stock gone; GPT in gpt0; boot-ROM recovery images in the backup: recovery-gpt0-B-active.bin, gpt-after-activate-a/) | 0e398546c8f382ca7bbfdcd8944fa297 | betafpv/rev/backup-vr04-gnd-0e398546-2026-10-23 (+ -pass1) | panel nd043fhdm30p (stock's QY45043A0 detection fails; factory cfg says VoDevice lt9711); bad blocks: kernel1 1, userapp0 3, userapp1 3, usr_data 1 |
