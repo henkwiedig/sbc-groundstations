@@ -134,6 +134,24 @@ switches the backlight on (BRIGHTNESS in /etc/default/vr04-display). The
 kernel shows the splash again whenever PixelPilot exits. ml-kernel's
 QY45043A0 init also drives the nd043fhdm30p.
 
+## RF front end
+
+The AR8030 runs the Caddx Ascent L_Gnd baseband, which only knows the Ascent
+Lite goggles' board: it never enables the pads of GPIO port 2 (0x0A10A000
+bit 1), where the VR04's FEM control lines are, and puts its own pin
+functions on them, so PA and LNA barely work. BetaFPV's baseband (the same
+binary as the P1 air unit's) sets them up from its config's `"board":
+"c401"` with the broadcast in `1TX`, its board type c401_1t2r: port 2 pads
+on, pin 2.4 a GPIO driven low. `/usr/sbin/vr04-fem` does that after every
+chip start (lifecycled hooks `idle` and `connected`). Bench, linked to a P1:
+uplink SNR 3-9 -> 15.5 dB at 23 dBm (the P1's AGC gain 98 -> 35), the
+goggles' own AGC gain 69/93 -> 32/36. The L_Gnd firmware reads the stock
+VR04 PA calibration's layout (four values per row, no sub-bands) as is.
+
+lifecycled runs with `--max-power 200`: 23 dBm, BetaFPV's maximum for the
+VR04. 500 mW and "auto" would go to 27 dBm; at 23 the PA already costs
+~4.5 dB uplink SNR against 20 dBm.
+
 ## Unit log
 
 | unit | factory md5 | backup | notes |
