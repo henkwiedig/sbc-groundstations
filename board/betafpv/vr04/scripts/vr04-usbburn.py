@@ -65,6 +65,15 @@ Access (and the serial gadget for --from-stock), e.g.
 /etc/udev/rules.d/80-artosyn.rules:
   SUBSYSTEM=="usb", ATTRS{idVendor}=="1d6b", ATTRS{idProduct}=="0100", MODE="0660", GROUP="plugdev"
   SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1d6b", ATTRS{idProduct}=="0100", MODE="0660", GROUP="plugdev"
+
+Windows: its HID driver puts the report ID in front of every output report
+and pads it to the declared size (1 + 1024 bytes for report 2); U-Boot
+answers that with "magic num error!" for every 64-byte packet (tried by
+sending exactly that through libusb). So the gadget needs the WinUSB driver
+instead, bound once with Zadig while it is in the upgrade mode (Options ->
+List All Devices, "USB download gadget" 1d6b:0100, WinUSB, Replace Driver),
+and libusb: pip install pyusb pyserial libusb-package. --from-stock takes
+the COM port of stock's serial gadget (e.g. --from-stock COM5).
 """
 import argparse
 import glob
@@ -154,11 +163,17 @@ class Gadget:
         except ImportError:
             usb = None
         if usb:
-            dev = usb.core.find(idVendor=0x1D6B, idProduct=0x0100)
+            try:
+                # the libusb DLL on Windows (pip install libusb-package)
+                import libusb_package
+                backend = libusb_package.get_libusb1_backend()
+            except ImportError:
+                backend = None
+            dev = usb.core.find(idVendor=0x1D6B, idProduct=0x0100, backend=backend)
             if dev is None:
                 return False
             try:
-                if dev.is_kernel_driver_active(0):
+                if sys.platform != "win32" and dev.is_kernel_driver_active(0):
                     dev.detach_kernel_driver(0)
                 usb.util.claim_interface(dev, 0)
                 self.usb = dev
@@ -169,6 +184,9 @@ class Gadget:
                 print(f"U-Boot upgrade gadget on USB bus {dev.bus} device {dev.address} (libusb)")
                 return True
             except usb.core.USBError as e:
+                if sys.platform == "win32":
+                    sys.exit(f"libusb: {e}: Windows' HID driver has the gadget; bind WinUSB to "
+                             "1d6b:0100 once (Zadig, see --help)")
                 print(f"libusb: {e}; using hidraw, without U-Boot's status (udev rule, see --help)")
         for uevent in glob.glob("/sys/class/hidraw/hidraw*/device/uevent"):
             if f"HID_ID=0003:{VID_PID}" in open(uevent).read():
