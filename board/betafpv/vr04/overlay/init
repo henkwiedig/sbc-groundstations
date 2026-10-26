@@ -9,6 +9,7 @@
 #   UBI device becomes the writable overlay. An empty one is formatted by its
 #   first mount; tmpfs stands in if it does not mount.
 # /overlay/.firstboot wipes the overlay, /overlay/.initshell stops in a shell.
+# An update archive on the SD card is installed before the system starts.
 
 on_exit() {
 	mountpoint -q /proc && umount /proc
@@ -22,6 +23,14 @@ splash() {
 	if ! grep -qE 'modprobe\.blacklist=[^ ]*(artosyn_vo|artosyn_dsi|panel_qy45043a0)' /proc/cmdline; then
 		/usr/sbin/vr04-splash &
 	fi
+}
+
+# The SD-card update (vr04-sdupdate), with a time limit: a hang there must not
+# keep the goggles from booting.
+sdupdate() {
+	timeout -s KILL 900 /usr/sbin/vr04-sdupdate
+	mountpoint -q /tmp/sdupdate && umount /tmp/sdupdate
+	rm -rf /tmp/sdupdate.img
 }
 
 mount -t proc proc /proc || exec /sbin/init "$@"
@@ -72,3 +81,4 @@ mount -o noatime,move /rom/tmp /tmp
 # held the boot up that long. S01seedrng runs again from rcS.
 seedrng
 splash
+sdupdate
