@@ -1,20 +1,26 @@
 #!/bin/sh
 # SD-card update, from /init before the system starts (the other targets'
-# /init does the same): the release archive <BUILD_CONFIG>.tar.gz (the update
-# image and its md5sum, as published) in the root of the card goes into the
-# slot that is not running -- sysupgrade carries this system's settings over
-# and makes that slot the active one -- and the goggles restart into it. Once
-# installed the archive is deleted; one that fails is renamed .failed, so it
-# is not tried at every boot, and sysupgrade.log on the card says why. With
-# the case closed the buzzer tells: one beep when it starts, two when it is
-# done, a long one when it failed. A power loss in between leaves the running
-# slot the active one and the archive on the card for the next boot.
+# /init does the same). In the root of the card, either
+# - the release archive <BUILD_CONFIG>.tar.gz (the update image and its
+#   md5sum, as published), or
+# - an update image as BetaFPV names theirs, P1_GND_*.img: their stock
+#   firmware (back to stock) or this build's P1_GND_*_OpenIPC_*.img
+# goes into the slot that is not running -- sysupgrade carries this system's
+# settings over to OpenIPC and makes that slot the active one -- and the
+# goggles restart into it. Once installed the file is deleted; one that fails
+# is renamed .failed, so it is not tried at every boot, and sysupgrade.log on
+# the card says why (stock firmware with another SPL or vendor partition than
+# this unit's goes in only through the stock U-Boot's USB upgrade). With the
+# case closed the buzzer tells: one beep when it starts, two when it is done,
+# a long one when it failed. A power loss in between leaves the running slot
+# the active one and the file on the card for the next boot.
 
 . /etc/os-release
 ARCHIVE=$BUILD_CONFIG.tar.gz
 SD=1c00000.mmc
 MNT=/tmp/sdupdate
 WORK=/tmp/sdupdate.img
+LOG=$MNT/sysupgrade.log
 
 log() {
 	echo "<5>sdupdate: $*" > /dev/kmsg
@@ -31,6 +37,24 @@ card() {
 		readlink -f "$b" | grep -q "/$SD/" && { echo "${b##*/}"; return 0; }
 	done
 	return 1
+}
+
+# what is there to install (names may have spaces: "P1_GND_... (1).img")
+updates() {
+	local f
+	for f in "$MNT/$ARCHIVE" "$MNT"/P1_GND_*.img; do
+		[ -f "$f" ] && echo "$f"
+	done
+}
+
+failed() {
+	updates | while IFS= read -r f; do
+		mv "$f" "$f.failed"
+	done
+	umount $MNT
+	log "failed: see sysupgrade.log on the card"
+	beep 1500
+	exit 1
 }
 
 # artosyn_gpio's hogs power the card's I/O rail
@@ -65,35 +89,41 @@ exfat) ;;
 esac
 # read-only until there is something to install
 mkdir -p $MNT && mount -t "$type" -o ro "$dev" $MNT || exit 0
-if [ ! -f "$MNT/$ARCHIVE" ]; then
+file=$(updates | head -n 1)
+if [ -z "$file" ]; then
 	umount $MNT
 	exit 0
 fi
 mount -o remount,rw $MNT || { umount $MNT; exit 0; }
 
-log "$ARCHIVE on the SD card: installing it"
+names=$(updates | sed 's|.*/||' | tr '\n' ' ')
+log "on the SD card: $names"
 modprobe artosyn_pwm
 beep 300
-ok=
-rm -rf $WORK
-mkdir -p $WORK
-if (gzip -dc "$MNT/$ARCHIVE" | tar -xf - -C $WORK && cd $WORK && md5sum -c *.md5sum &&
-	sysupgrade --image="$(ls $WORK/*.img)") > "$MNT/sysupgrade.log" 2>&1; then
-	ok=1
+if [ "$(updates | wc -l)" -gt 1 ]; then
+	echo "more than one update on the card: $names-- keep one (all renamed .failed)" > "$LOG"
+	failed
 fi
-rm -rf $WORK
+
+ok=
+case "$file" in
+*.tar.gz)
+	rm -rf $WORK
+	mkdir -p $WORK
+	(gzip -dc "$file" | tar -xf - -C $WORK && cd $WORK && md5sum -c *.md5sum &&
+		sysupgrade --image="$(ls $WORK/*.img)") > "$LOG" 2>&1 && ok=1
+	rm -rf $WORK
+	;;
+*)
+	sysupgrade --image="$file" > "$LOG" 2>&1 && ok=1
+	;;
+esac
 while read -r l; do
 	log "$l"
-done < "$MNT/sysupgrade.log"
+done < "$LOG"
+[ -n "$ok" ] || failed
 
-if [ -z "$ok" ]; then
-	mv "$MNT/$ARCHIVE" "$MNT/$ARCHIVE.failed"
-	umount $MNT
-	log "failed: the card has $ARCHIVE.failed and sysupgrade.log"
-	beep 1500
-	exit 1
-fi
-rm -f "$MNT/$ARCHIVE"
+rm -f "$file"
 umount $MNT
 log "installed: restarting into it"
 beep 150
