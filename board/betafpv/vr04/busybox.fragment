@@ -4,3 +4,5 @@ CONFIG_FEATURE_BLKID_TYPE=y
 CONFIG_TIMEOUT=y
 CONFIG_NC=y
 CONFIG_NC_EXTRA=y
+# vr04-sdupdate: the update's progress bar on the panel
+CONFIG_FBSPLASH=y

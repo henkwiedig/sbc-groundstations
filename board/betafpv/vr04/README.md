@@ -36,10 +36,46 @@ and gives the host 192.168.3.205/32 with a host route to .100, so both can be
 plugged in at once (an ascent-vtx0 rule for 1d6b:0104 then needs
 `ATTRS{product}!="BetaFPV VR04"`).
 
-## Flashing over USB (no serial console, case closed)
+## Installing and updating (no serial console, case closed)
 
-The stock U-Boot's USB upgrade takes the OpenIPC image as it is (it checks
-the RSA signature but does not enforce it):
+Both directions go through the SD card, with the update image as BetaFPV
+names theirs: OpenIPC's `P1_GND_<release>_OpenIPC_<sha>.img` (built here), or
+BetaFPV's own `P1_GND_<release>.img`. Copy it into the root of the card -- with
+a card reader, or over USB while the goggles run stock (stock shows the card
+as a media device) -- and:
+
+- **Stock -> OpenIPC**: pick it in stock's update menu. Stock's updater
+  (libar_ota) checks the image's SHA-256, not its RSA signature, so it takes
+  the OpenIPC image; it writes the slot that is not active, makes it the
+  active one and restarts into OpenIPC. The image is still on the card then:
+  OpenIPC sees stock's index of the card next to it (`.media_files.json`,
+  which stock writes whenever it has the card), renames the image `.skipped`
+  instead of installing it a second time into the other slot (the one with
+  stock), and deletes the index.
+- **OpenIPC -> OpenIPC, OpenIPC -> stock**: just power on. OpenIPC installs
+  one update from the root of the card before the system starts
+  (`/usr/sbin/vr04-sdupdate` from `/init`): an update image as above, or the
+  release archive `betafpv_vr04.tar.gz` (the image and its md5sum, as
+  published). sysupgrade writes the slot that is not running (OpenIPC with
+  this system's settings and pairing), makes it the active one, and the
+  goggles restart into it. The panel shows it (update screen with a progress
+  bar), and the buzzer: one beep when it starts, two when it is done (the file
+  is then deleted), a long one when it failed: the file is renamed `.failed`,
+  `sysupgrade.log` on the card says why, and the goggles boot on as they were;
+  so does more than one update on the card. Stock 2.1.3 and 2.1.4 go in this
+  way; 2.0.6 brings another SPL and vendor partition, which sysupgrade does not
+  write (stock's own updater or the USB upgrade below does). No card: no delay
+  (the slot's card detect is read first).
+
+The update screens are made from the splash by `scripts/make-update-screens.py`
+(`overlay/usr/share/update*.png`, the bar's place in `update-bar.ini`).
+
+Stock's other SD-card upgrade, bind held 2-10 s with
+`artosyn-upgrade-ars31.img` on the card, goes through artosyn_upgrade, which
+(from its code, not tried) enforces the RSA signature.
+
+Without the SD card, the stock U-Boot's USB upgrade takes the image too (it
+checks the RSA signature but does not enforce it):
 
     scripts/vr04-usbburn.py flash P1_GND_<release>_OpenIPC_<sha>.img --from-stock
     scripts/vr04-usbburn.py flash P1_GND_<release>_OpenIPC_<sha>.img --from-openipc
@@ -49,27 +85,9 @@ the script). `--from-stock` sends stock's reboot-to-U-Boot command on
 /dev/ttyACM0, `--from-openipc` runs `vr04-uboot` over SSH. U-Boot writes the
 slot that is not active, makes it the active one, and waits for a power cycle;
 the upload takes ~18 minutes, the write ~12 s. The new slot starts with an
-empty overlay: re-pair. BetaFPV's signed P1_GND_*.img goes back to stock the
-same way. Stock's own SD-card upgrade (bind held 2-10 s with
-artosyn-upgrade-ars31.img on the card) does not take it: its Linux-side
-artosyn_upgrade enforces the signature.
-
-## Updates from the SD card
-
-With OpenIPC installed, one update in the root of the SD card is installed at
-the next power-on, before the system starts (`/usr/sbin/vr04-sdupdate` from
-`/init`): the release archive `betafpv_vr04.tar.gz` (as published: the update
-image and its md5sum), or an update image `P1_GND_*.img` -- this build's
-`P1_GND_*_OpenIPC_*.img`, or BetaFPV's stock firmware to go back to stock
-(2.1.3 and 2.1.4 go in; 2.0.6 brings another SPL and vendor partition, which
-only the USB upgrade writes). sysupgrade writes it into the slot that is not
-running (OpenIPC with this system's settings and pairing), makes that slot the
-active one, and the goggles restart into it. One beep when it starts, two
-when it is done (the file is then deleted), a long one when it failed: the
-file is renamed `.failed` and `sysupgrade.log` on the card says why, and the
-goggles boot on as they were; so does more than one update on the card. No
-card: no delay (the slot's card detect is read first). From stock back to
-OpenIPC: `scripts/vr04-usbburn.py flash ... --from-stock`.
+empty overlay: re-pair. On Windows the gadget needs the WinUSB driver (Zadig):
+Windows' HID driver puts a report ID in front of every report, which U-Boot
+does not take.
 
 ## Procedure
 
