@@ -1,0 +1,106 @@
+#!/bin/sh
+# SD-card update, from /init before the system starts (the other targets'
+# /init does the same): the release archive <BUILD_CONFIG>.tar.gz (the update
+# image and its md5sum, as published) in the root of the card goes into the
+# slot that is not running -- sysupgrade carries this system's settings over
+# and makes that slot the active one -- and the goggles restart into it. Once
+# installed the archive is deleted; one that fails is renamed .failed, so it
+# is not tried at every boot, and sysupgrade.log on the card says why. With
+# the case closed the buzzer tells: one beep when it starts, two when it is
+# done, a long one when it failed. A power loss in between leaves the running
+# slot the active one and the archive on the card for the next boot.
+
+. /etc/os-release
+ARCHIVE=$BUILD_CONFIG.tar.gz
+SD=1c00000.mmc
+MNT=/tmp/sdupdate
+WORK=/tmp/sdupdate.img
+
+log() {
+	echo "<5>sdupdate: $*" > /dev/kmsg
+}
+
+beep() {
+	beep.sh "$1" > /dev/null 2>&1
+}
+
+# the card's disk, as mmcblkN
+card() {
+	local b
+	for b in /sys/block/mmcblk*; do
+		readlink -f "$b" | grep -q "/$SD/" && { echo "${b##*/}"; return 0; }
+	done
+	return 1
+}
+
+# artosyn_gpio's hogs power the card's I/O rail
+modprobe artosyn_gpio && modprobe dw_mci-artosyn || exit 0
+# The host's CDETECT register (DW MMC, 0x050), bit 0 high: no card in the
+# slot, nothing to wait for. Read only with the driver bound (an unclocked
+# read would stall the bus), after its 25 ms debounce.
+[ -e /sys/bus/platform/drivers/dwmmc_artosyn/$SD ] || exit 0
+usleep 50000
+[ $(($(devmem 0x01c00050 32) & 1)) = 0 ] || exit 0
+
+i=0
+until disk=$(card); do
+	[ $i -ge 15 ] && exit 0
+	usleep 100000
+	i=$((i + 1))
+done
+# its first partition (the partition scan can trail the disk), or the whole card
+i=0
+until [ -e /sys/block/$disk/${disk}p1 ] || [ $i -ge 5 ]; do
+	usleep 100000
+	i=$((i + 1))
+done
+dev=/dev/$disk
+[ -e /sys/block/$disk/${disk}p1 ] && dev=/dev/${disk}p1
+
+type=$(blkid "$dev" 2>/dev/null | sed -n 's/.* TYPE="\([^"]*\)".*/\1/p')
+case "$type" in
+vfat) modprobe vfat || exit 0 ;;
+exfat) ;;
+*) exit 0 ;;
+esac
+# read-only until there is something to install
+mkdir -p $MNT && mount -t "$type" -o ro "$dev" $MNT || exit 0
+if [ ! -f "$MNT/$ARCHIVE" ]; then
+	umount $MNT
+	exit 0
+fi
+mount -o remount,rw $MNT || { umount $MNT; exit 0; }
+
+log "$ARCHIVE on the SD card: installing it"
+modprobe artosyn_pwm
+beep 300
+ok=
+rm -rf $WORK
+mkdir -p $WORK
+if (gzip -dc "$MNT/$ARCHIVE" | tar -xf - -C $WORK && cd $WORK && md5sum -c *.md5sum &&
+	sysupgrade --image="$(ls $WORK/*.img)") > "$MNT/sysupgrade.log" 2>&1; then
+	ok=1
+fi
+rm -rf $WORK
+while read -r l; do
+	log "$l"
+done < "$MNT/sysupgrade.log"
+
+if [ -z "$ok" ]; then
+	mv "$MNT/$ARCHIVE" "$MNT/$ARCHIVE.failed"
+	umount $MNT
+	log "failed: the card has $ARCHIVE.failed and sysupgrade.log"
+	beep 1500
+	exit 1
+fi
+rm -f "$MNT/$ARCHIVE"
+umount $MNT
+log "installed: restarting into it"
+beep 150
+usleep 150000
+beep 150
+# a watchdog reset, as vr04-uboot does
+sync
+watchdog -T 1 -t 3600 /dev/watchdog
+sleep 10
+log "no watchdog reset: power-cycle the goggles"

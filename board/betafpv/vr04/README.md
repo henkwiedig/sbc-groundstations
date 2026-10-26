@@ -54,6 +54,19 @@ same way. Stock's own SD-card upgrade (bind held 2-10 s with
 artosyn-upgrade-ars31.img on the card) does not take it: its Linux-side
 artosyn_upgrade enforces the signature.
 
+## Updates from the SD card
+
+With OpenIPC installed, the release archive `betafpv_vr04.tar.gz` (as
+published: the update image and its md5sum) in the root of the SD card is
+installed at the next power-on, before the system starts
+(`/usr/sbin/vr04-sdupdate` from `/init`): sysupgrade writes it into the slot
+that is not running, with this system's settings and pairing, makes that slot
+the active one, and the goggles restart into it. One beep when it starts, two
+when it is done (the archive is then deleted), a long one when it failed: the
+archive is renamed `.failed` and `sysupgrade.log` on the card says why, and
+the goggles boot on as they were. No card: no delay (the slot's card detect is
+read first).
+
 ## Procedure
 
 Every unit needs its own backup first (factory = RF calibration, unique).
