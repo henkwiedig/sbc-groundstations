@@ -36,7 +36,7 @@
 # the new hash, then runs stock's run.sh with the hook check disabled.
 
 OVERLAY_CARRY="etc/shadow etc/passwd etc/group etc/hostname etc/TZ etc/custom.ok
-etc/default etc/dropbear root/.ssh lib/firmware/ar8030/ar8030.json"
+etc/default etc/dropbear root/.ssh lib/firmware/ar8030"
 WORK=/tmp/sysupgrade
 UBI_DEV=7
 UBI_USRDATA=8
@@ -102,6 +102,14 @@ nand_md5() {
 	nanddump --bb=skipbad --omitoob -q -l "$2" "$1" 2>/dev/null | head -c "$2" | md5sum | cut -d' ' -f1
 }
 
+# Whether $2 bytes fit the good blocks of /dev/mtdN $1: nandwrite skips the
+# bad ones, and so does the SPL reading the slot (seen with kernel1's bad
+# block at 3.5 MiB under a 5.9 MB kernel).
+fits() {
+	local m=/sys/class/mtd/${1#/dev/}
+	[ "$2" -le $(($(cat $m/size) - $(cat $m/bad_blocks) * $(cat $m/erasesize))) ]
+}
+
 bank() {
 	openipc-bsel "$1" 2>/dev/null | sed -n 's/.*bank=\([01]\)$/\1/p'
 }
@@ -133,10 +141,13 @@ write_raw() {
 		log "$dst: already the image's"
 		return 0
 	fi
-	[ "$(cat /sys/class/mtd/${dev#/dev/}/bad_blocks)" = 0 ] ||
-		die "$dst has a bad block: not written (the SPL may not skip it)"
+	fits "$dev" "$len" || die "$dst: $len bytes do not fit its good blocks"
 	log "writing $dst ($len bytes) ..."
-	flash_erase -q "$dev" 0 0 && nandwrite -p -q "$dev" "$WORK/part" || die "writing $dst failed"
+	# flash_erase first erases the whole partition in one go, which a bad
+	# block fails with error messages, then goes block by block, skipping it;
+	# a block it cannot erase it reports only that way, so the readback is
+	# the check
+	flash_erase -q "$dev" 0 0 2>/dev/null && nandwrite -p -q "$dev" "$WORK/part" || die "writing $dst failed"
 	[ "$(nand_md5 "$dev" "$len")" = "$want" ] || die "$dst: readback differs -- the slot is not usable"
 	rm -f "$WORK/part"
 }
@@ -314,8 +325,8 @@ for d in /sys/class/ubi/ubi*/mtd_num; do
 done
 
 for p in uboot kernel dtb; do
-	want $p && [ "$(cat /sys/class/mtd/$(basename "$(mtd $p$target)")/bad_blocks)" != 0 ] &&
-		die "$p$target has a bad block: not written (the SPL may not skip it)"
+	want $p && ! fits "$(mtd $p$target)" "$(img_len ${p}0)" &&
+		die "$p$target: the image's $p does not fit its good blocks"
 done
 if [ -n "$dry" ]; then
 	log "dry run: the image and this unit check out; nothing written"
