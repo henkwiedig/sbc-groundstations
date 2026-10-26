@@ -10,10 +10,18 @@
 # goggles restart into it. Once installed the file is deleted; one that fails
 # is renamed .failed, so it is not tried at every boot, and sysupgrade.log on
 # the card says why (stock firmware with another SPL or vendor partition than
-# this unit's goes in only through the stock U-Boot's USB upgrade). With the
-# case closed the buzzer tells: one beep when it starts, two when it is done,
-# a long one when it failed. A power loss in between leaves the running slot
-# the active one and the file on the card for the next boot.
+# this unit's goes in only through the stock U-Boot's USB upgrade). The panel
+# shows it (update screens, busybox fbsplash's progress bar), and the buzzer:
+# one beep when it starts, two when it is done, a long one when it failed. A
+# power loss in between leaves the running slot the active one and the file
+# on the card for the next boot.
+#
+# Stock firmware's own update menu installs an OpenIPC image too, and leaves
+# it on the card. Stock also keeps .media_files.json there, an index of the
+# card it writes whenever it has the card: with that index on the card the
+# card comes straight from stock, the update is the one stock just installed,
+# and it is renamed .skipped instead of installed a second time into the other
+# slot. The index goes, either way, so that it cannot hold up a later update.
 
 . /etc/os-release
 ARCHIVE=$BUILD_CONFIG.tar.gz
@@ -21,6 +29,11 @@ SD=1c00000.mmc
 MNT=/tmp/sdupdate
 WORK=/tmp/sdupdate.img
 LOG=$MNT/sysupgrade.log
+STOCK_INDEX=$MNT/.media_files.json
+BL=/sys/class/backlight/backlight
+FIFO=/tmp/sdupdate.fifo
+BAR=/tmp/sdupdate.bar
+panel=
 
 log() {
 	echo "<5>sdupdate: $*" > /dev/kmsg
@@ -47,13 +60,102 @@ updates() {
 	done
 }
 
+# The panel: vr04-splash brings it up in the background and switches the
+# backlight on last; up to 10 s for that, else the update goes without screens.
+panel_up() {
+	local i=0
+	until [ "$(cat $BL/bl_power 2>/dev/null)" = 0 ]; do
+		[ $i -ge 100 ] && return 1
+		usleep 100000
+		i=$((i + 1))
+	done
+}
+
+# a full-screen picture: update, update-done, update-failed
+screen() {
+	[ -n "$panel" ] && fbv -c -u -i -y -f "/usr/share/$1.png" < /dev/null > /dev/null 2>&1
+}
+
+# The progress bar: fbsplash over the update screen, fed through a FIFO that
+# this script holds open too, so that a write never blocks (also with fbsplash
+# gone). Each stage of the update sets where the bar is and how far it may
+# creep on (half a percent a second) until the next stage comes.
+bar_start() {
+	[ -n "$panel" ] || return 0
+	mkfifo $FIFO && exec 3<> $FIFO || return 0
+	fbsplash -s /usr/share/update-bar.ppm -i /usr/share/update-bar.ini -f $FIFO \
+		< /dev/null > /dev/null 2>&1 &
+	echo "0 0" > $BAR
+	(
+		shown=0
+		while [ -f $BAR ]; do
+			read -r at upto < $BAR
+			[ "$shown" -lt "${at:-0}" ] && shown=$at
+			[ "$shown" -lt "${upto:-0}" ] && shown=$((shown + 1))
+			echo $shown >&3
+			usleep 500000
+		done
+	) &
+}
+
+stage() {
+	[ -n "$panel" ] && echo "$1 $2" > $BAR.new && mv $BAR.new $BAR
+}
+
+bar_stop() {
+	[ -n "$panel" ] || return 0
+	# a last round for the creeper to draw the last stage
+	usleep 600000
+	rm -f $BAR
+	echo exit >&3
+	exec 3>&-
+	rm -f $FIFO
+}
+
+# the install's output: into the log on the card and the kernel log, and its
+# stages onto the bar
+follow() {
+	local l
+	while IFS= read -r l; do
+		echo "$l" >> "$LOG"
+		log "$l"
+		case "$l" in
+		*": OK") stage 30 34 ;;
+		*" image, slot "*) stage 35 39 ;;
+		*"writing kernel"*) stage 40 54 ;;
+		*"writing dtb"*) stage 55 59 ;;
+		*"writing userapp"*) stage 60 94 ;;
+		*"settings carried over"*) stage 95 99 ;;
+		esac
+	done
+}
+
+# runs the install with its output followed; its exit status
+run() {
+	{
+		"$@"
+		echo $? > /tmp/sdupdate.rc
+	} 2>&1 | follow
+	[ "$(cat /tmp/sdupdate.rc 2>/dev/null)" = 0 ]
+}
+
+install_archive() {
+	rm -rf $WORK && mkdir -p $WORK &&
+		gzip -dc "$1" | tar -xf - -C $WORK && (cd $WORK && md5sum -c *.md5sum) &&
+		sysupgrade --image="$(ls $WORK/*.img)"
+}
+
 failed() {
 	updates | while IFS= read -r f; do
 		mv "$f" "$f.failed"
 	done
 	umount $MNT
 	log "failed: see sysupgrade.log on the card"
+	bar_stop
+	screen update-failed
 	beep 1500
+	# for reading the screen before the system takes the panel
+	[ -n "$panel" ] && sleep 4
 	exit 1
 }
 
@@ -87,45 +189,57 @@ vfat) modprobe vfat || exit 0 ;;
 exfat) ;;
 *) exit 0 ;;
 esac
-# read-only until there is something to install
+# read-only until there is something to do
 mkdir -p $MNT && mount -t "$type" -o ro "$dev" $MNT || exit 0
 file=$(updates | head -n 1)
 if [ -z "$file" ]; then
+	[ -f "$STOCK_INDEX" ] && mount -o remount,rw $MNT && rm -f "$STOCK_INDEX"
 	umount $MNT
 	exit 0
 fi
 mount -o remount,rw $MNT || { umount $MNT; exit 0; }
 
 names=$(updates | sed 's|.*/||' | tr '\n' ' ')
+if [ -f "$STOCK_INDEX" ]; then
+	rm -f "$STOCK_INDEX"
+	updates | while IFS= read -r f; do
+		mv "$f" "$f.skipped"
+	done
+	echo "not installed: $names-- the card comes from stock firmware (its .media_files.json was on it), whose update menu installed it already; renamed .skipped (rename it back to install it)" > "$LOG"
+	umount $MNT
+	log "skipped (from stock firmware): $names"
+	exit 0
+fi
+
 log "on the SD card: $names"
 modprobe artosyn_pwm
 beep 300
+panel_up && panel=1
+screen update
+bar_start
+stage 2 33
+: > "$LOG"
 if [ "$(updates | wc -l)" -gt 1 ]; then
 	echo "more than one update on the card: $names-- keep one (all renamed .failed)" > "$LOG"
 	failed
 fi
 
-ok=
 case "$file" in
 *.tar.gz)
-	rm -rf $WORK
-	mkdir -p $WORK
-	(gzip -dc "$file" | tar -xf - -C $WORK && cd $WORK && md5sum -c *.md5sum &&
-		sysupgrade --image="$(ls $WORK/*.img)") > "$LOG" 2>&1 && ok=1
+	run install_archive "$file" || { rm -rf $WORK; failed; }
 	rm -rf $WORK
 	;;
 *)
-	sysupgrade --image="$file" > "$LOG" 2>&1 && ok=1
+	run sysupgrade --image="$file" || failed
 	;;
 esac
-while read -r l; do
-	log "$l"
-done < "$LOG"
-[ -n "$ok" ] || failed
 
 rm -f "$file"
 umount $MNT
 log "installed: restarting into it"
+stage 100 100
+bar_stop
+screen update-done
 beep 150
 usleep 150000
 beep 150
