@@ -28,6 +28,7 @@ jobs:
           - runcam_wifilink
           - emax_wyvern-link
           - caddx_vrxpro
+          - betafpv_vr04
 
     steps:
 
@@ -73,8 +74,25 @@ jobs:
           if [ "${NAME}" = caddx_vrxpro ]; then
             pipx install ubi_reader
           fi
+          # betafpv_vr04: artlynk-vr04-vendor-firmware takes BetaFPV's and
+          # CADDX's stock images apart with ubi_reader and python3's lzo module
+          # (the host's python3, not Buildroot's), and post-image packs the
+          # update image with lzo.
+          if [ "${NAME}" = betafpv_vr04 ]; then
+            pipx install ubi_reader
+            sudo apt install -y python3-lzo
+          fi
 
           DEFCONFIG=${NAME}_defconfig bash build.sh
+
+          # The VR04's update image under a fixed name, so a release replaces
+          # it instead of collecting one per commit; the SD-card update and the
+          # stock update menu take any P1_GND_*.img.
+          for f in output/${NAME}_defconfig/images/P1_GND_*_OpenIPC_*.img; do
+            if [ -f "$f" ]; then
+              mv "$f" "${f%_OpenIPC_*}_OpenIPC.img"
+            fi
+          done
 
       - name: Upload images to workflow artifacts
         uses: actions/upload-artifact@v6
@@ -87,6 +105,8 @@ jobs:
             /mnt/workspace/output/${{ matrix.platform }}_defconfig/images/${{ matrix.platform }}_emmc_bootloader.img
             /mnt/workspace/output/${{ matrix.platform }}_defconfig/images/${{ matrix.platform }}_rootfs.squashfs
             /mnt/workspace/output/${{ matrix.platform }}_defconfig/images/${{ matrix.platform }}.tar.gz
+            /mnt/workspace/output/${{ matrix.platform }}_defconfig/images/${{ matrix.platform }}_testboot.tar
+            /mnt/workspace/output/${{ matrix.platform }}_defconfig/images/P1_GND_*_OpenIPC.img
           retention-days: 7
 
   release-on-master:
