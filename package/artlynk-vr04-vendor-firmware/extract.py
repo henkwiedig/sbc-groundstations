@@ -2,7 +2,8 @@
 """
 BUILD_CMDS for artlynk-vr04-vendor-firmware (see the sibling .mk).
 
-  extract.py OUT_DIR HOST_DIR CACHE_DIR RELEASE [ASCENT_GND_CFG]
+  extract.py OUT_DIR HOST_DIR CACHE_DIR RELEASE [ASCENT_GND_CFG
+             [FILE_ID ASCENT_RELEASE ASCENT_FILE_ID]]
 
 Extracts the proprietary blobs betafpv_vr04 needs from BetaFPV's stock P1 GND
 OTA image (P1_GND_*.img, Artosyn "ARTO" container) into OUT_DIR
@@ -28,10 +29,12 @@ OTA image (P1_GND_*.img, Artosyn "ARTO" container) into OUT_DIR
 
 The image is GND's if its header product is "P1_GND_VR04" (2.0.x) or "IGNORE"
 (2.1.x); the VR04 PRO and SKY/AIO images are refused. Lookup order:
-$ARTLYNK_VR04_VENDOR_IMG, CACHE_DIR/RELEASE.img, the newest CACHE_DIR/P1_GND_*.img.
-The Ascent one: $ASCENT_L_GND_IMG, else the newest CACHE_DIR/Ascent_L_Gnd_*.img
-(from CADDX's Ascent bundle zip, the one package/ascent-vendor-firmware
-downloads).
+$ARTLYNK_VR04_VENDOR_IMG, CACHE_DIR/RELEASE.img, fetched to that name from
+Google Drive (FILE_ID, fetch-vendor-img.sh), the newest CACHE_DIR/P1_GND_*.img.
+The Ascent one: $ASCENT_L_GND_IMG, CACHE_DIR/ASCENT_RELEASE.img, fetched to
+that name out of CADDX's Ascent bundle zip (ASCENT_FILE_ID, the one
+package/ascent-vendor-firmware downloads), the newest
+CACHE_DIR/Ascent_L_Gnd_*.img.
 
 Best-effort throughout, same contract as ascent-vendor-firmware: a missing
 image or host tool prints a warning and leaves the artifact out; this script
@@ -76,12 +79,23 @@ def product(img):
     return hdr[0x80:0xc0].split(b"\0")[0]
 
 
-def find_image(cache, release):
+def fetch(file_id, out, member=None):
+    """Fetch a stock image from Google Drive into the cache; True when it is there."""
+    if not file_id:
+        return False
+    cmd = [str(HERE / "fetch-vendor-img.sh"), file_id, str(out)] + ([member] if member else [])
+    if subprocess.run(cmd).returncode == 0 and out.is_file():
+        return True
+    warn(f"could not fetch {out.name}")
+    return False
+
+
+def find_image(cache, release, file_id=None):
     env = os.environ.get("ARTLYNK_VR04_VENDOR_IMG")
     if env:
         return Path(env) if Path(env).is_file() else None
     pinned = Path(cache, f"{release}.img")
-    if pinned.is_file():
+    if pinned.is_file() or fetch(file_id, pinned):
         return pinned
     hits = sorted(glob.glob(str(Path(cache, "P1_GND_*.img"))), key=os.path.getmtime)
     return Path(hits[-1]) if hits else None
@@ -91,10 +105,14 @@ def find_image(cache, release):
 ASCENT_GND_FILES = {"bb_demo_gnd_3v3.img": "ascent_gnd.img", "bb_config_gnd.json": "ascent_gnd.json"}
 
 
-def find_ascent_gnd(cache):
+def find_ascent_gnd(cache, release=None, file_id=None):
     env = os.environ.get("ASCENT_L_GND_IMG")
     if env:
         return Path(env) if Path(env).is_file() else None
+    if release:
+        pinned = Path(cache, f"{release}.img")
+        if pinned.is_file() or fetch(file_id, pinned, pinned.name):
+            return pinned
     hits = sorted(glob.glob(str(Path(cache, "Ascent_L_Gnd_*.img"))), key=os.path.getmtime)
     return Path(hits[-1]) if hits else None
 
@@ -199,9 +217,10 @@ def make_gnd_config(out, ascent_cfg):
 def main():
     out, host_dir, cache, release = Path(sys.argv[1]), sys.argv[2], sys.argv[3], sys.argv[4]
     ascent_cfg = sys.argv[5] if len(sys.argv) > 5 else None
+    file_id, ascent_release, ascent_file_id = (sys.argv[6:9] + [None] * 3)[:3]
     out.mkdir(parents=True, exist_ok=True)
 
-    img = find_image(cache, release)
+    img = find_image(cache, release, file_id)
     if img is None:
         warn(f"stock P1_GND_*.img not found (set ARTLYNK_VR04_VENDOR_IMG or put {release}.img "
              f"in {cache}/) - building without codec firmware and without the update image")
@@ -236,7 +255,7 @@ def main():
             except subprocess.CalledProcessError as e:
                 warn(f"stock rootfs extraction failed: {e}")
 
-    gnd = find_ascent_gnd(cache)
+    gnd = find_ascent_gnd(cache, ascent_release, ascent_file_id)
     if gnd is None:
         warn(f"no Ascent_L_Gnd_*.img in {cache}/ (set ASCENT_L_GND_IMG) - no AR8030 firmware for the goggles")
     else:

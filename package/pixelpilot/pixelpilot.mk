@@ -4,7 +4,13 @@
 #
 ###############################################################################
 
+# The V4L2 platform (the BetaFPV VR04's wave5 decoder/encoder and Artosyn VO)
+# is PixelPilot's v4l2-wave5 branch, on top of the Rockchip commit below.
+ifeq ($(BR2_PACKAGE_PIXELPILOT_V4L2),y)
+PIXELPILOT_VERSION=110c3fe1a699c9a27cf985a9cdb53b96aec22a45
+else
 PIXELPILOT_VERSION=943fa902dd943a059deef1fe6b643ac93da03906
+endif
 PIXELPILOT_SITE=https://github.com/OpenIPC/PixelPilot_rk.git
 PIXELPILOT_SITE_METHOD = git
 PIXELPILOT_GIT_SUBMODULES = YES
