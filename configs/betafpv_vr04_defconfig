@@ -70,6 +70,7 @@ BR2_PACKAGE_AUTOFS=y
 BR2_PACKAGE_DROPBEAR=y
 # BR2_PACKAGE_DROPBEAR_CLIENT is not set
 BR2_PACKAGE_IW=y
+BR2_PACKAGE_KSMBD_TOOLS=y
 BR2_PACKAGE_OPENSSH=y
 # BR2_PACKAGE_OPENSSH_SERVER is not set
 # BR2_PACKAGE_OPENSSH_KEY_UTILS is not set
@@ -104,7 +105,7 @@ BR2_PACKAGE_WIFIBROADCAST_NG=y
 BR2_PACKAGE_YAML_CLI=y
 BR2_PACKAGE_ML_KERNEL_BOARD="betafpv-vr04-goggle"
 BR2_PACKAGE_ML_KERNEL_MODULES=y
-BR2_PACKAGE_ML_KERNEL_MODULES_KEEP_EXTRA="kernel/drivers/gpu/drm/artosyn kernel/fs/fat kernel/net/wireless"
+BR2_PACKAGE_ML_KERNEL_MODULES_KEEP_EXTRA="kernel/drivers/gpu/drm/artosyn kernel/fs/fat kernel/net/wireless kernel/fs/smb kernel/fs/nls kernel/crypto/md5.ko kernel/crypto/sha256.ko kernel/crypto/cmac.ko kernel/crypto/ccm.ko kernel/crypto/gcm.ko kernel/crypto/ghash-generic.ko kernel/crypto/ctr.ko"
 BR2_PACKAGE_OPENIPC_BSEL=y
 BR2_PACKAGE_ARTO_IMAGE=y
 BR2_PACKAGE_ARTLYNK_VR04_VENDOR_FIRMWARE=y

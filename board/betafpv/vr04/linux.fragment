@@ -37,3 +37,9 @@ CONFIG_NLS_ISO8859_1=y
 CONFIG_WIRELESS=y
 CONFIG_CFG80211=m
 CONFIG_CFG80211_WEXT=y
+
+# The DVR share (/etc/ksmbd/ksmbd.conf, S91smb): the in-kernel SMB3 server.
+# The other targets run Samba, 10 MB of squashfs this rootfs has no room
+# for. A module, kept with the crypto modules it loads by name.
+CONFIG_NETWORK_FILESYSTEMS=y
+CONFIG_SMB_SERVER=m

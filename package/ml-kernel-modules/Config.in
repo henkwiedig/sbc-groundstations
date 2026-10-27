@@ -27,10 +27,12 @@ config BR2_PACKAGE_ML_KERNEL_MODULES_KEEP_EXTRA
 	string "extra in-tree module dirs to keep"
 	depends on BR2_PACKAGE_ML_KERNEL_MODULES_PRUNE
 	help
-	  Space-separated directories under lib/modules/<version>/ whose
-	  modules survive the prune as well (with their dependencies),
-	  e.g. "kernel/drivers/gpu/drm/artosyn kernel/fs/fat" for the
-	  goggle's display and the SD card's FAT.
+	  Space-separated directories or single modules under
+	  lib/modules/<version>/ that survive the prune as well (with their
+	  dependencies), e.g. "kernel/drivers/gpu/drm/artosyn kernel/fs/fat"
+	  for the goggle's display and the SD card's FAT. Modules the kernel
+	  only requests by name (crypto algorithms) are no dependencies: name
+	  them here.
 
 endif
 
