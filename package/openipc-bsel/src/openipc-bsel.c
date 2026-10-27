@@ -285,6 +285,12 @@ static int bsel_update(const char *mtddev, int bank_new)
  * set does as the upgrade does: the new table goes into the other partition,
  * in that partition's form, is read back, and only then is the old one
  * erased, so a power cut leaves the old table or the new one, never none.
+ *
+ * gpt0 also needs its protective MBR in sector 0. The SPL boots without it,
+ * but stock's own updater (libar_gpt, the goggles' "update air unit" OTA)
+ * takes a gpt0 without it for no GPT at all and fails ("Parameter Error").
+ * Stock writes gpt1 with sector 0 zeroed, so a table moved from there into
+ * gpt0 gets the MBR rebuilt, as stock's gpt0 has it.
  */
 #define GPT_SECTOR 512
 #define GPT_ACTIVE (1ULL << 47)
@@ -467,6 +473,17 @@ static void gpt_reform(struct gpt *g, int to, uint64_t last)
 	put_le64(h + 72, to ? last - entry_sectors : 2);  /* partition entries */
 	put_le32(h + 88, crc32_buf(g->buf + g->arr, (size_t)g->n * g->esz));
 	put_le32(h + 16, gpt_hdr_crc(g));
+}
+
+/* Sector 0 of gpt0: a protective MBR, one 0xEE partition from LBA 1 to last. */
+static void gpt_pmbr(unsigned char *s, uint64_t last)
+{
+	memset(s, 0, GPT_SECTOR);
+	s[450] = 0xEE;
+	put_le32(s + 454, 1);
+	put_le32(s + 458, last > 0xFFFFFFFF ? 0xFFFFFFFF : (uint32_t)last);
+	s[510] = 0x55;
+	s[511] = 0xAA;
 }
 
 /* Finds the mtd device number whose /proc/mtd name is exactly name. */
@@ -694,6 +711,8 @@ static int gpt_update(int bank)
 	}
 	last = src ? get_le64(c[src].buf + GPT_SECTOR + 24) : get_le64(c[src].buf + GPT_SECTOR + 32);
 	gpt_reform(&ng, dst, last);
+	if (dst == 0)
+		gpt_pmbr(nbuf, last);
 	if (gpt_parse(nbuf, c[dst].len, &ng) < 0)
 		goto out;
 	if (gpt_store(&c[dst], nbuf) < 0) {
