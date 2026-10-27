@@ -1,0 +1,27 @@
+#!/bin/sh
+# The SMB share of /etc/ksmbd/ksmbd.conf, in the other targets' S91smb slot:
+# the kernel's ksmbd serves it, ksmbd.mountd hands it the shares and users.
+
+case "$1" in
+start)
+	printf "Starting SMB services: "
+	modprobe ksmbd && ksmbd.mountd
+	[ $? = 0 ] && echo "OK" || echo "FAIL"
+	;;
+stop)
+	printf "Shutting down SMB services: "
+	ksmbd.control --shutdown
+	[ $? = 0 ] && echo "OK" || echo "FAIL"
+	;;
+restart)
+	"$0" stop
+	"$0" start
+	;;
+reload)
+	ksmbd.control --reload
+	;;
+*)
+	echo "Usage: $0 {start|stop|restart|reload}"
+	exit 1
+	;;
+esac

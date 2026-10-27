@@ -24,6 +24,8 @@ rm -f lib/libgfortran.so* usr/lib/libgfortran.so* lib/libgomp.so* usr/lib/libgom
 # OpenSSH is here for the menu's ssh/scp to the air unit only
 rm -f usr/bin/sftp usr/bin/ssh-add usr/bin/ssh-agent usr/bin/ssh-copy-id \
 	usr/libexec/ssh-keysign usr/libexec/ssh-pkcs11-helper usr/libexec/sftp-server
+# The common overlay's Samba config: the DVR share is ksmbd's here (S91smb)
+rm -rf etc/samba
 for f in lib/*.so*; do
 	[ -f "$f" ] && [ ! -L "$f" ] && [ -f "usr/$f" ] && [ ! -L "usr/$f" ] &&
 		cmp -s "$f" "usr/$f" && ln -sf "../usr/$f" "$f"
@@ -57,7 +59,7 @@ grep -q "betafpv-vr04 /init" init || { echo "post-build: /init is not the VR04 o
 
 missing=
 for m in artosyn_gpio dw_mci-artosyn artosyn_adc artosyn_protemp artosyn_pwm \
-	artosyn_vo artosyn_dsi panel-qy45043a0 fat vfat wave5 artosyn_drv; do
+	artosyn_vo artosyn_dsi panel-qy45043a0 fat vfat wave5 artosyn_drv ksmbd; do
 	find lib/modules -name "$m.ko*" | grep -q . || missing="$missing $m"
 done
 [ -z "$missing" ] || { echo "post-build: kernel modules missing:$missing"; exit 1; }
