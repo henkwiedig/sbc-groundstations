@@ -350,6 +350,24 @@ waybeam_mode_index_for_desc() {
         '.data.pads[0].modes[] | select(.desc==$d) | .index' | head -1
 }
 
+# video0.size choices. CV610 and SigmaStar scale in front of the encoder, so
+# 720p works from any sensor mode there. The AR9311 (BetaFPV P1) has no scaler
+# in its open camera chain: it encodes exactly what a sensor mode delivers, so
+# its sizes are the ones /api/v1/modes lists (1920x1080 only today) and
+# anything else is refused by waybeam's /set.
+waybeam_backend() {
+    curl -s -m "$WAYBEAM_TIMEOUT" "http://$REMOTE_IP/api/v1/version" 2>/dev/null \
+        | jq -r '.data.backend // empty' 2>/dev/null
+}
+waybeam_video_sizes() {
+    if [ "$(waybeam_backend)" = "ar9311" ]; then
+        waybeam_modes_json | jq -r \
+            '[.data.pads[0].modes[] | "\(.width)x\(.height)"] | unique | join("\n")'
+    else
+        printf '1280x720\n1920x1080'
+    fi
+}
+
 # isp.sensorBin is a full path (e.g. /etc/sensors/cam_os02k10_100fps_xg1_day.bin)
 # with no listing endpoint of its own -- unlike majestic's sensor_file, waybeam's
 # REST API doesn't expose the air unit's filesystem, so this still goes over the
@@ -793,7 +811,7 @@ case "$@" in
         ;;
     "get air waybeam video_size")
         get_waybeam_value video0.size
-        emit_values "1280x720\n1920x1080"
+        emit_values_cmd waybeam_video_sizes
         ;;
     "get air waybeam video_resilience")
         get_waybeam_value video0.resilience
