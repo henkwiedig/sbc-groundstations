@@ -49,6 +49,26 @@ done
 grep -q '^PIXELPILOT_VSYNC_LOCK="--vsync-lock"' etc/default/pixelpilot ||
 	{ echo "post-build: no PIXELPILOT_VSYNC_LOCK in etc/default/pixelpilot"; exit 1; }
 
+# The OSD is PixelPilot's own MSP DisplayPort renderer, not msposd. On this
+# board msposd holds 41 MB (31.8 MB of its own, full-frame buffers, and the
+# 8 MB surface it shares with PixelPilot) and 24% of a core, with ~21 MB free
+# and a thrash cliff ~12 MB below that; the widget costs 12 MB in PixelPilot
+# and no process. Both listen on UDP 14551, so msposd stays installed (its
+# fonts are the widget's) but is not started, and the widget that shows its
+# surface is disabled the way this config disables a widget: --- in front of
+# its type. The widget draws a fixed 53x20 grid in the font osd.json names
+# (Betaflight HD); msposd's --matrix 11, font detection and --subtitle
+# recording are gone.
+[ ! -f etc/pixelpilot/osd.json ] ||
+	sed -i -e 's/"type": "---MspDisplayPortWidget"/"type": "MspDisplayPortWidget"/' \
+		-e 's/"type": "ExternalSurfaceWidget"/"type": "---ExternalSurfaceWidget"/' etc/pixelpilot/osd.json
+grep -q '"type": "MspDisplayPortWidget"' etc/pixelpilot/osd.json &&
+	grep -q '"type": "---ExternalSurfaceWidget"' etc/pixelpilot/osd.json ||
+	{ echo "post-build: etc/pixelpilot/osd.json does not use the built-in MSP renderer"; exit 1; }
+[ ! -f etc/default/msposd ] || sed -i 's/^MSPOSD_ENABLED=.*/MSPOSD_ENABLED=false/' etc/default/msposd
+grep -q '^MSPOSD_ENABLED=false' etc/default/msposd ||
+	{ echo "post-build: msposd is not disabled in etc/default/msposd"; exit 1; }
+
 # Artosyn is the receiver mode at boot: wfb-ng (this board's own lean
 # S98wifibroadcast) starts only once the menu switches to wfb.
 [ ! -f etc/default/wifibroadcast ] ||
