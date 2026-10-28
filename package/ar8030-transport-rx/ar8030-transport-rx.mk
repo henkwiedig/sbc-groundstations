@@ -14,7 +14,7 @@
 #       >> $(O)/local.mk
 #
 # or as a plain environment variable to make.
-AR8030_TRANSPORT_RX_VERSION = 58be95977a53de9c06335ce70c2fccfc78710304
+AR8030_TRANSPORT_RX_VERSION = 82b504c3a35af4bacdb6de4fbaffa6a1d34d6630
 AR8030_TRANSPORT_RX_SITE = https://github.com/henkwiedig/ar8030-transport.git
 AR8030_TRANSPORT_RX_SITE_METHOD = git
 AR8030_TRANSPORT_RX_LICENSE = MIT
