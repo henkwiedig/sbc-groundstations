@@ -36,6 +36,11 @@ mkdir -p "$CACHE_DIR"
 emit_values()     { printf '\x1e'"$1"; }
 emit_values_cmd() { printf '\x1e'; "$@"; }
 
+# The OSD is PixelPilot's own MSP renderer when osd.json has the msposd surface
+# widget switched off (the BetaFPV VR04's post-build does that); everywhere else
+# it is msposd.
+builtin_msp_osd() { grep -q '"type": "---ExternalSurfaceWidget"' /etc/pixelpilot/osd.json 2>/dev/null; }
+
 # Timezone (System -> Date & Time): /etc/localtime links into the zoneinfo
 # tree (BR2_TARGET_TZ_INFO); glibc re-reads it, so running apps follow. The
 # RTC and the kernel stay UTC.
@@ -1230,8 +1235,13 @@ case "$@" in
         fi
         ;;
     "get gs system gs_rendering")
-        . /etc/default/msposd
-        [ x$MSPOSD_ENABLED = x"false" ] && echo 0 || echo 1
+        if builtin_msp_osd; then
+            # PixelPilot's own MSP renderer (the VR04): on while its widget is enabled
+            grep -q '"type": "MspDisplayPortWidget"' /etc/pixelpilot/osd.json && echo 1 || echo 0
+        else
+            . /etc/default/msposd
+            [ x$MSPOSD_ENABLED = x"false" ] && echo 0 || echo 1
+        fi
         ;;
     "get gs system connector")
         # The BetaFPV VR04's panel is on DSI
@@ -1452,7 +1462,16 @@ EOF
         fi
         ;;
     "set gs system gs_rendering"*)
-        if [ "$5" = "off" ]; then
+        if builtin_msp_osd; then
+            # msposd stays off here: it would take UDP 14551 from the widget (S98 starts
+            # first). PixelPilot reads osd.json when it starts, so this applies from the
+            # next start, like the resolution.
+            if [ "$5" = "off" ]; then
+                sed -i 's/"type": "MspDisplayPortWidget"/"type": "---MspDisplayPortWidget"/' /etc/pixelpilot/osd.json
+            else
+                sed -i 's/"type": "---MspDisplayPortWidget"/"type": "MspDisplayPortWidget"/' /etc/pixelpilot/osd.json
+            fi
+        elif [ "$5" = "off" ]; then
             /etc/init.d/S98msposd stop
             sed -i 's/MSPOSD_ENABLED.*/MSPOSD_ENABLED=false/' /etc/default/msposd
         else
