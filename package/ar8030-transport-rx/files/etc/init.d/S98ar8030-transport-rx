@@ -37,6 +37,12 @@ test -r /etc/default/ar8030 && . /etc/default/ar8030
 
 DAEMON="/usr/bin/ar8030-transport-rx"
 PIDFILE="/var/run/ar8030-transport-rx.pid"
+# -v's once-a-second stats plus everything else rx prints, like the air's
+# /tmp/ar8030/ar8030-transport-tx.log. rx -L writes and rotates the file
+# itself (1 MB, two old files kept): the ground runs for hours, so a plain
+# redirect would fill RAM. The support package copies /tmp/ar8030/*.
+RUNDIR="/tmp/ar8030"
+LOGFILE="$RUNDIR/ar8030-transport-rx.log"
 
 LIFECYCLED="/usr/bin/ar8030-lifecycled"
 LIFECYCLED_PIDFILE="/var/run/ar8030-lifecycled.pid"
@@ -66,7 +72,14 @@ start() {
 		return 0
 	fi
 	echo "Starting ar8030-transport-rx..."
-	start-stop-daemon -S -q -b -m -p "$PIDFILE" -x "$DAEMON" -- $AR8030_TRANSPORT_RX_ARGS
+	# An rx older than -L (e.g. a test build in /overlay) exits on the
+	# unknown option: start it without the log rather than without video.
+	log_args=""
+	if "$DAEMON" -h 2>&1 | grep -q -- "-L <file>"; then
+		mkdir -p "$RUNDIR"
+		log_args="-v -L $LOGFILE"
+	fi
+	start-stop-daemon -S -q -b -m -p "$PIDFILE" -x "$DAEMON" -- $log_args $AR8030_TRANSPORT_RX_ARGS
 	start_lifecycled
 }
 
