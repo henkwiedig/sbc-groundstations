@@ -1,0 +1,10 @@
+# /etc/udev/rules.d/80-betafpv-p1-vrx.rules
+# BetaFPV P1 HD VRX running OpenIPC (sbc-groundstations betafpv_p1_vrx): RNDIS +
+# ACM gadget 1d6b:0104 like the air units and the VR04, told apart by the product
+# string. The VRX is 192.168.3.100 like the VR04, in the same /24 as the air units
+# (.104 on ascent-vtx0), so this end gets a /32 and a host route rather than a
+# second 192.168.3.0/24. (Without this rule the VRX's DHCP server hands out an
+# address, as for any host.)
+SUBSYSTEM=="net", ACTION=="add", ATTRS{idVendor}=="1d6b", ATTRS{idProduct}=="0104", ATTRS{product}=="BetaFPV P1 HD VRX", NAME="vrx-gnd0", ENV{NM_UNMANAGED}="1", RUN+="/sbin/ip addr add 192.168.3.205/32 dev vrx-gnd0", RUN+="/sbin/ip link set dev vrx-gnd0 up", RUN+="/sbin/ip route add 192.168.3.100/32 dev vrx-gnd0"
+# its ttyACM is a console, not a modem
+ATTRS{idVendor}=="1d6b", ATTRS{idProduct}=="0104", ATTRS{product}=="BetaFPV P1 HD VRX", ENV{ID_MM_DEVICE_IGNORE}="1"

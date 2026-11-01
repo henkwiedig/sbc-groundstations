@@ -1,0 +1,13 @@
+# The P1 ground unit this system runs on, for the scripts the P1 ground units
+# share (board/betafpv/p1-gnd): gadget, vr04-splash, vr04-sdupdate, sysupgrade.
+
+# USB product string of the RNDIS gadget
+DEVICE_NAME="BetaFPV P1 HD VRX"
+# the product BetaFPV's 2.0.x images carry in their header (2.1.x: IGNORE)
+STOCK_PRODUCT=P1_GND_VRX
+# The display drivers, in load order: artosyn_gpio's hogs first (the SD
+# card's I/O rail; the bridge's reset line), the DSI host, the LT9611EX
+# bridge (it waits for the DSI host), then the VO.
+DISPLAY_MODULES="artosyn_gpio artosyn_dsi lontium-lt9611ex artosyn_vo"
+# HDMI: no backlight, the framebuffer alone says the display is up
+BACKLIGHT=
