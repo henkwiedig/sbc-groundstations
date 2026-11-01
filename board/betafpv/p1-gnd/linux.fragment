@@ -1,5 +1,6 @@
-# betafpv_vr04 additions on top of ml-kernel's ml_defconfig (arm64 defconfig +
-# artosyn + trim + the betafpv-vr04-goggle fragments). trim.config drops most
+# The P1 ground units' (betafpv_vr04, betafpv_p1_vrx) additions on top of
+# ml-kernel's ml_defconfig (arm64 defconfig + artosyn + trim + the
+# betafpv-vr04-goggle fragments). trim.config drops most
 # of these to keep MissingLynk's own image small.
 
 # artosyn_gpio (its hogs: panel straps, panel/SD rail), the panel's reset and

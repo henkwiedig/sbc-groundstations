@@ -1,10 +1,16 @@
 #!/bin/sh
 #
-# betafpv_vr04 post-build, after board/common/post-build-script.sh: drops what
-# the common overlay brings for the Rockchip boards' U-Boot/display, and stops
-# the build if what the goggles need to come up is missing.
+# Post-build of the BetaFPV P1 ground units (betafpv_vr04, betafpv_p1_vrx),
+# after board/common/post-build-script.sh: drops what the common overlay
+# brings for the Rockchip boards' U-Boot/display, and stops the build if what
+# the unit needs to come up is missing. $2 (BR2_ROOTFS_POST_SCRIPT_ARGS) is
+# the unit's board directory, whose device.env names its display drivers.
 
 set -e
+DEVICE_DIR=$2
+[ -f "${DEVICE_DIR}/device.env" ] ||
+	{ echo "post-build: no device.env in '${DEVICE_DIR}' (BR2_ROOTFS_POST_SCRIPT_ARGS)"; exit 1; }
+. "${DEVICE_DIR}/device.env"
 cd "${TARGET_DIR}"
 
 rm -rf boot/extlinux boot/uboot-menu.env usr/share/splash.bmp usr/share/splash-bg.bmp \
@@ -38,9 +44,9 @@ done
 # recording: 11 dropouts at 60 fps, 2 at 30).
 # The link is the AR8030 (no WiFi): the menu's link pages and the link
 # widgets come from lifecycled.
-# Vsync lock on, as on the VRX Pro: artosyn_vo's pclk_hz trims the panel's
-# pixel clock (+-1000 ppm measured exact, no DSI errors), so the panel
-# follows the camera.
+# Vsync lock on, as on the VRX Pro: artosyn_vo's pclk_hz trims the display's
+# pixel clock (+-1000 ppm measured exact on the VR04's panel, no DSI errors),
+# so the display follows the camera.
 [ ! -f etc/default/pixelpilot ] ||
 	sed -i -e 's/^PIXELPILOT_DVR_BITRATE=.*/PIXELPILOT_DVR_BITRATE="20000"/' \
 		-e 's/^PIXELPILOT_DVR_FPS=.*/PIXELPILOT_DVR_FPS="30"/' \
@@ -74,12 +80,13 @@ grep -q '^MSPOSD_ENABLED=false' etc/default/msposd ||
 [ ! -f etc/default/wifibroadcast ] ||
 	sed -i 's/^WIFIBROADCAST_ENABLED=.*/WIFIBROADCAST_ENABLED=false/' etc/default/wifibroadcast
 
-grep -q "betafpv-vr04 /init" init || { echo "post-build: /init is not the VR04 one"; exit 1; }
+grep -q "betafpv p1-gnd /init" init || { echo "post-build: /init is not the P1 ground units' one"; exit 1; }
+[ -f etc/default/p1-gnd ] || { echo "post-build: no etc/default/p1-gnd (the unit's overlay)"; exit 1; }
 [ ! -e boot/Image ] || { echo "post-build: the kernel Image is in the rootfs"; exit 1; }
 
 missing=
 for m in artosyn_gpio dw_mci-artosyn artosyn_adc artosyn_protemp artosyn_pwm \
-	artosyn_vo artosyn_dsi panel-qy45043a0 fat vfat wave5 artosyn_drv ksmbd; do
+	${DISPLAY_KMODS} fat vfat wave5 artosyn_drv ksmbd; do
 	find lib/modules -name "$m.ko*" | grep -q . || missing="$missing $m"
 done
 [ -z "$missing" ] || { echo "post-build: kernel modules missing:$missing"; exit 1; }

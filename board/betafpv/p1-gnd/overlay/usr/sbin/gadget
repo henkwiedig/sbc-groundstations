@@ -1,8 +1,9 @@
 #!/bin/sh
 #
-# USB gadget of the VR04 goggles (replaces board/common/overlay/usr/sbin/gadget,
+# USB gadget of the P1 ground units (replaces board/common/overlay/usr/sbin/gadget,
 # which drives the Rockchip dwc3): RNDIS + ACM on the AR9311's dwc2. The USB
-# port is the goggles' only wired network, so `gadget init` always composes it.
+# port is the unit's only wired network, so `gadget init` always composes it.
+# The product string is DEVICE_NAME of /etc/default/p1-gnd.
 #
 # RNDIS rather than NCM: Windows binds it driverless given the Microsoft OS
 # descriptors below. 1d6b:0104 and 192.168.3.100/24 (stock's own address) on
@@ -12,6 +13,8 @@
 #   gadget down       unbind and remove
 
 G=/sys/kernel/config/usb_gadget/g1
+DEVICE_NAME="BetaFPV VR04"
+[ -r /etc/default/p1-gnd ] && . /etc/default/p1-gnd
 DEV_MAC=02:1a:11:00:01:01
 HOST_MAC=02:1a:11:00:01:02
 
@@ -32,7 +35,7 @@ up() {
 
 	mkdir -p $G/strings/0x409
 	echo OpenIPC > $G/strings/0x409/manufacturer
-	echo "BetaFPV VR04" > $G/strings/0x409/product
+	echo "$DEVICE_NAME" > $G/strings/0x409/product
 	hostname -s > $G/strings/0x409/serialnumber
 
 	mkdir -p $G/configs/c.1/strings/0x409

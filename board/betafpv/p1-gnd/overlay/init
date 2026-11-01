@@ -1,6 +1,7 @@
 #!/bin/sh
-# betafpv-vr04 /init (replaces board/common/overlay/init, which partitions a
-# block device). The root is one of:
+# betafpv p1-gnd /init, the BetaFPV P1 ground units' (VR04 goggles, P1 HD
+# VRX), replaces board/common/overlay/init, which partitions a block device.
+# The root is one of:
 # - the initramfs: a RAM boot through the stock U-Boot (rdinit=/init), which
 #   is writable already and touches no flash
 # - the squashfs in the "rootfs" volume of the running slot's userapp, read
@@ -20,13 +21,13 @@ on_exit() {
 # after on_exit unmounted /proc, where they would not see a display blacklist
 # on the command line (/etc/modprobe.d/vr04.conf), so that is checked here.
 splash() {
-	if ! grep -qE 'modprobe\.blacklist=[^ ]*(artosyn_vo|artosyn_dsi|panel_qy45043a0)' /proc/cmdline; then
+	if ! grep -qE 'modprobe\.blacklist=[^ ]*(artosyn_vo|artosyn_dsi|panel_qy45043a0|lontium_lt9611ex)' /proc/cmdline; then
 		/usr/sbin/vr04-splash &
 	fi
 }
 
 # The SD-card update (vr04-sdupdate), with a time limit: a hang there must not
-# keep the goggles from booting.
+# keep the unit from booting.
 sdupdate() {
 	timeout -s KILL 900 /usr/sbin/vr04-sdupdate
 	mountpoint -q /tmp/sdupdate && umount /tmp/sdupdate

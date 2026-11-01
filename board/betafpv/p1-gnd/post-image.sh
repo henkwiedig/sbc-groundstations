@@ -1,6 +1,9 @@
 #!/bin/sh
 #
-# betafpv_vr04 post-image.
+# Post-image of the BetaFPV P1 ground units (betafpv_vr04, betafpv_p1_vrx).
+# $2 (BR2_ROOTFS_POST_SCRIPT_ARGS) is the unit's board directory; its
+# device.env names the kernel's dtb (DTB), the prefix of the files below
+# (DEVICE: vr04, p1-vrx) and the update image's tag (IMG_TAG).
 #
 # uImage.ar9311: the arm64 Image in the container the stock SPL/U-Boot boot
 # (it rejects a raw `booti`), same layout as the stock kernel0/kernel1
@@ -12,8 +15,8 @@
 #   LZ4 frame with independent 4 MiB blocks and a content checksum -- the
 #        lz4 CLI's defaults with -B7; U-Boot rejects linked blocks
 #
-# Two device trees, MissingLynk's goggle DT with different command lines:
-#   vr04-flash.dtb  for a slot (dtb0/dtb1). The stock SPL boots the active
+# Two device trees, the unit's DT with different command lines:
+#   ${DEVICE}-flash.dtb  for a slot (dtb0/dtb1). The stock SPL boots the active
 #                   slot itself (Falcon): it loads kernelN and dtbN and takes
 #                   the command line from the dtb, rewriting ubi.mtd= to the
 #                   slot's userapp (17 for userapp0, 18 for userapp1) in place,
@@ -21,7 +24,7 @@
 #                   the "rootfs" UBI volume, through a UBI block device, as in
 #                   stock's slots; init=/init puts the rootfs_data overlay
 #                   over it.
-#   vr04-ram.dtb    for a RAM boot through the stock U-Boot: initramfs, and
+#   ${DEVICE}-ram.dtb    for a RAM boot through the stock U-Boot: initramfs, and
 #                   no "ubi.mtd=" anywhere -- with that in its bootargs U-Boot
 #                   regenerates its bootcmd to boot the active slot instead.
 # Both mark spl0-3, vendor and factory read-only: shared by both slots, or
@@ -31,16 +34,19 @@
 # And the dwc2 a USB role switch, peripheral by default (the RNDIS gadget),
 # that /usr/sbin/usb-host turns to host for WiFi cards (wfb, apfpv).
 #
-# rootfs.ubi (ubinize.cfg) for userapp0/1; vr04-testboot/ for the RAM boot
+# rootfs.ubi (ubinize.cfg) for userapp0/1; ${DEVICE}-testboot/ for the RAM boot
 # (scripts/vr04-uboot-boot.py: SD card or YMODEM); and on the stock image
 # package/artlynk-vr04-vendor-firmware used, the update image
-# <stock release>_OpenIPC_<sha>.img that /sbin/sysupgrade and
+# <stock release>_OpenIPC${IMG_TAG}_<sha>.img that /sbin/sysupgrade and
 # scripts/vr04-install.py flash into a slot.
 
 set -e
 LOAD=0x200a0000
 BOARD_DIR=$(cd "$(dirname "$0")" && pwd)
-DTB=proxima-9311.dtb
+DEVICE_DIR=$2
+[ -f "${DEVICE_DIR}/device.env" ] ||
+	{ echo "post-image: no device.env in '${DEVICE_DIR}' (BR2_ROOTFS_POST_SCRIPT_ARGS)"; exit 1; }
+. "${DEVICE_DIR}/device.env"
 ARGS="earlycon console=ttyS0,1152000"
 FLASH_ARGS="${ARGS} ubi.mtd=17 ubi.block=0,rootfs root=/dev/ubiblock0_0 rootfstype=squashfs rootwait ro init=/init"
 RAM_ARGS="${ARGS} rdinit=/init"
@@ -73,24 +79,25 @@ rm -f Image.lz4 uImage.lz4
 
 PARTS=/soc/spi@1e00000/flash@0/partitions
 for variant in flash ram; do
-	cp ${DTB} vr04-${variant}.dtb
+	cp ${DTB} ${DEVICE}-${variant}.dtb
 	[ ${variant} = flash ] && args=${FLASH_ARGS} || args=${RAM_ARGS}
-	"${FDTPUT}" -t s vr04-${variant}.dtb /chosen bootargs "${args}"
+	"${FDTPUT}" -t s ${DEVICE}-${variant}.dtb /chosen bootargs "${args}"
 	for p in 0 40000 80000 c0000 180000 200000; do
-		"${FDTPUT}" vr04-${variant}.dtb ${PARTS}/partition@${p} read-only
+		"${FDTPUT}" ${DEVICE}-${variant}.dtb ${PARTS}/partition@${p} read-only
 	done
 	for mmc in mmc@1b00000 mmc@1c00000; do
-		"${FDTPUT}" -t i vr04-${variant}.dtb /soc/${mmc} fifo-depth 128
+		"${FDTPUT}" -t i ${DEVICE}-${variant}.dtb /soc/${mmc} fifo-depth 128
 	done
-	"${FDTPUT}" vr04-${variant}.dtb /soc/usb@8000000 usb-role-switch
-	"${FDTPUT}" -t s vr04-${variant}.dtb /soc/usb@8000000 role-switch-default-mode peripheral
+	"${FDTPUT}" ${DEVICE}-${variant}.dtb /soc/usb@8000000 usb-role-switch
+	"${FDTPUT}" -t s ${DEVICE}-${variant}.dtb /soc/usb@8000000 role-switch-default-mode peripheral
 done
-[ "$("${FDTGET}" vr04-flash.dtb /chosen bootargs | grep -o 'ubi\.mtd=[0-9]*')" = ubi.mtd=17 ] ||
-	{ echo "post-image: vr04-flash.dtb has no single ubi.mtd=17"; exit 1; }
-! "${FDTGET}" vr04-ram.dtb /chosen bootargs | grep -q 'ubi\.mtd=' ||
-	{ echo "post-image: vr04-ram.dtb must not say ubi.mtd="; exit 1; }
-[ "$("${FDTGET}" vr04-flash.dtb ${PARTS}/partition@200000 label)" = factory ] ||
+[ "$("${FDTGET}" ${DEVICE}-flash.dtb /chosen bootargs | grep -o 'ubi\.mtd=[0-9]*')" = ubi.mtd=17 ] ||
+	{ echo "post-image: ${DEVICE}-flash.dtb has no single ubi.mtd=17"; exit 1; }
+! "${FDTGET}" ${DEVICE}-ram.dtb /chosen bootargs | grep -q 'ubi\.mtd=' ||
+	{ echo "post-image: ${DEVICE}-ram.dtb must not say ubi.mtd="; exit 1; }
+[ "$("${FDTGET}" ${DEVICE}-flash.dtb ${PARTS}/partition@200000 label)" = factory ] ||
 	{ echo "post-image: ${PARTS} is not the stock layout"; exit 1; }
+echo "- ${DEVICE}-flash.dtb: $("${FDTGET}" ${DEVICE}-flash.dtb / model)"
 
 "${HOST_DIR}/sbin/ubinize" -o rootfs.ubi -p 0x20000 -m 2048 -s 2048 \
 	"${BOARD_DIR}/ubinize.cfg"
@@ -112,7 +119,7 @@ check() {
 	fi
 }
 check uImage.ar9311 $((0x600000))
-check vr04-flash.dtb $((0x60000))
+check ${DEVICE}-flash.dtb $((0x60000))
 check rootfs.squashfs $((28 * 1024 * 1024))
 check rootfs.ubi $((336 * 0x20000))
 
@@ -147,28 +154,29 @@ check ramboot.cpio $((28 * 1024 * 1024))
 
 # RAM boot bundle: copy the directory's files onto a FAT SD card, or let
 # vr04-uboot-boot.py send them with YMODEM
-rm -rf vr04-testboot
-mkdir vr04-testboot
-cp uImage.ar9311 vr04-testboot/uImage
-cp vr04-ram.dtb vr04-testboot/vr04.dtb
-cp ramboot.cpio.gz vr04-testboot/initrd.gz
+TB=${DEVICE}-testboot
+rm -rf ${TB}
+mkdir ${TB}
+cp uImage.ar9311 ${TB}/uImage
+cp ${DEVICE}-ram.dtb ${TB}/${DEVICE}.dtb
+cp ramboot.cpio.gz ${TB}/initrd.gz
 # a third smaller than the gzip one: YMODEM over the console is ~37 KiB/s.
 # The kernel's unxz wants CRC32 and allocates the whole dictionary.
-"${HOST_DIR}/bin/xz" -9e --check=crc32 --lzma2=preset=9e,dict=8MiB -T1 -c ramboot.cpio > vr04-testboot/initrd.xz
-(cd vr04-testboot && md5sum uImage vr04.dtb initrd.gz initrd.xz > MD5SUMS)
-tar -C vr04-testboot -cf "${PLATFORM}_testboot.tar" .
+"${HOST_DIR}/bin/xz" -9e --check=crc32 --lzma2=preset=9e,dict=8MiB -T1 -c ramboot.cpio > ${TB}/initrd.xz
+(cd ${TB} && md5sum uImage ${DEVICE}.dtb initrd.gz initrd.xz > MD5SUMS)
+tar -C ${TB} -cf "${PLATFORM}_testboot.tar" .
 
 # On the stock image package/artlynk-vr04-vendor-firmware used (its path and
 # release name in artlynk-vr04/stock-image). Best-effort like those blobs:
 # without the stock image or python-lzo there is no update image.
-rm -f P1_GND_*_OpenIPC_*.img
+rm -f P1_GND_*_OpenIPC*_*.img P1_GND_*_OpenIPC*_*.img.md5sum
 sha=$(git -C "${BR2_EXTERNAL_OPENIPC_SBC_GS_PATH}" rev-parse --short HEAD 2>/dev/null || echo unknown)
 git -C "${BR2_EXTERNAL_OPENIPC_SBC_GS_PATH}" diff --quiet HEAD 2>/dev/null || sha=${sha}-dirty
 if [ -f artlynk-vr04/stock-image ]; then
-	img="$(sed -n 2p artlynk-vr04/stock-image)_OpenIPC_${sha}.img"
+	img="$(sed -n 2p artlynk-vr04/stock-image)_OpenIPC${IMG_TAG}_${sha}.img"
 	if "${SYSPY}" "${BOARD_DIR}/scripts/ar9311-image.py" pack \
 		--base "$(sed -n 1p artlynk-vr04/stock-image)" --kernel uImage.ar9311 \
-		--dtb vr04-flash.dtb --userapp rootfs.ubi --out "${img}"; then
+		--dtb ${DEVICE}-flash.dtb --userapp rootfs.ubi --out "${img}"; then
 		md5sum "${img}" > "${img}.md5sum"
 		tar -czf "${PLATFORM}.tar.gz" "${img}" "${img}.md5sum"
 	else
