@@ -20,6 +20,11 @@ gsmenu:
       - { name: right,  mv: 1180 }
       - { name: enter,  mv: 1376 }
       - { name: down,   mv: 1570 }
+  # The archive goes to /media/dvr, the SD card.
+  actions:
+    ground:
+      - label: Generate support package
+        action: /usr/bin/collect_support_data.sh
 # enables collection of `os_mon.*` OSD facts, the same ones the VRX Pro's OSD
 # shows (board/common/artosyn-osd):
 os_sensors:
