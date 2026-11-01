@@ -7,11 +7,12 @@
 #   firmware (back to stock) or this build's P1_GND_*_OpenIPC_*.img
 # goes into the slot that is not running -- sysupgrade carries this system's
 # settings over to OpenIPC and makes that slot the active one -- and the
-# goggles restart into it. Once installed the file is deleted; one that fails
+# unit restarts into it. Once installed the file is deleted; one that fails
 # is renamed .failed, so it is not tried at every boot, and sysupgrade.log on
 # the card says why (stock firmware with another SPL or vendor partition than
-# this unit's goes in only through the stock U-Boot's USB upgrade). The panel
-# shows it (update screens, busybox fbsplash's progress bar), and the buzzer:
+# this unit's goes in only through the stock U-Boot's USB upgrade; an OpenIPC
+# image built for another P1 ground unit is refused). The display shows it
+# (update screens, busybox fbsplash's progress bar), and the buzzer:
 # one beep when it starts, two when it is done, a long one when it failed. A
 # power loss in between leaves the running slot the active one and the file
 # on the card for the next boot.
@@ -30,7 +31,9 @@ MNT=/tmp/sdupdate
 WORK=/tmp/sdupdate.img
 LOG=$MNT/sysupgrade.log
 STOCK_INDEX=$MNT/.media_files.json
-BL=/sys/class/backlight/backlight
+BACKLIGHT=/sys/class/backlight/backlight
+[ -r /etc/default/p1-gnd ] && . /etc/default/p1-gnd
+BL=$BACKLIGHT
 FIFO=/tmp/sdupdate.fifo
 BAR=/tmp/sdupdate.bar
 panel=
@@ -60,11 +63,12 @@ updates() {
 	done
 }
 
-# The panel: vr04-splash brings it up in the background and switches the
-# backlight on last; up to 10 s for that, else the update goes without screens.
+# The display: vr04-splash brings it up in the background and switches a
+# backlight on last (without one, its framebuffer is there); up to 10 s for
+# that, else the update goes without screens.
 panel_up() {
 	local i=0
-	until [ "$(cat $BL/bl_power 2>/dev/null)" = 0 ]; do
+	until if [ -n "$BL" ]; then [ "$(cat $BL/bl_power 2>/dev/null)" = 0 ]; else [ -e /dev/fb0 ]; fi; do
 		[ $i -ge 100 ] && return 1
 		usleep 100000
 		i=$((i + 1))
@@ -154,7 +158,7 @@ failed() {
 	bar_stop
 	screen update-failed
 	beep 1500
-	# for reading the screen before the system takes the panel
+	# for reading the screen before the system takes the display
 	[ -n "$panel" ] && sleep 4
 	exit 1
 }
@@ -247,4 +251,4 @@ beep 150
 sync
 watchdog -T 1 -t 3600 /dev/watchdog
 sleep 10
-log "no watchdog reset: power-cycle the goggles"
+log "no watchdog reset: power-cycle the unit"

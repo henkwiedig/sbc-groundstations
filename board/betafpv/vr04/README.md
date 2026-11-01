@@ -5,6 +5,15 @@ The P1 system's ground unit: Artosyn PROXIMA 9311 (AR9311, 2x Cortex-A53,
 ADC button ladder. Kernel: mainline 6.18.36 with MissingLynk's ml-kernel BSP
 (board `betafpv-vr04-goggle`, `linux/linux-ext-ml-kernel.mk`).
 
+Board files: what the P1 ground units share (the P1 HD VRX, `betafpv_p1_vrx`,
+is the same board with HDMI out instead of the panel) is in
+`board/betafpv/p1-gnd/`: overlay, post-build/post-image, kernel and busybox
+fragments, the host scripts. This directory has the VR04's own part:
+`device.env` (the dtb, file names and display modules for post-build and
+post-image, which get this directory as their argument), the panel's
+backlight and brightness, the update screens' wording, the host udev rule;
+`overlay/etc/default/p1-gnd` tells the shared scripts which unit runs them.
+
 Stage 1 (this state): backup, RAM boot through the stock U-Boot, install into
 NAND slot A next to stock. No AR8030 link, video or OSD yet. The display
 drivers are MissingLynk's QY45043A0 panel only; units with the nd043fhdm30p
@@ -67,8 +76,9 @@ as a media device) -- and:
   write (stock's own updater or the USB upgrade below does). No card: no delay
   (the slot's card detect is read first).
 
-The update screens are made from the splash by `scripts/make-update-screens.py`
-(`overlay/usr/share/update*.png`, the bar's place in `update-bar.ini`).
+The update screens are made from the splash by
+`../p1-gnd/scripts/make-update-screens.py --unit vr04`
+(`overlay/usr/share/update*.png`, the bar's place in p1-gnd's `update-bar.ini`).
 
 Stock's other SD-card upgrade, bind held 2-10 s with
 `artosyn-upgrade-ars31.img` on the card, goes through artosyn_upgrade, which
@@ -77,8 +87,8 @@ Stock's other SD-card upgrade, bind held 2-10 s with
 Without the SD card, the stock U-Boot's USB upgrade takes the image too (it
 checks the RSA signature but does not enforce it):
 
-    scripts/vr04-usbburn.py flash P1_GND_<release>_OpenIPC_<sha>.img --from-stock
-    scripts/vr04-usbburn.py flash P1_GND_<release>_OpenIPC_<sha>.img --from-openipc
+    ../p1-gnd/scripts/vr04-usbburn.py flash P1_GND_<release>_OpenIPC_<sha>.img --from-stock
+    ../p1-gnd/scripts/vr04-usbburn.py flash P1_GND_<release>_OpenIPC_<sha>.img --from-openipc
 
 with the goggles on USB to this host (and its udev rule for 1d6b:0100, see
 the script). `--from-stock` sends stock's reboot-to-U-Boot command on
@@ -96,19 +106,19 @@ Never activate a slot that has not booted once through U-Boot. Power-cycle
 rather than reboot: the SPL can hang after a warm reset.
 
 1. Backup from running stock (reads only; serial console + RNDIS):
-   `scripts/vr04-backup.py ../betafpv/rev/backup-vr04-gnd-<factory md5>-<date>`
-2. What the stock U-Boot can load from: `scripts/vr04-uboot-boot.py probe`.
+   `../p1-gnd/scripts/vr04-backup.py ../betafpv/rev/backup-vr04-gnd-<factory md5>-<date>`
+2. What the stock U-Boot can load from: `../p1-gnd/scripts/vr04-uboot-boot.py probe`.
    The 2.1.3 U-Boot has no `mmc` command, so no SD card: loady/loadx/loadb,
    `usb` (host), network (no PHY on the goggles) and `mtd read` only.
-3. RAM boot (stock untouched): `scripts/vr04-uboot-boot.py ram --source ymodem`
+3. RAM boot (stock untouched): `../p1-gnd/scripts/vr04-uboot-boot.py ram --source ymodem`
    sends `vr04-testboot/*` over the console (YMODEM, ~37 KiB/s: about 7
    minutes for kernel + initramfs; every 1 KiB block waits for its ACK over
    the USB-serial adapter). `--no-drm` keeps the display drivers out.
 4. Into slot A, from the RAM-booted system:
-   `scripts/vr04-install.py --dry-run install <img> --backup <dir>`, then
+   `../p1-gnd/scripts/vr04-install.py --dry-run install <img> --backup <dir>`, then
    without `--dry-run`. Stock's slot B stays active.
-5. Gate test: power-cycle (stock), then `scripts/vr04-uboot-boot.py slot-a`
-6. `scripts/vr04-install.py activate a --backup <dir>` (`--dry-run` first),
+5. Gate test: power-cycle (stock), then `../p1-gnd/scripts/vr04-uboot-boot.py slot-a`
+6. `../p1-gnd/scripts/vr04-install.py activate a --backup <dir>` (`--dry-run` first),
    power-cycle. Back to stock: `openipc-bsel set 1`, power-cycle.
 
 If an active slot does not come up (the SPL boots it on its own, without

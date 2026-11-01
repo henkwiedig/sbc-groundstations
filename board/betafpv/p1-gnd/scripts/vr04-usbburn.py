@@ -136,9 +136,11 @@ def check_image(data):
     if data[6] != 2:
         sys.exit(f"flash type {data[6]}, not NAND")
     product = data[0x80:0xc0].split(b"\0")[0].decode(errors="replace")
-    # the goggles' images: P1_GND_VR04 up to 2.0.6, IGNORE since 2.1.3
-    if product not in ("P1_GND_VR04", "IGNORE"):
-        sys.exit(f"product {product!r}, not P1_GND_VR04 (or IGNORE): not a VR04 image")
+    # the P1 ground units' images: P1_GND_VR04 / P1_GND_VRX up to 2.0.x,
+    # IGNORE (all of them) since 2.1.3. U-Boot cannot tell which unit it runs
+    # on: an OpenIPC image must be the one built for this unit.
+    if product not in ("P1_GND_VR04", "P1_GND_VRX", "IGNORE"):
+        sys.exit(f"product {product!r}, not P1_GND_VR04/P1_GND_VRX (or IGNORE): not a P1 ground image")
     customer = data[0x2c:0x40].split(b"\0")[0].decode(errors="replace")
     return product, customer, any(data[0x100 + hext + 32:body])
 
