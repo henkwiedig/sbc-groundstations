@@ -1,0 +1,286 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Henk Wiedig <henk@wiedig.de>
+Date: Sun, 1 Nov 2026 21:54:24 +0100
+Subject: [PATCH 1/3] drm/artosyn: vo: timing from the mode
+ (artosyn,timing-from-mode)
+
+The timing words are hardcoded for the goggles' panel. They decode as the
+Vivante DC fields (H = hdisplay | htotal << 16, HSYNC = hsync_start |
+hsync_end << 15 | valid, the same for V, FB_SIZE = w | h << 15) and are the
+stock nd043 panel's 2091x1144 timing; with the DT property
+artosyn,timing-from-mode they come from the adjusted mode instead, for a DSI
+bridge whose mode is not the panel's (the P1 HD VRX's LT9611EX, which
+adjusts an HDMI mode to stock's DSI-side timing for it).
+
+The CGU pixel-clock model reads 1.034654x the true rate (calibrated against
+the panel mode's 2200x1125 while the VO scanned 2091x1144; the VR04 measures
+59.9996 Hz at "148.5 MHz"); artosyn_pclk.h has the factor. The hardcoded
+path keeps the model's numbers; the new path requests the adjusted mode's
+clock * pclk_scale_ppm, and its pclk_hz reads and takes Hz of the mode
+userspace set (the same frame rate as the adjusted one, so the same ppm),
+so a vsync lock trims around the mode's clock as before. mode_valid limits
+it to what fits the 15-bit fields and 1920x1080.
+
+Without the property nothing changes.
+---
+ drivers/gpu/drm/artosyn/artosyn_pclk.h |  15 +++
+ drivers/gpu/drm/artosyn/artosyn_vo.c   | 137 +++++++++++++++++++++++--
+ 2 files changed, 143 insertions(+), 9 deletions(-)
+ create mode 100644 drivers/gpu/drm/artosyn/artosyn_pclk.h
+
+diff --git a/drivers/gpu/drm/artosyn/artosyn_pclk.h b/drivers/gpu/drm/artosyn/artosyn_pclk.h
+new file mode 100644
+index 0000000..7ab06fa
+--- /dev/null
++++ b/drivers/gpu/drm/artosyn/artosyn_pclk.h
+@@ -0,0 +1,15 @@
++/* SPDX-License-Identifier: GPL-2.0 */
++/*
++ * The CGU pixel-clock model (clk-ar9311-cgu.c, AR_PLL_KNUM) reads high by 2200 * 1125 /
++ * (2091 * 1144) = 1.034654: it was calibrated by vblank rate against the panel mode's CEA
++ * 2200x1125 totals while the VO scanned the hardcoded nd043 2091x1144 ones. The VR04 measures
++ * 59.9996 Hz at a "148.5 MHz" pclk (true 143.53 MHz, stock's nd043 rate), and the SPL's boot
++ * word reads "153.65 MHz", stock's 148.5. A true rate is asked of the clock as
++ * rate * AR_PCLK_MODEL_PPM / 1000000.
++ */
++#ifndef ARTOSYN_PCLK_H
++#define ARTOSYN_PCLK_H
++
++#define AR_PCLK_MODEL_PPM	1034654
++
++#endif
+diff --git a/drivers/gpu/drm/artosyn/artosyn_vo.c b/drivers/gpu/drm/artosyn/artosyn_vo.c
+index 4dfc68b..063dcde 100644
+--- a/drivers/gpu/drm/artosyn/artosyn_vo.c
++++ b/drivers/gpu/drm/artosyn/artosyn_vo.c
+@@ -6,6 +6,10 @@
+  * and the QY45043A0 panel. No mainline driver; register map recovered from libmpp_service.so
+  * (reg_panel_set / reg_dpi_set / reg_framebuffer_set). See ../../../../../docs/display-backlight.md.
+  *
++ * The timing words are the panel's hardcoded 1080p60 ones, or with the DT property
++ * artosyn,timing-from-mode they come from the mode the bridge chain offers (the P1 HD VRX's
++ * LT9611EX DSI->HDMI bridge, whose mode is stock's DSI-side 1080p60 timing).
++ *
+  * Uses drm_simple_display_pipe (single CRTC + primary plane + encoder) and attaches the
+  * DSI bridge found via of_graph, plus three overlay planes on the DC overlay register
+  * banks: two positionable YUV video planes (NV12/I420, banks 0/1) and the ARGB4444 HUD
+@@ -42,6 +46,8 @@
+ #include <drm/drm_simple_kms_helper.h>
+ #include <drm/drm_vblank.h>
+ 
++#include "artosyn_pclk.h"
++
+ /* --- VO register map (offsets from 0x08810000), recovered from libmpp_service.so --- */
+ #define VO_GLOBAL	0x0000	/* BIT(11) AXI enable, BIT(12) soft-reset pulse */
+ #define  VO_GLOBAL_AXI_EN	BIT(11)
+@@ -127,6 +133,15 @@ static unsigned int hud_bank = VO_BANK_HUD;
+ module_param(hud_bank, uint, 0444);
+ MODULE_PARM_DESC(hud_bank, "overlay register bank for the ARGB4444 HUD plane (default 1 - the DC has only banks 0/1; the HUD clashes with the video plane on the same bank)");
+ 
++/*
++ * The CGU's pixel-clock model reads high (artosyn_pclk.h). The hardcoded path keeps the
++ * model's numbers (its pclk_hz and vsync lock are calibrated on them); the
++ * artosyn,timing-from-mode path asks the clock for the true rate * pclk_scale_ppm / 1e6.
++ */
++static unsigned int pclk_scale_ppm = AR_PCLK_MODEL_PPM;
++module_param(pclk_scale_ppm, uint, 0644);
++MODULE_PARM_DESC(pclk_scale_ppm, "artosyn,timing-from-mode: CGU pixel-clock model Hz per true Hz, in ppm (default 1034654)");
++
+ #define VO_SYNC_VALID	0x40000000	/* bit30 in H_SA_BP / V_SA_BP = sync valid */
+ 
+ /*
+@@ -154,6 +169,15 @@ struct ar_vo {
+ 	void __iomem			*regs;
+ 	void __iomem			*crg;
+ 	struct clk			*pclk;
++	/* DT artosyn,timing-from-mode: the timing words from the mode (a DSI bridge such as
++	 * the P1 HD VRX's LT9611EX), not the panel's hardcoded 1080p60 words
++	 */
++	bool				timing_from_mode;
++	/* timing-from-mode: the clock of the mode userspace set and of the one scanned (a bridge
++	 * may adjust it, e.g. the LT9611EX's DSI-side timing for an HDMI mode), for pclk_hz
++	 */
++	u32				clk_mode_khz;
++	u32				clk_scan_khz;
+ 	u32				cur_format;	/* DRM fourcc currently programmed on the primary layer */
+ 	u32				cur_cfg;	/* clean VO_MAIN_CTRL word for cur_format (no LOCK, no START) */
+ 
+@@ -263,6 +287,64 @@ static void ar_vo_set_fb_addr(struct ar_vo *vo, struct drm_plane_state *state)
+  */
+ #define VO_1080P60_FB_CONFIG	0x14000011	/* = ar_vo_fb_config(XRGB8888); kept for the notes above */
+ 
++/*
++ * The timing words decoded (Vivante DC dcregHDisplay/HSync/VDisplay/VSync, the encoding the
++ * hardcoded words above follow - they are the stock nd043 panel's 2091x1144 timing, hfp 85 /
++ * hsync 43 / hbp 43, vfp 32 / vsync 1 / vbp 31):
++ *   H_ACT_FP = hdisplay | htotal << 16
++ *   H_SA_BP  = hsync_start | hsync_end << 15 | VO_SYNC_VALID
++ *   V_ACT_FP / V_SA_BP the same for the vertical, FB_SIZE = width | height << 15.
++ * ar_vo_program_timing() with that mode writes exactly the hardcoded words.
++ */
++static void ar_vo_program_timing(struct ar_vo *vo, const struct drm_display_mode *m)
++{
++	if (!vo->timing_from_mode) {
++		writel(VO_1080P60_H_ACT_FP, vo->regs + VO_H_ACT_FP);
++		writel(VO_1080P60_H_SA_BP, vo->regs + VO_H_SA_BP);
++		writel(VO_1080P60_V_ACT_FP, vo->regs + VO_V_ACT_FP);
++		writel(VO_1080P60_V_SA_BP, vo->regs + VO_V_SA_BP);
++		writel(VO_1080P60_FB_SIZE, vo->regs + VO_FB_SIZE);
++		return;
++	}
++
++	writel((m->hdisplay & 0x7fff) | (m->htotal & 0x7fff) << 16, vo->regs + VO_H_ACT_FP);
++	writel(VO_SYNC_VALID | (m->hsync_start & 0x7fff) | (m->hsync_end & 0x7fff) << 15,
++	       vo->regs + VO_H_SA_BP);
++	writel((m->vdisplay & 0x7fff) | (m->vtotal & 0x7fff) << 16, vo->regs + VO_V_ACT_FP);
++	writel(VO_SYNC_VALID | (m->vsync_start & 0x7fff) | (m->vsync_end & 0x7fff) << 15,
++	       vo->regs + VO_V_SA_BP);
++	writel((m->hdisplay & 0x7fff) | (m->vdisplay & 0x7fff) << 15, vo->regs + VO_FB_SIZE);
++}
++
++/* Pixel clock: what to ask the CGU model for a true rate, and back (see pclk_scale_ppm). */
++static unsigned long ar_vo_model_hz(struct ar_vo *vo, unsigned long hz)
++{
++	return vo->timing_from_mode ? mult_frac(hz, pclk_scale_ppm, 1000000) : hz;
++}
++
++static unsigned long ar_vo_true_hz(struct ar_vo *vo, unsigned long model_hz)
++{
++	return vo->timing_from_mode && pclk_scale_ppm ?
++		mult_frac(model_hz, 1000000, pclk_scale_ppm) : model_hz;
++}
++
++/* pclk_hz in the clock of the mode userspace set, which a vsync lock trims around, and back
++ * to the scanned mode's: the same frame rate, so the same ppm.
++ */
++static unsigned long ar_vo_user_hz(struct ar_vo *vo, unsigned long scan_hz)
++{
++	if (!vo->timing_from_mode || !vo->clk_mode_khz || !vo->clk_scan_khz)
++		return scan_hz;
++	return mult_frac(scan_hz, vo->clk_mode_khz, vo->clk_scan_khz);
++}
++
++static unsigned long ar_vo_scan_hz(struct ar_vo *vo, unsigned long user_hz)
++{
++	if (!vo->timing_from_mode || !vo->clk_mode_khz || !vo->clk_scan_khz)
++		return user_hz;
++	return mult_frac(user_hz, vo->clk_scan_khz, vo->clk_mode_khz);
++}
++
+ /*
+  * Map a DRM fourcc to the DC surface-format enum (0x1518 bits[31:26]) and flag YUV.
+  * RGB and I420=15 confirmed; NV12=17 inferred (the firmware never
+@@ -384,13 +466,15 @@ static void ar_vo_pipe_enable(struct drm_simple_display_pipe *pipe,
+ 	 * makes the rates agree by construction and leaves the frame pacer only crystal drift to
+ 	 * track.
+ 	 */
++	vo->clk_mode_khz = crtc_state->mode.clock;
++	vo->clk_scan_khz = mode->clock;
+ 	if (vo->pclk && mode->clock) {
+ 		unsigned long want = (unsigned long)mode->clock * 1000;
+-		int ret = clk_set_rate(vo->pclk, want);
++		int ret = clk_set_rate(vo->pclk, ar_vo_model_hz(vo, want));
+ 
+ 		if (ret)
+ 			drm_warn(pipe->crtc.dev, "pixel clock set to %lu Hz failed (%d), running at %lu\n",
+-				 want, ret, clk_get_rate(vo->pclk));
++				 want, ret, ar_vo_true_hz(vo, clk_get_rate(vo->pclk)));
+ 	}
+ 
+ 	/*
+@@ -428,16 +512,13 @@ static void ar_vo_pipe_enable(struct drm_simple_display_pipe *pipe,
+ 	writel(0, vo->regs + VO_MAIN_CTRL);
+ 	writel(readl(vo->regs + VO_GLOBAL) & ~VO_GLOBAL_AXI_EN, vo->regs + VO_GLOBAL);
+ 
+-	writel(VO_1080P60_H_ACT_FP, vo->regs + VO_H_ACT_FP);
+-	writel(VO_1080P60_H_SA_BP, vo->regs + VO_H_SA_BP);
+-	writel(VO_1080P60_V_ACT_FP, vo->regs + VO_V_ACT_FP);
+-	writel(VO_1080P60_V_SA_BP, vo->regs + VO_V_SA_BP);
++	/* Timing words and FB_SIZE: hardcoded 1080p60 panel words, or from the mode. */
++	ar_vo_program_timing(vo, mode);
+ 
+ 	/* Layer surface geometry. Window origin is (0,0); the FIFO thresholds must be non-zero or
+ 	 * the DC fetches but never emits. Per-plane strides, format, and CSC are in ar_vo_program_layer
+ 	 * below (the Y stride at 0x1408 was previously written here).
+ 	 */
+-	writel(VO_1080P60_FB_SIZE, vo->regs + VO_FB_SIZE);
+ 	writel(0, vo->regs + VO_WIN_X);
+ 	writel(0, vo->regs + VO_WIN_Y);
+ 	writel(0x3c0, vo->regs + VO_FIFO_THRESH0);
+@@ -533,7 +614,27 @@ static void ar_vo_disable_vblank(struct drm_simple_display_pipe *pipe)
+ 	writel(readl(vo->regs + VO_INT_ENABLE) & ~VO_INT_VSYNC, vo->regs + VO_INT_ENABLE);
+ }
+ 
++/* The hardcoded path drives whatever mode the panel offers; from the mode, what fits the
++ * 15-bit timing fields and the 1920x1080 scanout.
++ */
++static enum drm_mode_status ar_vo_mode_valid(struct drm_simple_display_pipe *pipe,
++					     const struct drm_display_mode *mode)
++{
++	struct ar_vo *vo = to_ar_vo(pipe->crtc.dev);
++
++	if (!vo->timing_from_mode)
++		return MODE_OK;
++	if (mode->hdisplay > 1920 || mode->vdisplay > 1080)
++		return MODE_BAD;
++	if (mode->htotal > 0x7fff || mode->vtotal > 0x7fff)
++		return MODE_BAD;
++	if (mode->flags & DRM_MODE_FLAG_INTERLACE)
++		return MODE_NO_INTERLACE;
++	return MODE_OK;
++}
++
+ static const struct drm_simple_display_pipe_funcs ar_vo_pipe_funcs = {
++	.mode_valid	= ar_vo_mode_valid,
+ 	.enable		= ar_vo_pipe_enable,
+ 	.disable	= ar_vo_pipe_disable,
+ 	.update		= ar_vo_pipe_update,
+@@ -867,6 +968,10 @@ static int ar_vo_probe(struct platform_device *pdev)
+ 	if (IS_ERR(vo->pclk))
+ 		return PTR_ERR(vo->pclk);
+ 
++	vo->timing_from_mode = of_property_read_bool(dev->of_node, "artosyn,timing-from-mode");
++	if (vo->timing_from_mode)
++		dev_info(dev, "timing from the mode, pixel clock model x%u ppm\n", pclk_scale_ppm);
++
+ 	irq = platform_get_irq(pdev, 0);
+ 	if (irq < 0)
+ 		return irq;
+@@ -968,12 +1073,15 @@ static int ar_vo_probe(struct platform_device *pdev)
+  * Userspace slaves the panel period to the measured source period. 141.1-155 MHz spans
+  * 59.0-64.8 Hz at these timings; the low bound matches the CGU's own +/-5 % clamp (a
+  * lower request would silently land at 141.075 MHz), the DSI link and panel stay in range.
++ * With artosyn,timing-from-mode the attribute speaks true Hz of the mode userspace set (its
++ * clock is nominal, also when a bridge scans an adjusted mode at the same frame rate) and the
++ * CGU's own clamp is the limit (see pclk_scale_ppm).
+  */
+ static ssize_t pclk_hz_show(struct device *dev, struct device_attribute *attr, char *buf)
+ {
+ 	struct ar_vo *vo = dev_get_drvdata(dev);
+ 
+-	return sysfs_emit(buf, "%lu\n", clk_get_rate(vo->pclk));
++	return sysfs_emit(buf, "%lu\n", ar_vo_user_hz(vo, ar_vo_true_hz(vo, clk_get_rate(vo->pclk))));
+ }
+ 
+ static ssize_t pclk_hz_store(struct device *dev, struct device_attribute *attr,
+@@ -990,8 +1098,19 @@ static ssize_t pclk_hz_store(struct device *dev, struct device_attribute *attr,
+ 	if (ret)
+ 		return ret;
+ 
+-	if (hz < 141100000 || hz > 155000000)
++	if (vo->timing_from_mode) {
++		/* Hz of the mode userspace set in; the CGU clamps the model rate to +/-5 percent
++		 * of its boot rate, which must not move the request by more than 0.1 percent
++		 */
++		unsigned long model = ar_vo_model_hz(vo, ar_vo_scan_hz(vo, hz));
++		long r = clk_round_rate(vo->pclk, model);
++
++		if (r <= 0 || abs_diff((unsigned long)r, model) > model / 1000)
++			return -ERANGE;
++		hz = model;
++	} else if (hz < 141100000 || hz > 155000000) {
+ 		return -ERANGE;
++	}
+ 
+ 	ret = clk_set_rate(vo->pclk, hz);
+ 	if (ret)

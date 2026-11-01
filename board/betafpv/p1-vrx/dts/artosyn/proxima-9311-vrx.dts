@@ -1,0 +1,64 @@
+// SPDX-License-Identifier: GPL-2.0
+/*
+ * BetaFPV P1 HD VRX (P1 ground unit, stock hw_ver V2.3 "haming_vrx_gnd"): the VR04
+ * goggles' board with a Lontium LT9611EX MIPI-DSI -> HDMI bridge where their panel is.
+ * Stock runs the same device tree on both (VRX 2.0.8's dtb is the VR04 2.0.x one), so
+ * this is ml-kernel's goggle DT (proxima-9311.dts, put next to this file by
+ * linux/linux-ext-ml-kernel.mk) with the display end swapped. From stock's
+ * libpn_lt9611ex.so (P1_GND 2.1.4):
+ *   - the bridge at 7-bit 0x41 on /dev/i2c-0, i2c0 here (the DS1307 RTC's bus)
+ *   - reset GPIO 107, active low; stock's board init drives it low, its probe pulses it
+ *   - HPD/IRQ GPIO 67
+ *   - per HDMI mode its DSI-side timing, which the bridge driver puts into the adjusted
+ *     mode and the VO and DSI host scan (artosyn,timing-from-mode); the bridge gets the
+ *     VO's pixel clock only to ask which of those rates it reaches
+ * GPIO 107 is the goggles' panel scan strap (a hog driving it low), GPIO 42 the other
+ * strap: stock's VRX init drives 42 low too, so that hog stays. GPIO 100 is the SD card's
+ * I/O rail on both (stock: mmc1's vqmmc), on the goggles shared with the panel.
+ */
+#include "proxima-9311.dts"
+
+/ {
+	model = "Artosyn Proxima-9311 (BetaFPV P1 HD VRX)";
+};
+
+/* no panel, no backlight */
+/delete-node/ &backlight;
+/delete-node/ &{/soc/dsi@8850000/panel@0};
+/delete-node/ &panel_scan_v_hog;
+
+&panel_power_hog {
+	line-name = "sd-vqmmc";
+};
+
+&vo {
+	artosyn,timing-from-mode;
+};
+
+&dsi {
+	artosyn,timing-from-mode;
+	/* no DSI child: the bridge sits on I2C and registers its DSI device itself */
+	/delete-property/ #address-cells;
+	/delete-property/ #size-cells;
+};
+
+&dsi_out {
+	remote-endpoint = <&lt9611ex_in>;
+};
+
+&i2c0 {
+	hdmi-bridge@41 {
+		compatible = "lontium,lt9611ex";
+		reg = <0x41>;
+		reset-gpios = <&gpio 107 GPIO_ACTIVE_LOW>;
+		hpd-gpios = <&gpio 67 GPIO_ACTIVE_HIGH>;
+		clocks = <&pixclk 0>;
+		clock-names = "pixel";
+
+		port {
+			lt9611ex_in: endpoint {
+				remote-endpoint = <&dsi_out>;
+			};
+		};
+	};
+};
