@@ -1,0 +1,99 @@
+#!/bin/sh
+# HDMI bring-up report of the BetaFPV P1 HD VRX: what the display chain (VO ->
+# DSI host -> LT9611EX bridge) and the system say, as one tar.gz.
+#
+#   p1-vrx-diag > vrx-diag.tar.gz        over SSH: ssh root@192.168.3.100 p1-vrx-diag > ...
+#   p1-vrx-diag -o DIR                   into DIR (e.g. /media/dvr, the SD card)
+#
+# Register dumps only with the display drivers bound (their clocks are on then);
+# a read of an unclocked block can stall the bus.
+
+out=
+[ "$1" = -o ] && out=${2:?usage: p1-vrx-diag [-o DIR]}
+
+W=$(mktemp -d /tmp/p1-vrx-diag.XXXXXX) || exit 1
+trap 'rm -rf "$W"' EXIT
+R=$W/p1-vrx-diag
+mkdir -p "$R"
+
+# run a command into a file of the report: name, command...
+c() {
+	local f=$1
+	shift
+	{ echo "# $*"; "$@"; } > "$R/$f" 2>&1
+}
+
+# n 32-bit words from a physical address
+dump() {
+	local base=$1 off=$2 end=$3
+	while [ $((off)) -le $((end)) ]; do
+		printf '0x%08x: %s\n' $((base + off)) "$(devmem $((base + off)) 32)"
+		off=$((off + 4))
+	done
+}
+
+bound() {
+	ls /sys/bus/platform/drivers/"$1"/ 2>/dev/null | grep -q '^[0-9a-f]*\.'
+}
+
+c system.txt sh -c 'tr -d "\0" < /proc/device-tree/model; echo; uname -a; cat /etc/os-release; uptime; cat /proc/cmdline; free'
+c dmesg.txt dmesg
+c lsmod.txt lsmod
+c interrupts.txt cat /proc/interrupts
+c ps.txt ps w
+[ -f /var/log/messages ] && c messages.txt tail -n 2000 /var/log/messages
+
+# DRM: connectors, modes, planes
+c drm.txt sh -c 'for d in /sys/class/drm/card*-*; do echo "== $d"; for f in status enabled dpms modes; do echo "-- $f"; cat $d/$f 2>/dev/null; done; done'
+# the sink's EDID as the bridge read it (empty: none)
+for e in /sys/class/drm/card*-HDMI-A-*/edid; do
+	[ -e "$e" ] && cat "$e" > "$R/edid.bin" 2>/dev/null
+done
+command -v modetest > /dev/null && c modetest.txt modetest -M artosyn-vo -c -e -p
+
+# the bridge driver
+for d in /sys/bus/i2c/drivers/lt9611ex/*-0041 /sys/bus/i2c/devices/*-0041; do
+	[ -e "$d/i2c_ok" ] || continue
+	c lt9611ex.txt sh -c "cd $d && for f in chip_id i2c_ok hpd mailbox; do echo \"\$f: \$(cat \$f)\"; done; echo; for p in skip_i2c use_edid reset_ms hdmi_mode dsi_mode; do echo \"param \$p: \$(cat /sys/module/lontium_lt9611ex/parameters/\$p 2>/dev/null)\"; done"
+	break
+done
+command -v i2cdetect > /dev/null && c i2c.txt sh -c 'i2cdetect -l; echo; i2cdetect -y -r 0'
+command -v gpioinfo > /dev/null && c gpio.txt gpioinfo
+
+# VO and DSI registers, pixel clock, vsync rate
+if bound artosyn-vo && bound artosyn-dsi; then
+	{
+		echo "## VO 0x08810000 (timing 0x1430..0x1448, ctrl 0x1518, size 0x1810)"
+		for o in 0x0000 0x1400 0x1408 0x1418 0x1430 0x1438 0x1440 0x1448 0x147c 0x1480 \
+			0x14b8 0x1518 0x1520 0x1528 0x1800 0x1808 0x1810 0x1f40; do
+			printf '0x%08x: %s\n' $((0x08810000 + o)) "$(devmem $((0x08810000 + o)) 32)"
+		done
+		echo "## CRG DC 0x0a106018, pixel PLL word 0x0a108410"
+		devmem 0x0a106018 32
+		devmem 0x0a108410 32
+		echo "## DSI 0x08850000 host 0x00..0xc4 (0xb0 PHY status; 0xbc/0xc0 error status, read-to-clear)"
+		dump 0x08850000 0x00 0xc4
+		echo "## DSI error status again after 1 s (non-zero: errors keep coming)"
+		sleep 1
+		devmem 0x088500bc 32
+		devmem 0x088500c0 32
+		echo "## DSI PLL 0x2c0 and D-PHY 0x2c4..0x3a4"
+		dump 0x08850000 0x2c0 0x3a4
+	} > "$R/registers.txt" 2>&1
+	for p in /sys/bus/platform/drivers/artosyn-vo/*/pclk_hz; do
+		[ -e "$p" ] && echo "pclk_hz (true Hz): $(cat "$p")" >> "$R/registers.txt"
+	done
+	a=$(awk '/artosyn-vo/ { print $2 }' /proc/interrupts)
+	sleep 5
+	b=$(awk '/artosyn-vo/ { print $2 }' /proc/interrupts)
+	[ -n "$a" ] && [ -n "$b" ] && echo "VO vsync IRQs: $(((b - a) / 5))/s (60 expected)" >> "$R/registers.txt"
+else
+	echo "artosyn-vo / artosyn-dsi not bound: no register dump" > "$R/registers.txt"
+fi
+
+if [ -n "$out" ]; then
+	f=$out/p1-vrx-diag-$(date +%Y%m%d-%H%M%S).tar.gz
+	tar -C "$W" -czf "$f" p1-vrx-diag && echo "$f"
+else
+	tar -C "$W" -czf - p1-vrx-diag
+fi
