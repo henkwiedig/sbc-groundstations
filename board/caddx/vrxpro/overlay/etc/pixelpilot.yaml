@@ -11,15 +11,10 @@ gsmenu:
     device: /sys/bus/iio/devices/iio:device0/in_voltage6_raw
   # Define custom actions here
   # action is the command the button will trigger
-  # actions:
-  #   air:
-  #     - label: Custom Action 1
-  #       action: sleep 5
-  #     - label: Custom Action 1
-  #       action: sleep 5
-  #   ground:
-  #     - label: Custom Action 1
-  #       action: sleep 5
+  actions:
+    ground:
+      - label: Generate support package
+        action: /usr/bin/collect_support_data.sh
 # enables collection of `os_mon.*` OSD facts
 # VRX Pro: the goggles' own supply voltage as os_mon.power.voltage (mV,
 # sensor=vrx) -- SARADC channel 5 through a x16 divider minus 300 mV, the
