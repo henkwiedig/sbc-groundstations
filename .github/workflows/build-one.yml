@@ -80,23 +80,28 @@ jobs:
           if [ "${NAME}" = caddx_vrxpro ]; then
             pipx install ubi_reader
           fi
-          # betafpv_vr04: artlynk-vr04-vendor-firmware takes BetaFPV's and
-          # CADDX's stock images apart with ubi_reader and python3's lzo module
-          # (the host's python3, not Buildroot's), and post-image packs the
-          # update image with lzo.
-          if [ "${NAME}" = betafpv_vr04 ]; then
+          # betafpv_vr04, betafpv_p1_vrx (the P1 ground units):
+          # artlynk-vr04-vendor-firmware takes BetaFPV's and CADDX's stock
+          # images apart with ubi_reader and python3's lzo module (the host's
+          # python3, not Buildroot's), and post-image packs the update image
+          # with lzo.
+          case "${NAME}" in
+          betafpv_vr04 | betafpv_p1_vrx)
             pipx install ubi_reader
             sudo apt install -y python3-lzo
-          fi
+            ;;
+          esac
 
           DEFCONFIG=${NAME}_defconfig bash build.sh
 
-          # The VR04's update image under a fixed name, so a release replaces
-          # it instead of collecting one per commit; the SD-card update and the
-          # stock update menu take any P1_GND_*.img.
-          for f in output/${NAME}_defconfig/images/P1_GND_*_OpenIPC_*.img; do
+          # A P1 ground unit's update image under a fixed name, so a release
+          # replaces it instead of collecting one per commit: the commit goes
+          # (<release>_OpenIPC_<sha>.img -> <release>_OpenIPC.img), the unit's
+          # tag stays (_OpenIPC-VRX_<sha>.img -> _OpenIPC-VRX.img). The
+          # SD-card update and the stock update menu take any P1_GND_*.img.
+          for f in output/${NAME}_defconfig/images/P1_GND_*_OpenIPC*_*.img; do
             if [ -f "$f" ]; then
-              mv "$f" "${f%_OpenIPC_*}_OpenIPC.img"
+              mv "$f" "${f%_*}.img"
             fi
           done
 
@@ -118,4 +123,4 @@ jobs:
             /mnt/workspace/output/${{ inputs.platform }}_defconfig/images/${{ inputs.platform }}_rootfs.squashfs
             /mnt/workspace/output/${{ inputs.platform }}_defconfig/images/${{ inputs.platform }}.tar.gz
             /mnt/workspace/output/${{ inputs.platform }}_defconfig/images/${{ inputs.platform }}_testboot.tar
-            /mnt/workspace/output/${{ inputs.platform }}_defconfig/images/P1_GND_*_OpenIPC.img
+            /mnt/workspace/output/${{ inputs.platform }}_defconfig/images/P1_GND_*_OpenIPC*.img
