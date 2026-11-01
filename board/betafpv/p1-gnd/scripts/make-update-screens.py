@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 """
-Makes the panel screens of the SD-card update (vr04-sdupdate) from the boot
+Makes the display screens of the SD-card update (vr04-sdupdate) from the boot
 splash: the logo smaller and higher, a line of text under it, and room for
 busybox fbsplash's progress bar (BAR_* in update-bar.ini). The PNGs are
-committed in overlay/usr/share/; rerun this after changing the splash or the
-text. Needs Pillow and the Noto Sans fonts.
+committed in each unit's overlay/usr/share/ (board/betafpv/<unit>), their
+wording names the unit; update-bar.ppm in p1-gnd's. Rerun this after changing
+the splash or the text. Needs Pillow and the Noto Sans fonts.
 
-  make-update-screens.py [--preview PERCENT DIR]
+  make-update-screens.py --unit vr04|p1-vrx [--preview PERCENT DIR]
 """
 import argparse
 import os
@@ -14,7 +15,10 @@ import os
 from PIL import Image, ImageChops, ImageDraw, ImageFont
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+BOARDS = os.path.join(HERE, "..", "..")
 SHARE = os.path.join(HERE, "..", "overlay", "usr", "share")
+# what "Do not power off the ..." calls the unit
+UNITS = {"vr04": "goggles", "p1-vrx": "receiver"}
 SPLASH = os.path.join(HERE, "..", "..", "..", "common", "overlay", "usr", "share", "splash.png")
 FONTS = "/usr/share/fonts/truetype/noto"
 BACKGROUND = (75, 95, 214)
@@ -22,11 +26,13 @@ BACKGROUND = (75, 95, 214)
 BAR = (460, 860, 1000, 44)
 BAR_COLOUR = (255, 255, 255)
 
-SCREENS = {
-    "update": ("Updating firmware", "Do not power off the goggles"),
-    "update-done": ("Update installed", "Restarting..."),
-    "update-failed": ("Update failed", "Starting as before - sysupgrade.log on the SD card says why"),
-}
+
+def screens(unit):
+    return {
+        "update": ("Updating firmware", f"Do not power off the {UNITS[unit]}"),
+        "update-done": ("Update installed", "Restarting..."),
+        "update-failed": ("Update failed", "Starting as before - sysupgrade.log on the SD card says why"),
+    }
 
 
 def logo():
@@ -67,19 +73,23 @@ def fbsplash_bar(im, percent):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    ap.add_argument("--unit", required=True, choices=sorted(UNITS),
+                    help="the board directory whose screens are made")
     ap.add_argument("--preview", nargs=2, metavar=("PERCENT", "DIR"),
                     help="also write the update screen with a simulated bar")
     a = ap.parse_args()
     art = logo()
-    for name, (title, line) in SCREENS.items():
-        path = os.path.join(SHARE, f"{name}.png")
+    out = os.path.join(BOARDS, a.unit, "overlay", "usr", "share")
+    os.makedirs(out, exist_ok=True)
+    for name, (title, line) in screens(a.unit).items():
+        path = os.path.join(out, f"{name}.png")
         screen(art, title, line).save(path, optimize=True)
         print(f"{path}: {os.path.getsize(path)} bytes")
     # fbsplash wants an image: one pixel of background where the screen has background
     with open(os.path.join(SHARE, "update-bar.ppm"), "wb") as f:
         f.write(b"P6\n1 1\n255\n" + bytes(BACKGROUND))
     if a.preview:
-        im = fbsplash_bar(screen(art, *SCREENS["update"]), int(a.preview[0]))
+        im = fbsplash_bar(screen(art, *screens(a.unit)["update"]), int(a.preview[0]))
         im.resize((960, 540)).save(os.path.join(a.preview[1], "update-preview.png"))
 
 

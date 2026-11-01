@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """
-Back up, install and switch the NAND slots of the BetaFPV VR04 goggles (P1
-GND, Artosyn PROXIMA 9311) over SSH: to this build RAM-booted through the
+Back up, install and switch the NAND slots of the BetaFPV P1 ground units
+(VR04 goggles, P1 HD VRX; P1 GND, Artosyn PROXIMA 9311) over SSH: to this
+build RAM-booted through the
 stock U-Boot (vr04-uboot-boot.py --mode ram) for a first install or a
 rescue, or to an installed OpenIPC. None of it goes through the stock
 firmware (its own backup: vr04-backup.py). Port of the OpenIPC builder's
@@ -12,7 +13,7 @@ ar9311-install.py (P1 air unit).
       into DIR, md5 checked on both ends, plus MD5SUMS and manifest.json
   vr04-install.py install IMAGE --backup DIR [--parts=LIST] [--set-password=PASS] [-n]
       an update image -- BetaFPV's stock P1_GND_*.img or this build's
-      P1_GND_*_OpenIPC_*.img -- into the slot not running, by the board's own
+      P1_GND_*_OpenIPC*.img -- into the slot not running, by the board's own
       /sbin/sysupgrade; the active slot stays as it is
   vr04-install.py activate a|b [--backup DIR]
       the slot the stock SPL boots next (openipc-bsel, the GPT's bit 47);
@@ -65,9 +66,12 @@ LAYOUT = [
 CHIP_SIZE = 0x8000000
 IMAGE_MAGIC = 0x4152544F
 STAGE = "/tmp/vr04-install.img"
-# P1_GND_VR04 up to 2.0.x, IGNORE since 2.1.x; not the VR04 PRO's image
-PRODUCTS = (b"P1_GND_VR04", b"IGNORE")
-MODEL = "Artosyn Proxima-9311 (BetaFPV VR04 goggle)"
+# P1_GND_VR04 / P1_GND_VRX up to 2.0.x, IGNORE since 2.1.x; not the VR04
+# PRO's image. The unit's own product and an OpenIPC image's device tree
+# model are checked on the unit (sysupgrade, activate).
+PRODUCTS = (b"P1_GND_VR04", b"P1_GND_VRX", b"IGNORE")
+MODELS = ("Artosyn Proxima-9311 (BetaFPV VR04 goggle)",
+          "Artosyn Proxima-9311 (BetaFPV P1 HD VRX)")
 
 # ---------------------------------------------------------------- SSH
 
@@ -224,7 +228,7 @@ def check_image(path):
     if hashlib.sha256(data[body:]).digest() != data[0x100 + hext:0x100 + hext + 32]:
         sys.exit(f"{path}: SHA-256 mismatch (damaged or truncated)")
     if data[0x80:0xc0].split(b"\0")[0] not in PRODUCTS:
-        sys.exit(f"{path}: not a VR04 goggle image")
+        sys.exit(f"{path}: not a P1 ground unit image")
     return data[0x2c:0x40].split(b"\0")[0].decode(errors="replace")
 
 
@@ -332,8 +336,14 @@ def activate(board, parts, slot, force=False, dry_run=False, backup=None):
         if not (kernel and model and ubi):
             sys.exit(f"slot {SLOT_NAME[slot]} is not complete (kernel {kernel}, dtb {model!r}, "
                      f"UBI {ubi}): not activated (--force activates it anyway)")
-        if ours and model != MODEL:
-            sys.exit(f"slot {SLOT_NAME[slot]}'s dtb is {model!r}, not the VR04 goggle's: not activated")
+        # an OpenIPC slot must be built for this unit: the device tree it
+        # runs now (a RAM boot of this build, or an installed OpenIPC)
+        running = board.text("tr -d '\\0' < /proc/device-tree/model").strip()
+        if ours and model != running:
+            sys.exit(f"slot {SLOT_NAME[slot]}'s dtb is {model!r}, this unit runs {running!r}: "
+                     f"not activated")
+        if ours and model not in MODELS:
+            sys.exit(f"slot {SLOT_NAME[slot]}'s dtb is {model!r}, no P1 ground unit's: not activated")
     if dry_run:
         print(f"dry run: slot {SLOT_NAME[slot]} would be activated "
               f"(now: {SLOT_NAME.get(board.active_slot(), '?')})")

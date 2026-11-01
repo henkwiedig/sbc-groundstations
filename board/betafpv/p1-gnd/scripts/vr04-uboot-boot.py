@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """
-Boot the BetaFPV VR04 goggles (P1 GND, Artosyn PROXIMA 9311) through their
-stock U-Boot over the serial console, without writing the NAND.
+Boot the BetaFPV P1 ground units (VR04 goggles, P1 HD VRX; P1 GND, Artosyn
+PROXIMA 9311) through their stock U-Boot over the serial console, without
+writing the NAND.
 
   vr04-uboot-boot.py probe                     what this U-Boot can load from
   vr04-uboot-boot.py ram --source sd|ymodem    this build in RAM (initramfs)
@@ -14,8 +15,8 @@ its control port (--trigger stock, /dev/ttyACM0); with this build running,
 $VR04_PASSWORD, default 12345); or by hand (--trigger none). U-Boot then sits
 in its USB download gadget; Ctrl-C on the console gives the prompt.
 
-ram: uImage, vr04.dtb and initrd.xz (else initrd.gz) of
-output/images/vr04-testboot (--bundle)
+ram: uImage, the one *.dtb (vr04.dtb, p1-vrx.dtb) and initrd.xz (else
+initrd.gz) of output/images/<unit>-testboot (--bundle; default the VR04's)
 come from the first partition of a FAT SD card (--source sd, copy the
 bundle's files there) or over the console with YMODEM (--source ymodem,
 needs lrzsz's sb; about a minute per 6 MB). Every load is checked by U-Boot's
@@ -49,7 +50,7 @@ RD_MAX = DTADDR - RDADDR
 # slot A in the stock layout
 KERNEL0, DTB0 = (0x0a40000, 0x600000), (0x1640000, 0x60000)
 ARGS = "earlycon console=ttyS0,1152000"
-NO_DRM = "modprobe.blacklist=artosyn_vo,artosyn_dsi,panel_qy45043a0"
+NO_DRM = "modprobe.blacklist=artosyn_vo,artosyn_dsi,panel_qy45043a0,lontium_lt9611ex"
 MAGIC = b"\xAA\x05\x00\x1D\x00\x00\xCC\xEB\xAA\x00"
 DENY = re.compile(r"\b(saveenv|env\s+save|env\s+erase|(nand|mtd|sf|mmc|ubi)\s+(write|erase|update|scrub)"
                   r"|gpt\s+write|fatwrite|ext4write|artosyn_hid_upgrade|usb_booting|ums|fastboot|dfu)\b")
@@ -214,10 +215,14 @@ def main():
     files = {}
     if a.mode == "ram":
         rd = "initrd.xz" if os.path.isfile(os.path.join(a.bundle, "initrd.xz")) else "initrd.gz"
-        for n in ("uImage", "vr04.dtb", rd):
+        dtbs = sorted(n for n in os.listdir(a.bundle) if n.endswith(".dtb")) if os.path.isdir(a.bundle) else []
+        if len(dtbs) != 1:
+            sys.exit(f"{a.bundle}: needs exactly one .dtb, has {dtbs}")
+        for n in ("uImage", dtbs[0], rd):
             files[n] = os.path.join(a.bundle, n)
             if not os.path.isfile(files[n]):
                 sys.exit(f"missing {files[n]}")
+        files["dtb"] = files[dtbs[0]]
         files["initrd"] = files[rd]
         if os.path.getsize(files["initrd"]) > RD_MAX:
             sys.exit("initrd.gz is larger than the RAM boot's window")
@@ -255,11 +260,11 @@ def main():
         dev, part = a.mmc.split(":")
         ub.cmd(f"mmc dev {dev}")
         ub.cmd("mmc rescan")
-        load_sd(ub, dev, part, DTADDR, files["vr04.dtb"])
+        load_sd(ub, dev, part, DTADDR, files["dtb"])
         load_sd(ub, dev, part, KADDR, files["uImage"])
         load_sd(ub, dev, part, RDADDR, files["initrd"])
     else:
-        load_ymodem(ub, DTADDR, files["vr04.dtb"])
+        load_ymodem(ub, DTADDR, files["dtb"])
         load_ymodem(ub, KADDR, files["uImage"])
         load_ymodem(ub, RDADDR, files["initrd"])
 
