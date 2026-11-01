@@ -1,0 +1,4 @@
+# betafpv_p1_vrx on top of board/betafpv/p1-gnd/linux.fragment: the HDMI
+# bridge (linux-patches/0003, next to ml-kernel's artosyn display drivers,
+# which are modules too).
+CONFIG_DRM_LONTIUM_LT9611EX=m

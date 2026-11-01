@@ -1,0 +1,899 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Henk Wiedig <henk@wiedig.de>
+Date: Sun, 1 Nov 2026 21:54:24 +0100
+Subject: [PATCH 3/3] drm/artosyn: Lontium LT9611EX DSI to HDMI bridge (BetaFPV
+ P1 HD VRX)
+
+The P1 HD VRX is the VR04 goggles' board with a Lontium LT9611EX where the
+panel is. The chip's own firmware measures the DSI video and drives the
+matching HDMI mode; the host resets it and, over I2C (0x41, page 0xE0
+mailbox), switches the output on/off and HDMI/DVI and reads HPD and EDID.
+All after stock's libpn_lt9611ex.so (P1_GND 2.1.4): reset GPIO 107 active
+low (20 ms high, 100 ms low, high, 500 ms), chip ID at page 0xE1, the
+mailbox handshake, the EDID by RH2: (length) and RH3: + n (32-byte chunks).
+
+The connector lists the sink's modes from its EDID (re-read at every probe)
+as far as the chain drives them, the sink's preferred one marked, so
+userspace picks a mode as on any HDMI output. The SoC sends stock's
+DSI-side timing for the chosen HDMI mode - the same active size and frame
+rate with longer horizontal blanking, from libpn_lt9611ex.so's attrs for
+1080p60/50/30 and 720p60/50 - which atomic_check puts into the adjusted mode
+for artosyn_vo/artosyn_dsi (artosyn,timing-from-mode). A mode is listed when
+the "pixel" clock reaches its DSI-side rate (clk_round_rate); with today's
+CGU driver (+-5 percent around the boot rate) that is 1080p60. Without an
+EDID the list is the table's CEA modes the clock reaches, 1080p60 preferred;
+when the sink's preferred mode is not drivable, the first drivable one in
+the table's order becomes it.
+
+Stock's VRX 2.0.8 opened a disabled I2C bus, so the chip also runs without
+I2C: when it does not answer, the driver warns and drives the DSI side
+alone. It makes a DSI device on the host (4 lanes RGB888 video, as the
+panel) and, since artosyn_vo attaches the chain without NO_CONNECTOR, the
+HDMI-A connector, always connected (the chip follows the sink's hot plug).
+
+sysfs chip_id, i2c_ok, hpd, mailbox and reset and the module options
+skip_i2c, use_edid, hdmi_mode, dsi_mode and reset_ms are there for bring-up
+without the unit at hand.
+---
+ drivers/gpu/drm/artosyn/Kconfig            |  13 +
+ drivers/gpu/drm/artosyn/Makefile           |   1 +
+ drivers/gpu/drm/artosyn/lontium-lt9611ex.c | 820 +++++++++++++++++++++
+ 3 files changed, 834 insertions(+)
+ create mode 100644 drivers/gpu/drm/artosyn/lontium-lt9611ex.c
+
+diff --git a/drivers/gpu/drm/artosyn/Kconfig b/drivers/gpu/drm/artosyn/Kconfig
+index 07d312e..d5f425a 100644
+--- a/drivers/gpu/drm/artosyn/Kconfig
++++ b/drivers/gpu/drm/artosyn/Kconfig
+@@ -20,3 +20,16 @@ config DRM_ARTOSYN
+ 	  display controller (CRTC), the DesignWare MIPI-DSI host (via the mainline
+ 	  dw-mipi-dsi bridge), and the QY45043A0 1080p60 panel. See
+ 	  ../../../../../docs/display-backlight.md.
++
++config DRM_LONTIUM_LT9611EX
++	tristate "Lontium LT9611EX MIPI-DSI to HDMI bridge (BetaFPV P1 HD VRX)"
++	depends on DRM_ARTOSYN && I2C && OF
++	select DRM_KMS_HELPER
++	select DRM_MIPI_DSI
++	help
++	  The HDMI output of the BetaFPV P1 HD VRX: a Lontium LT9611EX on the
++	  Artosyn DSI host instead of the goggles' panel. The chip's own
++	  firmware detects the DSI video and drives HDMI; the driver resets
++	  it, makes the DSI device and the HDMI connector, and switches the
++	  output through the chip's I2C mailbox when the chip answers there.
++	  Use with artosyn,timing-from-mode on the VO and DSI nodes.
+diff --git a/drivers/gpu/drm/artosyn/Makefile b/drivers/gpu/drm/artosyn/Makefile
+index dfdc81c..1cc405a 100644
+--- a/drivers/gpu/drm/artosyn/Makefile
++++ b/drivers/gpu/drm/artosyn/Makefile
+@@ -2,3 +2,4 @@
+ obj-$(CONFIG_DRM_ARTOSYN) += artosyn_vo.o
+ obj-$(CONFIG_DRM_ARTOSYN) += artosyn_dsi.o
+ obj-$(CONFIG_DRM_ARTOSYN) += panel-qy45043a0.o
++obj-$(CONFIG_DRM_LONTIUM_LT9611EX) += lontium-lt9611ex.o
+diff --git a/drivers/gpu/drm/artosyn/lontium-lt9611ex.c b/drivers/gpu/drm/artosyn/lontium-lt9611ex.c
+new file mode 100644
+index 0000000..15b6261
+--- /dev/null
++++ b/drivers/gpu/drm/artosyn/lontium-lt9611ex.c
+@@ -0,0 +1,820 @@
++// SPDX-License-Identifier: GPL-2.0
++/*
++ * lontium-lt9611ex.c - DRM bridge for the Lontium LT9611EX MIPI-DSI to HDMI converter of the
++ * BetaFPV P1 HD VRX (P1 ground unit, Artosyn Proxima-9311): the VO -> DSI host chain of the
++ * VR04 goggles, with this chip where their panel is.
++ *
++ * The LT9611EX runs its own firmware: it measures the incoming DSI video (active size, line
++ * and frame rate), matches it to a standard HDMI mode and generates that on its HDMI side.
++ * The host feeds it DSI video and, over I2C, can switch the HDMI output on/off and between
++ * HDMI and DVI and read the sink's HPD state and EDID, through a mailbox to that firmware.
++ * Everything here follows stock's libpn_lt9611ex.so (P1_GND 2.1.4):
++ *
++ *  - I2C 7-bit 0x41, plain 8-bit registers, 0xFF selects the register page; stock opens
++ *    /dev/i2c-0 (the DS1307 RTC's bus). The chip ID is at page 0xE1 regs 0/1 after
++ *    0xFF=0x80, 0xEE=0x01; stock only checks that neither reads 0xff.
++ *  - reset: GPIO 107, active low; stock drives it high 20 ms, low 100 ms, high, and waits
++ *    500 ms for the firmware.
++ *  - mailbox, page 0xE0: 0xDE=1, wait for 0xAE==1, the five command bytes into 0xB0..0xB4,
++ *    0xDE=2, wait for 0xAE==2, the reply from 0x85 on (stock waits up to 100 x 1 ms each).
++ *    "WH1:E"/"WH1:D" HDMI output on/off, "WH2:H"/"WH2:D" HDMI or DVI, "RH1:" HPD state,
++ *    "RH2:" the EDID's length (reply bytes 4-5, big endian), "RH3:" + n its n-th 32 bytes
++ *    (reply bytes 5..36).
++ *  - the HPD/IRQ line is GPIO 67.
++ *
++ * Modes: the connector lists the sink's HDMI modes, from its EDID, as far as this chain
++ * drives them, with the sink's preferred one marked; userspace picks one as on any HDMI
++ * output (PixelPilot: the --screen-mode one, else the preferred one). The SoC does not send
++ * the HDMI timing itself but stock's DSI-side timing for it, the same active size and frame
++ * rate with other blanking (lt9611ex_timings, from the attrs of libpn_lt9611ex.so): atomic_check
++ * puts that into the adjusted mode, which artosyn_vo and artosyn_dsi scan with
++ * artosyn,timing-from-mode, and the chip re-times it to the HDMI mode. A mode is listed when
++ * the pixel clock reaches its DSI-side rate (the "pixel" clock of the DT node, asked with
++ * clk_round_rate). Without an EDID (no answer on I2C, no sink, a read error) the list is the
++ * table's CEA modes that the clock reaches, 1080p60 preferred.
++ *
++ * Stock's VRX 2.0.8 opened an I2C bus its device tree disables, so the chip also works
++ * without any I2C: when the chip does not answer, this driver warns and carries on with
++ * the DSI side alone. The connector is always "connected" (PixelPilot needs a connected
++ * connector; the chip itself follows the sink's hot plug); the EDID is read whenever
++ * userspace probes the connector.
++ *
++ * sysfs (on the I2C device): chip_id, i2c_ok, hpd (the GPIO, and "RH1:"'s reply), mailbox
++ * (write a command such as WH1:E, read the last command and reply), reset (write 1). The
++ * EDID itself is the connector's (/sys/class/drm/card0-HDMI-A-1/edid).
++ */
++#include <linux/clk.h>
++#include <linux/delay.h>
++#include <linux/gpio/consumer.h>
++#include <linux/i2c.h>
++#include <linux/module.h>
++#include <linux/mutex.h>
++#include <linux/of.h>
++#include <linux/of_graph.h>
++
++#include <drm/drm_atomic.h>
++#include <drm/drm_atomic_helper.h>
++#include <drm/drm_bridge.h>
++#include <drm/drm_connector.h>
++#include <drm/drm_edid.h>
++#include <drm/drm_mipi_dsi.h>
++#include <drm/drm_modes.h>
++#include <drm/drm_print.h>
++#include <drm/drm_probe_helper.h>
++
++#include "artosyn_pclk.h"
++
++#define LT9611EX_PAGE		0xff
++#define LT9611EX_MB_CTRL	0xde	/* page 0xE0: 1 = command coming, 2 = command written */
++#define LT9611EX_MB_STATE	0xae	/* page 0xE0: follows MB_CTRL once the firmware took it */
++#define LT9611EX_MB_CMD		0xb0	/* page 0xE0: 5 command bytes */
++#define LT9611EX_MB_REPLY	0x85	/* page 0xE0: reply bytes */
++#define LT9611EX_MB_LEN		5
++#define LT9611EX_MB_REPLY_MAX	37	/* RH3: 5 bytes, then 32 of EDID */
++#define LT9611EX_MB_SHOW	8	/* reply bytes kept for the mailbox attribute */
++#define LT9611EX_MB_TRIES	100
++#define LT9611EX_EDID_MAX	1024	/* stock's limit */
++#define LT9611EX_EDID_CHUNK	32
++
++static bool skip_i2c;
++module_param(skip_i2c, bool, 0444);
++MODULE_PARM_DESC(skip_i2c, "never talk to the chip over I2C (reset and DSI only)");
++
++static bool use_edid = true;
++module_param(use_edid, bool, 0644);
++MODULE_PARM_DESC(use_edid, "list the sink's modes from its EDID (default); off: the table's CEA modes");
++
++static unsigned int reset_ms = 500;
++module_param(reset_ms, uint, 0644);
++MODULE_PARM_DESC(reset_ms, "wait after releasing reset, ms (stock: 500)");
++
++static bool hdmi_mode = true;
++module_param(hdmi_mode, bool, 0644);
++MODULE_PARM_DESC(hdmi_mode, "at enable: WH2:H (HDMI, default) or WH2:D (DVI)");
++
++/*
++ * The DSI video mode the host sends (dw-mipi-dsi programs VID_MODE_CFG from the DSI
++ * device's flags when it enables video): stock's is non-burst with sync events (0x3f01).
++ */
++static unsigned int dsi_mode;
++module_param(dsi_mode, uint, 0444);
++MODULE_PARM_DESC(dsi_mode, "DSI video mode: 0 non-burst sync events (stock), 1 non-burst sync pulses, 2 burst");
++
++/*
++ * Stock's DSI-side timing per HDMI mode (libpn_lt9611ex.so P1_GND 2.1.4, the attr table's
++ * VO sync, porches exclusive of the sync): the CEA line and frame rate, with more horizontal
++ * blanking. The pixel clock is htotal * vtotal * frame rate (1080p60: 2293 x 1125 x 60 =
++ * 154.7775 MHz); artosyn_dsi derives stock's DSI line timing and lane rate from it (1080p60:
++ * hsa 44, hbp 148, line 1720 byte clocks, 928.8 Mbps). Stock also has 2160p24/25/30 (more
++ * than the VO's 1920x1080), 1280x960@60, 640x480@60, 720x480@60 and 720x576@50 (not here).
++ * The first entry is the preferred mode when the sink's EDID names none this chain drives.
++ */
++struct lt9611ex_timing {
++	u16 hdisplay, hfp, hsync, hbp;
++	u16 vdisplay, vfp, vsync, vbp;
++	u8 refresh;	/* Hz */
++	u8 vic;		/* the HDMI mode's CEA VIC, for the list without an EDID */
++};
++
++static const struct lt9611ex_timing lt9611ex_timings[] = {
++	{ 1920, 117, 59, 197, 1080, 4, 5, 36, 60, 16 },	/* attr 3, 154.7775 MHz */
++	{ 1920, 704, 60, 196, 1080, 4, 5, 36, 50, 31 },	/* attr 4, 162 MHz */
++	{ 1280, 148, 52, 292, 720, 5, 5, 20, 60, 4 },	/* attr 5, 79.74 MHz */
++	{ 1280, 586, 53, 293, 720, 5, 5, 20, 50, 19 },	/* attr 6, 82.95 MHz */
++	{ 1920, 117, 59, 197, 1080, 4, 5, 36, 30, 34 },	/* attr 11, 77.389 MHz */
++};
++
++struct lt9611ex {
++	struct device		*dev;
++	struct i2c_client	*client;
++	struct drm_bridge	bridge;
++	struct drm_connector	connector;
++	struct device_node	*dsi_node;
++	struct gpio_desc	*reset;
++	struct gpio_desc	*hpd;
++	struct clk		*pclk;		/* the VO's pixel clock, only asked what it reaches */
++	struct mutex		lock;		/* register page + mailbox */
++	bool			i2c_ok;
++	u8			chip_id[2];
++	char			last_cmd[LT9611EX_MB_LEN + 1];
++	u8			last_reply[LT9611EX_MB_SHOW];
++	int			last_ret;
++	u8			edid[LT9611EX_EDID_MAX];
++	unsigned int		edid_len;
++};
++
++static inline struct lt9611ex *bridge_to_lt9611ex(struct drm_bridge *bridge)
++{
++	return container_of(bridge, struct lt9611ex, bridge);
++}
++
++static inline struct lt9611ex *connector_to_lt9611ex(struct drm_connector *connector)
++{
++	return container_of(connector, struct lt9611ex, connector);
++}
++
++/* ---------------------------------------------------------------- modes */
++
++static unsigned int lt9611ex_timing_htotal(const struct lt9611ex_timing *t)
++{
++	return t->hdisplay + t->hfp + t->hsync + t->hbp;
++}
++
++static unsigned int lt9611ex_timing_vtotal(const struct lt9611ex_timing *t)
++{
++	return t->vdisplay + t->vfp + t->vsync + t->vbp;
++}
++
++/* the table's entry for an HDMI mode: progressive, the same active size, the frame rate within
++ * 0.5 percent (60 and 59.94 Hz are both the 60 Hz entry)
++ */
++static const struct lt9611ex_timing *lt9611ex_find(const struct drm_display_mode *mode)
++{
++	unsigned int i;
++	u64 mhz;
++
++	if (mode->flags & DRM_MODE_FLAG_INTERLACE || !mode->htotal || !mode->vtotal)
++		return NULL;
++	mhz = div_u64((u64)mode->clock * 1000000, mode->htotal * mode->vtotal);
++
++	for (i = 0; i < ARRAY_SIZE(lt9611ex_timings); i++) {
++		const struct lt9611ex_timing *t = &lt9611ex_timings[i];
++		u64 want = (u64)t->refresh * 1000;
++
++		if (mode->hdisplay == t->hdisplay && mode->vdisplay == t->vdisplay &&
++		    abs_diff(mhz, want) * 200 <= want)
++			return t;
++	}
++	return NULL;
++}
++
++/* The DSI-side mode for an HDMI mode: the table's timing at the HDMI mode's exact frame rate. */
++static void lt9611ex_scan_mode(const struct lt9611ex_timing *t, const struct drm_display_mode *mode,
++			       struct drm_display_mode *scan)
++{
++	u32 ht = lt9611ex_timing_htotal(t), vt = lt9611ex_timing_vtotal(t);
++
++	memset(scan, 0, sizeof(*scan));
++	scan->hdisplay = t->hdisplay;
++	scan->hsync_start = t->hdisplay + t->hfp;
++	scan->hsync_end = scan->hsync_start + t->hsync;
++	scan->htotal = ht;
++	scan->vdisplay = t->vdisplay;
++	scan->vsync_start = t->vdisplay + t->vfp;
++	scan->vsync_end = scan->vsync_start + t->vsync;
++	scan->vtotal = vt;
++	scan->clock = DIV_ROUND_CLOSEST_ULL((u64)mode->clock * ht * vt,
++					    (u64)mode->htotal * mode->vtotal);
++	scan->flags = DRM_MODE_FLAG_PHSYNC | DRM_MODE_FLAG_PVSYNC;
++	scan->type = mode->type;
++	drm_mode_set_name(scan);
++	drm_mode_set_crtcinfo(scan, 0);
++}
++
++/* whether the pixel clock reaches the DSI-side rate of an HDMI mode, to 0.1 percent */
++static bool lt9611ex_clock_ok(struct lt9611ex *lt, const struct lt9611ex_timing *t,
++			      const struct drm_display_mode *mode)
++{
++	struct drm_display_mode scan;
++	unsigned long model;
++	long r;
++
++	if (!lt->pclk)
++		return true;
++	lt9611ex_scan_mode(t, mode, &scan);
++	model = mult_frac((unsigned long)scan.clock * 1000, AR_PCLK_MODEL_PPM, 1000000);
++	r = clk_round_rate(lt->pclk, model);
++	return r > 0 && abs_diff((unsigned long)r, model) <= model / 1000;
++}
++
++static enum drm_mode_status lt9611ex_mode_status(struct lt9611ex *lt,
++						 const struct drm_display_mode *mode)
++{
++	const struct lt9611ex_timing *t = lt9611ex_find(mode);
++
++	if (!t)
++		return MODE_BAD;
++	return lt9611ex_clock_ok(lt, t, mode) ? MODE_OK : MODE_CLOCK_RANGE;
++}
++
++/* ---------------------------------------------------------------- chip access */
++
++static int lt9611ex_write(struct lt9611ex *lt, u8 reg, u8 val)
++{
++	return i2c_smbus_write_byte_data(lt->client, reg, val);
++}
++
++static int lt9611ex_read(struct lt9611ex *lt, u8 reg)
++{
++	return i2c_smbus_read_byte_data(lt->client, reg);
++}
++
++/* poll page 0xE0's MB_STATE for @want, stock's 100 x 1 ms */
++static int lt9611ex_mb_wait(struct lt9611ex *lt, int want)
++{
++	int i, v = -EIO;
++
++	for (i = 0; i < LT9611EX_MB_TRIES; i++) {
++		v = lt9611ex_read(lt, LT9611EX_MB_STATE);
++		if (v == want)
++			return 0;
++		usleep_range(1000, 1200);
++	}
++	return v < 0 ? v : -ETIMEDOUT;
++}
++
++/*
++ * One mailbox command (5 bytes, e.g. "WH1:E", "RH1:\0") and @n reply bytes (at most
++ * LT9611EX_MB_REPLY_MAX). A handshake that times out is reported, but like stock the command
++ * is written and the reply read anyway.
++ */
++static int lt9611ex_mailbox(struct lt9611ex *lt, const u8 *cmd, u8 *reply, int n)
++{
++	int i, ret, wait1 = 0, wait2 = 0, v;
++
++	if (!lt->i2c_ok)
++		return -ENODEV;
++	if (n > LT9611EX_MB_REPLY_MAX)
++		return -EINVAL;
++
++	mutex_lock(&lt->lock);
++	ret = lt9611ex_write(lt, LT9611EX_PAGE, 0xe0);
++	if (!ret)
++		ret = lt9611ex_write(lt, LT9611EX_MB_CTRL, 0x01);
++	if (ret)
++		goto out;
++	wait1 = lt9611ex_mb_wait(lt, 1);
++	for (i = 0; i < LT9611EX_MB_LEN && !ret; i++)
++		ret = lt9611ex_write(lt, LT9611EX_MB_CMD + i, cmd[i]);
++	if (!ret)
++		ret = lt9611ex_write(lt, LT9611EX_MB_CTRL, 0x02);
++	if (ret)
++		goto out;
++	wait2 = lt9611ex_mb_wait(lt, 2);
++	for (i = 0; i < n; i++) {
++		v = lt9611ex_read(lt, LT9611EX_MB_REPLY + i);
++		if (v < 0) {
++			ret = v;
++			goto out;
++		}
++		reply[i] = v;
++	}
++	ret = wait1 ? wait1 : wait2;
++
++out:
++	memcpy(lt->last_cmd, cmd, LT9611EX_MB_LEN);
++	lt->last_cmd[LT9611EX_MB_LEN] = 0;
++	memset(lt->last_reply, 0, sizeof(lt->last_reply));
++	if (reply && n > 0)
++		memcpy(lt->last_reply, reply, min_t(int, n, LT9611EX_MB_SHOW));
++	lt->last_ret = ret;
++	mutex_unlock(&lt->lock);
++	return ret;
++}
++
++static int lt9611ex_command(struct lt9611ex *lt, const char *cmd, int reply_len)
++{
++	u8 c[LT9611EX_MB_LEN] = { 0 }, r[LT9611EX_MB_REPLY_MAX];
++	int ret;
++
++	memcpy(c, cmd, min_t(size_t, strlen(cmd), LT9611EX_MB_LEN));
++	ret = lt9611ex_mailbox(lt, c, r, reply_len);
++	if (ret && ret != -ENODEV)
++		dev_warn(lt->dev, "mailbox %.5s: %d\n", cmd, ret);
++	return ret;
++}
++
++/* stock's LT9611EX_Read_EDID: the length by "RH2:", then 32-byte chunks by "RH3:" + n */
++static int lt9611ex_read_edid(struct lt9611ex *lt)
++{
++	u8 cmd[LT9611EX_MB_LEN] = { 'R', 'H', '2', ':', 0 }, r[LT9611EX_MB_REPLY_MAX];
++	unsigned int len, i;
++	int ret;
++
++	lt->edid_len = 0;
++	ret = lt9611ex_mailbox(lt, cmd, r, 6);
++	if (ret)
++		return ret;
++	len = r[4] << 8 | r[5];
++	if (len < EDID_LENGTH)
++		return -ENODATA;
++	len = min_t(unsigned int, len, LT9611EX_EDID_MAX);
++
++	cmd[2] = '3';
++	for (i = 0; i * LT9611EX_EDID_CHUNK < len; i++) {
++		cmd[4] = i;
++		ret = lt9611ex_mailbox(lt, cmd, r, 5 + LT9611EX_EDID_CHUNK);
++		if (ret)
++			return ret;
++		memcpy(lt->edid + i * LT9611EX_EDID_CHUNK, r + 5, LT9611EX_EDID_CHUNK);
++	}
++	lt->edid_len = len;
++	return 0;
++}
++
++static int lt9611ex_edid_block(void *data, u8 *buf, unsigned int block, size_t len)
++{
++	struct lt9611ex *lt = data;
++
++	if ((block + 1) * len > lt->edid_len)
++		return -EIO;
++	memcpy(buf, lt->edid + block * len, len);
++	return 0;
++}
++
++/* stock's SAMPLE_VO_LT9611EX_GPIO_Init pulse (logical values: the line is active low) */
++static void lt9611ex_reset(struct lt9611ex *lt)
++{
++	if (!lt->reset)
++		return;
++	gpiod_set_value_cansleep(lt->reset, 0);
++	msleep(20);
++	gpiod_set_value_cansleep(lt->reset, 1);
++	msleep(100);
++	gpiod_set_value_cansleep(lt->reset, 0);
++	msleep(reset_ms);
++}
++
++static void lt9611ex_read_chip_id(struct lt9611ex *lt)
++{
++	int a = -ENODEV, b = -ENODEV;
++
++	lt->i2c_ok = false;
++	if (skip_i2c) {
++		dev_info(lt->dev, "skip_i2c: DSI side only\n");
++		return;
++	}
++
++	mutex_lock(&lt->lock);
++	if (!lt9611ex_write(lt, LT9611EX_PAGE, 0x80) && !lt9611ex_write(lt, 0xee, 0x01) &&
++	    !lt9611ex_write(lt, LT9611EX_PAGE, 0xe1)) {
++		a = lt9611ex_read(lt, 0x00);
++		b = lt9611ex_read(lt, 0x01);
++	}
++	mutex_unlock(&lt->lock);
++
++	if (a < 0 || b < 0 || a == 0xff || b == 0xff) {
++		dev_warn(lt->dev, "no answer on I2C (%d, %d): running the chip without I2C, DSI side only\n",
++			 a, b);
++		return;
++	}
++	lt->chip_id[0] = a;
++	lt->chip_id[1] = b;
++	lt->i2c_ok = true;
++	dev_info(lt->dev, "chip ID 0x%02x 0x%02x\n", a, b);
++}
++
++/* ---------------------------------------------------------------- connector */
++
++/* the table's CEA modes the clock reaches; the first of them preferred */
++static int lt9611ex_add_table_modes(struct lt9611ex *lt, struct drm_connector *connector)
++{
++	unsigned int i;
++	int n = 0;
++
++	for (i = 0; i < ARRAY_SIZE(lt9611ex_timings); i++) {
++		struct drm_display_mode *mode;
++
++		mode = drm_display_mode_from_cea_vic(connector->dev, lt9611ex_timings[i].vic);
++		if (!mode)
++			continue;
++		if (lt9611ex_mode_status(lt, mode) != MODE_OK) {
++			drm_mode_destroy(connector->dev, mode);
++			continue;
++		}
++		mode->type = DRM_MODE_TYPE_DRIVER | (n ? 0 : DRM_MODE_TYPE_PREFERRED);
++		drm_mode_probed_add(connector, mode);
++		n++;
++	}
++	return n;
++}
++
++/*
++ * After the EDID's modes went in: the sink's preferred one stays preferred if this chain
++ * drives it, else the first drivable one in the table's order (1080p60 first) becomes it.
++ * The others are pruned by mode_valid. Whether any of them is drivable at all.
++ */
++static bool lt9611ex_fix_preferred(struct lt9611ex *lt, struct drm_connector *connector)
++{
++	struct drm_display_mode *mode, *best = NULL;
++	unsigned int i;
++
++	list_for_each_entry(mode, &connector->probed_modes, head)
++		if (mode->type & DRM_MODE_TYPE_PREFERRED && lt9611ex_mode_status(lt, mode) == MODE_OK)
++			return true;
++
++	for (i = 0; i < ARRAY_SIZE(lt9611ex_timings) && !best; i++)
++		list_for_each_entry(mode, &connector->probed_modes, head)
++			if (lt9611ex_find(mode) == &lt9611ex_timings[i] &&
++			    lt9611ex_mode_status(lt, mode) == MODE_OK) {
++				best = mode;
++				break;
++			}
++	if (!best)
++		return false;
++
++	list_for_each_entry(mode, &connector->probed_modes, head)
++		mode->type &= ~DRM_MODE_TYPE_PREFERRED;
++	best->type |= DRM_MODE_TYPE_PREFERRED;
++	return true;
++}
++
++static int lt9611ex_connector_get_modes(struct drm_connector *connector)
++{
++	struct lt9611ex *lt = connector_to_lt9611ex(connector);
++	const struct drm_edid *drm_edid = NULL;
++	int n = 0, ret;
++
++	if (lt->i2c_ok && use_edid) {
++		ret = lt9611ex_read_edid(lt);
++		if (!ret)
++			drm_edid = drm_edid_read_custom(connector, lt9611ex_edid_block, lt);
++		else
++			dev_dbg(lt->dev, "no EDID: %d\n", ret);
++	}
++	drm_edid_connector_update(connector, drm_edid);
++	if (drm_edid) {
++		n = drm_edid_connector_add_modes(connector);
++		drm_edid_free(drm_edid);
++	}
++
++	if (n && lt9611ex_fix_preferred(lt, connector))
++		return n;
++	if (n)
++		dev_info(lt->dev, "the sink's EDID has no mode this chain drives: the table's modes\n");
++	return n + lt9611ex_add_table_modes(lt, connector);
++}
++
++static enum drm_mode_status lt9611ex_connector_mode_valid(struct drm_connector *connector,
++							  const struct drm_display_mode *mode)
++{
++	return lt9611ex_mode_status(connector_to_lt9611ex(connector), mode);
++}
++
++static const struct drm_connector_helper_funcs lt9611ex_connector_helper_funcs = {
++	.get_modes = lt9611ex_connector_get_modes,
++	.mode_valid = lt9611ex_connector_mode_valid,
++};
++
++/* Always connected: the chip follows the sink's hot plug on its own; see the top. */
++static enum drm_connector_status
++lt9611ex_connector_detect(struct drm_connector *connector, bool force)
++{
++	return connector_status_connected;
++}
++
++static const struct drm_connector_funcs lt9611ex_connector_funcs = {
++	.reset = drm_atomic_helper_connector_reset,
++	.detect = lt9611ex_connector_detect,
++	.fill_modes = drm_helper_probe_single_connector_modes,
++	.destroy = drm_connector_cleanup,
++	.atomic_duplicate_state = drm_atomic_helper_connector_duplicate_state,
++	.atomic_destroy_state = drm_atomic_helper_connector_destroy_state,
++};
++
++/* ---------------------------------------------------------------- bridge */
++
++/*
++ * artosyn_vo attaches the chain without DRM_BRIDGE_ATTACH_NO_CONNECTOR (as for its panel,
++ * through the panel bridge), so the last bridge makes the connector.
++ */
++static int lt9611ex_bridge_attach(struct drm_bridge *bridge, struct drm_encoder *encoder,
++				  enum drm_bridge_attach_flags flags)
++{
++	struct lt9611ex *lt = bridge_to_lt9611ex(bridge);
++	struct drm_connector *connector = &lt->connector;
++	int ret;
++
++	if (flags & DRM_BRIDGE_ATTACH_NO_CONNECTOR)
++		return 0;
++
++	drm_connector_helper_add(connector, &lt9611ex_connector_helper_funcs);
++	ret = drm_connector_init(bridge->dev, connector, &lt9611ex_connector_funcs,
++				 DRM_MODE_CONNECTOR_HDMIA);
++	if (ret) {
++		dev_err(lt->dev, "connector init failed: %d\n", ret);
++		return ret;
++	}
++	drm_connector_attach_encoder(connector, encoder);
++
++	if (bridge->dev->registered) {
++		if (connector->funcs->reset)
++			connector->funcs->reset(connector);
++		drm_connector_register(connector);
++	}
++	return 0;
++}
++
++static void lt9611ex_bridge_detach(struct drm_bridge *bridge)
++{
++	struct lt9611ex *lt = bridge_to_lt9611ex(bridge);
++
++	if (lt->connector.dev)
++		drm_connector_cleanup(&lt->connector);
++}
++
++static enum drm_mode_status lt9611ex_bridge_mode_valid(struct drm_bridge *bridge,
++						       const struct drm_display_info *info,
++						       const struct drm_display_mode *mode)
++{
++	return lt9611ex_mode_status(bridge_to_lt9611ex(bridge), mode);
++}
++
++/* the HDMI mode userspace set -> stock's DSI-side timing for it, which the VO and DSI scan */
++static int lt9611ex_bridge_atomic_check(struct drm_bridge *bridge,
++					struct drm_bridge_state *bridge_state,
++					struct drm_crtc_state *crtc_state,
++					struct drm_connector_state *conn_state)
++{
++	const struct lt9611ex_timing *t = lt9611ex_find(&crtc_state->mode);
++
++	if (!t)
++		return -EINVAL;
++	lt9611ex_scan_mode(t, &crtc_state->mode, &crtc_state->adjusted_mode);
++	return 0;
++}
++
++static void lt9611ex_bridge_atomic_enable(struct drm_bridge *bridge, struct drm_atomic_state *state)
++{
++	struct lt9611ex *lt = bridge_to_lt9611ex(bridge);
++
++	if (!lt->i2c_ok)
++		return;
++	lt9611ex_command(lt, hdmi_mode ? "WH2:H" : "WH2:D", 5);
++	lt9611ex_command(lt, "WH1:E", 4);
++}
++
++static void lt9611ex_bridge_atomic_disable(struct drm_bridge *bridge, struct drm_atomic_state *state)
++{
++	struct lt9611ex *lt = bridge_to_lt9611ex(bridge);
++
++	if (lt->i2c_ok)
++		lt9611ex_command(lt, "WH1:D", 4);
++}
++
++static const struct drm_bridge_funcs lt9611ex_bridge_funcs = {
++	.attach			= lt9611ex_bridge_attach,
++	.detach			= lt9611ex_bridge_detach,
++	.mode_valid		= lt9611ex_bridge_mode_valid,
++	.atomic_check		= lt9611ex_bridge_atomic_check,
++	.atomic_enable		= lt9611ex_bridge_atomic_enable,
++	.atomic_disable		= lt9611ex_bridge_atomic_disable,
++	.atomic_duplicate_state	= drm_atomic_helper_bridge_duplicate_state,
++	.atomic_destroy_state	= drm_atomic_helper_bridge_destroy_state,
++	.atomic_reset		= drm_atomic_helper_bridge_reset,
++};
++
++/* ---------------------------------------------------------------- sysfs */
++
++static ssize_t chip_id_show(struct device *dev, struct device_attribute *attr, char *buf)
++{
++	struct lt9611ex *lt = dev_get_drvdata(dev);
++
++	return lt->i2c_ok ? sysfs_emit(buf, "0x%02x 0x%02x\n", lt->chip_id[0], lt->chip_id[1]) :
++		sysfs_emit(buf, "none\n");
++}
++static DEVICE_ATTR_RO(chip_id);
++
++static ssize_t i2c_ok_show(struct device *dev, struct device_attribute *attr, char *buf)
++{
++	struct lt9611ex *lt = dev_get_drvdata(dev);
++
++	return sysfs_emit(buf, "%d\n", lt->i2c_ok);
++}
++static DEVICE_ATTR_RO(i2c_ok);
++
++static ssize_t hpd_show(struct device *dev, struct device_attribute *attr, char *buf)
++{
++	struct lt9611ex *lt = dev_get_drvdata(dev);
++	u8 cmd[LT9611EX_MB_LEN] = { 'R', 'H', '1', ':', 0 }, r[LT9611EX_MB_LEN] = { 0 };
++	int gpio = lt->hpd ? gpiod_get_value_cansleep(lt->hpd) : -ENODEV;
++	int ret = lt9611ex_mailbox(lt, cmd, r, LT9611EX_MB_LEN);
++
++	return sysfs_emit(buf, "gpio %d mailbox %d %*ph\n", gpio, ret, LT9611EX_MB_LEN, r);
++}
++static DEVICE_ATTR_RO(hpd);
++
++static ssize_t mailbox_show(struct device *dev, struct device_attribute *attr, char *buf)
++{
++	struct lt9611ex *lt = dev_get_drvdata(dev);
++	ssize_t n;
++
++	mutex_lock(&lt->lock);
++	n = sysfs_emit(buf, "%s %d %*ph\n", lt->last_cmd[0] ? lt->last_cmd : "-", lt->last_ret,
++		       LT9611EX_MB_SHOW, lt->last_reply);
++	mutex_unlock(&lt->lock);
++	return n;
++}
++
++/* a command of up to five characters, e.g. WH1:E; R... commands end in a zero byte */
++static ssize_t mailbox_store(struct device *dev, struct device_attribute *attr,
++			     const char *buf, size_t len)
++{
++	struct lt9611ex *lt = dev_get_drvdata(dev);
++	u8 cmd[LT9611EX_MB_LEN] = { 0 }, r[LT9611EX_MB_SHOW];
++	size_t n = len;
++	int ret;
++
++	while (n && (buf[n - 1] == '\n' || buf[n - 1] == ' '))
++		n--;
++	if (!n || n > LT9611EX_MB_LEN)
++		return -EINVAL;
++	memcpy(cmd, buf, n);
++	ret = lt9611ex_mailbox(lt, cmd, r, LT9611EX_MB_SHOW);
++	return ret == -ENODEV ? ret : len;
++}
++static DEVICE_ATTR_RW(mailbox);
++
++static ssize_t reset_store(struct device *dev, struct device_attribute *attr,
++			   const char *buf, size_t len)
++{
++	struct lt9611ex *lt = dev_get_drvdata(dev);
++	bool on;
++	int ret = kstrtobool(buf, &on);
++
++	if (ret)
++		return ret;
++	if (on) {
++		lt9611ex_reset(lt);
++		lt9611ex_read_chip_id(lt);
++	}
++	return len;
++}
++static DEVICE_ATTR_WO(reset);
++
++static struct attribute *lt9611ex_attrs[] = {
++	&dev_attr_chip_id.attr,
++	&dev_attr_i2c_ok.attr,
++	&dev_attr_hpd.attr,
++	&dev_attr_mailbox.attr,
++	&dev_attr_reset.attr,
++	NULL
++};
++ATTRIBUTE_GROUPS(lt9611ex);
++
++/* ---------------------------------------------------------------- probe */
++
++static int lt9611ex_attach_dsi(struct lt9611ex *lt, struct mipi_dsi_host *host)
++{
++	const struct mipi_dsi_device_info info = { "lt9611ex", 0, NULL };
++	struct mipi_dsi_device *dsi;
++	int ret;
++
++	dsi = devm_mipi_dsi_device_register_full(lt->dev, host, &info);
++	if (IS_ERR(dsi))
++		return dev_err_probe(lt->dev, PTR_ERR(dsi), "DSI device registration failed\n");
++
++	/* as the VR04's panel: 4 lanes RGB888 video mode; artosyn_dsi programs the rest */
++	dsi->lanes = 4;
++	dsi->format = MIPI_DSI_FMT_RGB888;
++	dsi->mode_flags = MIPI_DSI_MODE_VIDEO | MIPI_DSI_MODE_LPM;
++	if (dsi_mode == 1)
++		dsi->mode_flags |= MIPI_DSI_MODE_VIDEO_SYNC_PULSE;
++	else if (dsi_mode == 2)
++		dsi->mode_flags |= MIPI_DSI_MODE_VIDEO_BURST;
++
++	ret = devm_mipi_dsi_attach(lt->dev, dsi);
++	if (ret)
++		return dev_err_probe(lt->dev, ret, "DSI attach failed\n");
++	return 0;
++}
++
++static int lt9611ex_probe(struct i2c_client *client)
++{
++	struct device *dev = &client->dev;
++	struct mipi_dsi_host *host;
++	struct lt9611ex *lt;
++	int ret;
++
++	lt = devm_drm_bridge_alloc(dev, struct lt9611ex, bridge, &lt9611ex_bridge_funcs);
++	if (IS_ERR(lt))
++		return PTR_ERR(lt);
++
++	lt->dev = dev;
++	lt->client = client;
++	mutex_init(&lt->lock);
++	i2c_set_clientdata(client, lt);
++
++	lt->dsi_node = of_graph_get_remote_node(dev->of_node, 0, -1);
++	if (!lt->dsi_node)
++		return dev_err_probe(dev, -ENODEV, "no DSI host on port 0\n");
++
++	/* before the reset pulse, so that waiting for artosyn_dsi does not repeat it */
++	host = of_find_mipi_dsi_host_by_node(lt->dsi_node);
++	if (!host) {
++		ret = dev_err_probe(dev, -EPROBE_DEFER, "no DSI host yet\n");
++		goto err_node;
++	}
++
++	lt->pclk = devm_clk_get_optional(dev, "pixel");
++	if (IS_ERR(lt->pclk)) {
++		ret = dev_err_probe(dev, PTR_ERR(lt->pclk), "pixel clock\n");
++		goto err_node;
++	}
++
++	/* asserted (low) from here until lt9611ex_reset's pulse, as stock's board init holds it */
++	lt->reset = devm_gpiod_get_optional(dev, "reset", GPIOD_OUT_HIGH);
++	if (IS_ERR(lt->reset)) {
++		ret = PTR_ERR(lt->reset);
++		goto err_node;
++	}
++	lt->hpd = devm_gpiod_get_optional(dev, "hpd", GPIOD_IN);
++	if (IS_ERR(lt->hpd)) {
++		ret = PTR_ERR(lt->hpd);
++		goto err_node;
++	}
++
++	lt9611ex_reset(lt);
++	lt9611ex_read_chip_id(lt);
++
++	lt->bridge.of_node = dev->of_node;
++	lt->bridge.type = DRM_MODE_CONNECTOR_HDMIA;
++	drm_bridge_add(&lt->bridge);
++
++	ret = lt9611ex_attach_dsi(lt, host);
++	if (ret)
++		goto err_bridge;
++
++	return 0;
++
++err_bridge:
++	drm_bridge_remove(&lt->bridge);
++err_node:
++	of_node_put(lt->dsi_node);
++	return ret;
++}
++
++static void lt9611ex_remove(struct i2c_client *client)
++{
++	struct lt9611ex *lt = i2c_get_clientdata(client);
++
++	drm_bridge_remove(&lt->bridge);
++	of_node_put(lt->dsi_node);
++}
++
++static const struct i2c_device_id lt9611ex_id[] = {
++	{ "lt9611ex" },
++	{ }
++};
++MODULE_DEVICE_TABLE(i2c, lt9611ex_id);
++
++static const struct of_device_id lt9611ex_match[] = {
++	{ .compatible = "lontium,lt9611ex" },
++	{ }
++};
++MODULE_DEVICE_TABLE(of, lt9611ex_match);
++
++static struct i2c_driver lt9611ex_driver = {
++	.driver = {
++		.name = "lt9611ex",
++		.of_match_table = lt9611ex_match,
++		.dev_groups = lt9611ex_groups,
++	},
++	.probe = lt9611ex_probe,
++	.remove = lt9611ex_remove,
++	.id_table = lt9611ex_id,
++};
++module_i2c_driver(lt9611ex_driver);
++
++MODULE_DESCRIPTION("Lontium LT9611EX MIPI-DSI to HDMI bridge (BetaFPV P1 HD VRX)");
++MODULE_LICENSE("GPL");
