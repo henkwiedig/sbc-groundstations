@@ -6,17 +6,42 @@
 # Allow a few customizations from a config file
 test -r /etc/default/pixelpilot && . /etc/default/pixelpilot
 
+# The pixelpilot.sh wrapper's pid, written here: pixelpilot writes its own
+# /run/pixelpilot.pid first thing on every run, "pixelpilot --version"
+# included, which left stop with a dead pid and start with a second
+# instance next to the first. -x can't find the wrapper either (its
+# cmdline starts with /bin/sh), so it is matched by pid file and name.
+PIDFILE=/var/run/pixelpilot-wrapper.pid
+
+running() {
+	start-stop-daemon -K -t -q -p $PIDFILE -n pixelpilot.sh
+}
+
 start() {
 	printf "Starting pixelpilot: "
-
-	start-stop-daemon -S -b -q -p /var/run/pixelpilot.pid \
-		--exec /usr/bin/pixelpilot.sh
+	if running; then
+		echo "already running"
+		return 0
+	fi
+	start-stop-daemon -S -b -q -m -p $PIDFILE --exec /usr/bin/pixelpilot.sh
 	[ $? = 0 ] && echo "OK" || echo "FAIL"
 }
 stop() {
 	printf "Stopping pixelpilot: "
-	start-stop-daemon -K -q -p /var/run/pixelpilot.pid
-	[ $? = 0 ] && echo "OK" || echo "FAIL"
+	# The wrapper first, or it may start pixelpilot again, then every
+	# pixelpilot by name.
+	start-stop-daemon -K -q -p $PIDFILE -n pixelpilot.sh
+	rc=$?
+	rm -f $PIDFILE
+	start-stop-daemon -K -q -n pixelpilot && rc=0
+	# Gone before a start opens the display again (with --vsync-lock it
+	# puts the refresh rate back on the way out).
+	i=0
+	while pidof pixelpilot >/dev/null && [ $i -lt 30 ]; do
+		sleep 0.1
+		i=$((i + 1))
+	done
+	[ $rc = 0 ] && echo "OK" || echo "FAIL"
 }
 restart() {
 	stop
