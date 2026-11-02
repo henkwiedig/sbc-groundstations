@@ -33,6 +33,9 @@ picture is still reachable and goes back to stock from the SD card.
     timing per HDMI mode)
   - 0004 clk-ar9311-cgu: the pixel PLL over the VCO range stock uses and the
     display leaf's divider, for the clocks below 100 MHz (720p)
+  - 0005 artosyn_vo: video scaled to the screen through the framebuffer
+    layer's scaler (stock's filter tables), and that layer's real chroma
+    stride registers
 - `overlay/`: `/etc/default/p1-gnd` (USB name "BetaFPV P1 HD VRX", stock
   product P1_GND_VRX, display modules, no backlight), update screens
   ("receiver"), `/usr/sbin/p1-vrx-diag`
@@ -93,9 +96,16 @@ listed when the VO's pixel clock reaches its rate. The pixel PLL's VCO is
 VCO at 800..1600 MHz and divides in the leaf below 100 MHz (linux patch
 0004), so every row is reachable. The rates themselves were measured on a
 VR04 (same CGU) by its vblank rate: the leaf divider halves exactly, the
-720p60 setting gives 79.74 MHz, the 1080p60 one 154.78 MHz. The VO's video
-planes do not scale: 1080p video on a 720p mode would show a 1280x720 cut
-of it. When the sink's preferred mode is not drivable the
+720p60 setting gives 79.74 MHz, the 1080p60 one 154.78 MHz.
+
+The video is scaled to the screen as on the Rockchip targets: PixelPilot
+asks DRM for its video plane over the whole screen and gets it (a 1080p
+stream on a 720p mode, a 720p stream on 1080p). Only the display
+controller's framebuffer layer has a scaler, so the driver shows a scaled
+video frame there (stock's 3-tap filter, half to eight times the size);
+unscaled video stays on the overlay plane as before, and a scaled one that
+does not cover the whole screen (another aspect ratio, `--video-scale`
+below 1) is shown 1:1 by PixelPilot's fallback. When the sink's preferred mode is not drivable the
 first drivable row becomes the preferred one; with no EDID (no sink at boot,
 no I2C answer) the list is the drivable rows, 1080p60 preferred. The
 connector stays "connected" (PixelPilot needs that; the chip follows the
