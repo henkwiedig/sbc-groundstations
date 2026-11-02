@@ -1,0 +1,544 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Henk Wiedig <henk@wiedig.de>
+Date: Mon, 2 Nov 2026 19:53:59 +0100
+Subject: [PATCH] drm/artosyn: vo: scale video0 on the framebuffer layer
+
+The DC's framebuffer layer (the primary) has a scaler, the overlay banks
+have none (stock's reg_overlay_set writes no scale register). Stock
+drives it from dc_set_zoom: FB_SIZE is the source, 0x1828/0x1830 the
+scale factors ((src - 1) << 16) / (dst - 1) (taken for a window origin
+before), 0x1520 the taps (0x33), FB_CONFIG bit22 on, and two filter
+tables written through 0x1a00/0x1a10 after their index (0x1838/0x1a08)
+is set to 0: Lanczos weights per dst/src ratio, computed here in integer
+math (artosyn_vo_coef.h), within 1 LSB of stock's own tables for 3 taps.
+
+video0 may now cover the whole screen scaled (I420/YV12, half to eight
+times the source size): pipe_update, which every commit runs first,
+then shows that frame on the framebuffer layer through the scaler
+(the primary, hidden under a full-screen opaque video, is not shown)
+and video0's bank stays off. Anything else stays 1:1 on the overlay.
+PixelPilot's scaled video plane commit thus passes as on Rockchip:
+a 1080p stream on a 720p mode, a 720p stream on the 1080p panel.
+
+Also: 0x1800/0x1808 are the layer's chroma strides, not FIFO
+thresholds; their fixed 0x3c0 only fit 1920-wide I420 frames (any
+other width showed wrong colours and lines). The primary programs them
+from the framebuffer now.
+
+On a VR04 (2026-11-02, panel): 1280x720 -> 1920x1080 and 2560x1440 ->
+1920x1080 SMPTE bars clean, PixelPilot's 1080p video unchanged. The
+tables must be written with bit22 set and with exactly their 77 words
+(stock's 128-word writes overrun them).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ drivers/gpu/drm/artosyn/artosyn_vo.c      | 247 ++++++++++++++++++----
+ drivers/gpu/drm/artosyn/artosyn_vo_coef.h |  96 +++++++++
+ 2 files changed, 303 insertions(+), 40 deletions(-)
+ create mode 100644 drivers/gpu/drm/artosyn/artosyn_vo_coef.h
+
+diff --git a/drivers/gpu/drm/artosyn/artosyn_vo.c b/drivers/gpu/drm/artosyn/artosyn_vo.c
+index 063dcde..410f4a4 100644
+--- a/drivers/gpu/drm/artosyn/artosyn_vo.c
++++ b/drivers/gpu/drm/artosyn/artosyn_vo.c
+@@ -15,6 +15,10 @@
+  * banks: two positionable YUV video planes (NV12/I420, banks 0/1) and the ARGB4444 HUD
+  * (bank 2, per-pixel alpha, topmost). Framebuffers are DMA/CMA (the VO scans physical
+  * memory); the video planes take PRIME-imported wave5 decoder dmabufs.
++ *
++ * Scaling: only the framebuffer layer (the primary) has a scaler. A video0 frame scaled
++ * over the whole screen (a 1080p stream on a 720p mode, 720p on the 1080p panel) is shown
++ * on that layer through the scaler instead of on its overlay bank; see ar_vo_pipe_update.
+  */
+ #include <linux/atomic.h>
+ #include <linux/clk.h>
+@@ -48,14 +52,16 @@
+ 
+ #include "artosyn_pclk.h"
+ 
++#define AR_COEF_S64	s64
++#define AR_COEF_U32	u32
++#include "artosyn_vo_coef.h"
++
+ /* --- VO register map (offsets from 0x08810000), recovered from libmpp_service.so --- */
+ #define VO_GLOBAL	0x0000	/* BIT(11) AXI enable, BIT(12) soft-reset pulse */
+ #define  VO_GLOBAL_AXI_EN	BIT(11)
+ #define  VO_GLOBAL_SRESET	BIT(12)
+ #define VO_FB_BASE0	0x1400	/* plane0 framebuffer DMA base (Y/luma for YUV) */
+ #define VO_FB_STRIDE	0x1408	/* Y/luma plane stride in bytes */
+-#define VO_U_STRIDE	0x1508	/* U (Cb) plane stride in bytes, YUV */
+-#define VO_V_STRIDE	0x1510	/* V (Cr) plane stride in bytes, YUV */
+ #define VO_PANEL_CTRL	0x1418	/* panel/sync-polarity control word */
+ #define VO_H_ACT_FP	0x1430	/* HACT | (HFP << 16) */
+ #define VO_H_SA_BP	0x1438	/* 0x40000000 | HSA | (HBP << 15) */
+@@ -68,17 +74,29 @@
+ #define VO_MAIN_CTRL	0x1518	/* BIT(3) config-lock, BIT(4) display-start, BIT(8) clear-en */
+ #define  VO_MAIN_LOCK		BIT(3)	/* shadow-register hold; addr latches on the 1->0 edge */
+ #define  VO_MAIN_START		BIT(4)
+-#define VO_FB_FORMAT	0x1520	/* dcregFrameBufferScaleConfig (tile/scale nibbles); 0 = unscaled */
++#define VO_FB_SCALE_CFG	0x1520	/* dcregFrameBufferScaleConfig: V taps | H taps << 4; 0 = unscaled */
+ #define VO_LAYER_CONFIG	0x1528	/* layer-config word; stock writes 1 for the YUV video layer */
+ #define VO_PLANE2_BASE	0x1530	/* plane2 base = U (Cb) for YUV; = fb base for packed RGB */
+ #define VO_PLANE3_BASE	0x1538	/* plane3 base = V (Cr) for YUV; = fb base for packed RGB */
+ #define VO_FB_SIZE	0x1810	/* (w & 0x7fff) | (h << 15) */
+-#define VO_FIFO_THRESH0	0x1800	/* layer FIFO/prefetch threshold (0x3c0); 0 stalls emit */
+-#define VO_FIFO_THRESH1	0x1808
+-#define VO_WIN_X	0x1828	/* layer window X origin (0 = top-left; size != origin!) */
+-#define VO_WIN_Y	0x1830	/* layer window Y origin */
++/*
++ * 0x1800/0x1808 are the layer's U and V (chroma) strides in bytes: stock's reg_framebuffer_set
++ * fills them from the framebuffer descriptor next to the luma stride, the Vivante DC map has
++ * dcregFrameBufferUStride/VStride there. Checked on a VR04 2026-11-02: a 1280-wide I420 frame
++ * shows right only with 640 here. The 0x3c0 (960) this driver always wrote is the chroma stride
++ * of a 1920-wide frame, which hid it; 0x1508/0x1510, taken for the chroma strides before, are
++ * stock's next two descriptor words (colour key low/high in the Vivante map).
++ */
++#define VO_FB_U_STRIDE	0x1800
++#define VO_FB_V_STRIDE	0x1808
++#define VO_FB_SCALE_X	0x1828	/* horizontal scale factor ((src - 1) << 16) / (dst - 1) (stock dc_set_zoom) */
++#define VO_FB_SCALE_Y	0x1830	/* vertical scale factor */
++#define VO_FB_HFILTER_INDEX 0x1838	/* horizontal filter table write index */
++#define VO_FB_HFILTER_DATA 0x1a00	/* horizontal filter table data port (auto-increment) */
++#define VO_FB_VFILTER_INDEX 0x1a08	/* vertical filter table write index */
++#define VO_FB_VFILTER_DATA 0x1a10	/* vertical filter table data port */
+ #define VO_LAYER_ALPHA	0x1a18	/* background/clear ARGB; alpha in bits[31:24] */
+-#define VO_SCALER_RATIO	0x1a20	/* H|V scale ratio Q1.15, 0x8000 = unity */
++#define VO_FB_INIT_OFFSET 0x1a20	/* scaler start phase H | V << 16, 0x8000 = half a pixel */
+ #define VO_LAYER_CSC	0x1e40	/* primary-layer YUV->RGB CSC: 16 regs, step 8 (0x1e40..0x1eb8) */
+ #define VO_QOS		0xff00	/* AXI read QoS */
+ #define VO_DPI_CTRL	0x1f40	/* DPI polarity/enable (bit20 = DPI master en) */
+@@ -179,7 +197,11 @@ struct ar_vo {
+ 	u32				clk_mode_khz;
+ 	u32				clk_scan_khz;
+ 	u32				cur_format;	/* DRM fourcc currently programmed on the primary layer */
++	u32				cur_pitch;	/* and its luma pitch */
+ 	u32				cur_cfg;	/* clean VO_MAIN_CTRL word for cur_format (no LOCK, no START) */
++	/* the framebuffer layer scans video0 through the scaler (src -> dst), not the primary */
++	bool				fb_scaled;
++	u32				scl_sw, scl_sh, scl_dw, scl_dh;
+ 
+ 	/* 1 Hz stall watchdog, logging only: a dead vsync IRQ is otherwise unobservable
+ 	 * once userspace stops committing.
+@@ -220,6 +242,9 @@ static void ar_vo_set_fb_addr(struct ar_vo *vo, struct drm_plane_state *state)
+ 	u32 y = lower_32_bits(drm_fb_dma_get_gem_addr(fb, state, 0));
+ 	u32 u = n > 1 ? lower_32_bits(drm_fb_dma_get_gem_addr(fb, state, 1)) : y;
+ 	u32 v = n > 2 ? lower_32_bits(drm_fb_dma_get_gem_addr(fb, state, 2)) : u;
++
++	if (fb->format->format == DRM_FORMAT_YVU420)	/* Cr first: the DC's U register is Cb */
++		swap(u, v);
+ 	/* Use the stored clean config (not a readback). The hardware sets bit6 in VO_MAIN_CTRL after
+ 	 * we write the FORMAT word; propagating it to the LOCK and START writes causes alternating-row
+ 	 * banding in I420 mode (bit6 appears to enable a tiled-fetch or interlaced mode). Stock avoids
+@@ -352,6 +377,7 @@ static unsigned long ar_vo_scan_hz(struct ar_vo *vo, unsigned long user_hz)
+  * video overlay planes advertise it (needs HW validation, I420 is the proven fallback).
+  */
+ #define VO_FB_CONFIG_YUV	BIT(14)		/* surface YUV flag; set for YUV, clear for RGB (live 0x3c004011) */
++#define VO_FB_CONFIG_SCALE	BIT(22)		/* scaler/filter on (stock reg_framebuffer_set, dc_set_zoom's flag) */
+ 
+ static u32 ar_vo_surface_enum(u32 fourcc, bool *is_yuv)
+ {
+@@ -419,15 +445,20 @@ static void ar_vo_set_layer_csc(struct ar_vo *vo)
+  * held off), and the YUV CSC. The caller latches the plane addresses (ar_vo_set_fb_addr) and
+  * asserts display-start last. Called from pipe enable and, on a format switch, from pipe update.
+  */
+-static void ar_vo_program_layer(struct ar_vo *vo, struct drm_framebuffer *fb)
++static void ar_vo_program_layer(struct ar_vo *vo, struct drm_framebuffer *fb, bool scale)
+ {
+ 	bool yuv = fb->format->is_yuv;
+ 	u32 cfg = ar_vo_fb_config(fb->format->format) & ~VO_MAIN_START;
+ 
++	if (scale)
++		cfg |= VO_FB_CONFIG_SCALE;
++
+ 	writel(fb->pitches[0], vo->regs + VO_FB_STRIDE);
+ 	if (yuv) {
+-		writel(fb->pitches[1], vo->regs + VO_U_STRIDE);
+-		writel(fb->pitches[2], vo->regs + VO_V_STRIDE);
++		bool yvu = fb->format->format == DRM_FORMAT_YVU420;
++
++		writel(fb->pitches[yvu ? 2 : 1], vo->regs + VO_FB_U_STRIDE);
++		writel(fb->pitches[yvu ? 1 : 2], vo->regs + VO_FB_V_STRIDE);
+ 		writel(1, vo->regs + VO_LAYER_CONFIG);
+ 	}
+ 
+@@ -441,6 +472,97 @@ static void ar_vo_program_layer(struct ar_vo *vo, struct drm_framebuffer *fb)
+ 		ar_vo_set_layer_csc(vo);
+ 
+ 	vo->cur_format = fb->format->format;
++	vo->cur_pitch = fb->pitches[0];
++}
++
++/*
++ * The framebuffer layer's scaler (stock dc_set_zoom + reg_filter_index_set): the layer scans a
++ * source of FB_SIZE and stretches it over the screen by FB_SCALE_X/Y, with AR_VO_TAPS-tap
++ * filters (stock's 0x33) whose weights sit in two 77-word tables, written through the filter
++ * data ports after their index is set to 0, enabled by FB_CONFIG bit22. Checked on a VR04
++ * 2026-11-02 (2x zoom of a test pattern on the panel): the tables have to be written while
++ * bit22 is set (they are not kept otherwise), and with exactly their 77 words (stock writes
++ * 128; the surplus runs past the table and overwrites its start with zeros, black or white).
++ * The overlay banks have no scaler (stock's reg_overlay_set writes none).
++ */
++#define AR_VO_TAPS		3
++#define AR_VO_SCALE_MIN		(DRM_PLANE_NO_SCALING / 8)	/* up to 8 times larger */
++#define AR_VO_SCALE_MAX		(DRM_PLANE_NO_SCALING * 2)	/* down to half */
++
++static u32 ar_vo_scale_factor(u32 src, u32 dst)
++{
++	return src > 1 && dst > 1 ? ((src - 1) << 16) / (dst - 1) : 0;
++}
++
++static void ar_vo_load_filter(struct ar_vo *vo, u32 index_reg, u32 data_reg, u32 src, u32 dst)
++{
++	u32 words[AR_COEF_WORDS];
++	int i;
++
++	ar_coef_table(words, AR_VO_TAPS, src, dst);
++	writel(0, vo->regs + index_reg);
++	for (i = 0; i < AR_COEF_WORDS; i++)
++		writel(words[i], vo->regs + data_reg);
++	writel(0, vo->regs + index_reg);
++}
++
++/* FB_SIZE of the unscaled layer: the screen */
++static u32 ar_vo_fb_size(struct ar_vo *vo, const struct drm_display_mode *m)
++{
++	if (!vo->timing_from_mode)
++		return VO_1080P60_FB_SIZE;
++	return (m->hdisplay & 0x7fff) | (m->vdisplay & 0x7fff) << 15;
++}
++
++/* A video plane frame that does not map 1:1 onto the screen (atomic_check lets only video0
++ * do that, and only over the whole screen).
++ */
++static bool ar_vo_vid_scaled(const struct drm_plane_state *s)
++{
++	return s && s->visible && s->fb &&
++	       ((u32)(drm_rect_width(&s->src) >> 16) != (u32)drm_rect_width(&s->dst) ||
++		(u32)(drm_rect_height(&s->src) >> 16) != (u32)drm_rect_height(&s->dst));
++}
++
++/* The framebuffer layer onto a scaled video0 frame: format and scaler, then the address. The
++ * filter tables go in last, with bit22 already set, as on the bench.
++ */
++static void ar_vo_show_scaled(struct ar_vo *vo, struct drm_plane_state *vs,
++			      u32 sw, u32 sh, u32 dw, u32 dh)
++{
++	ar_vo_program_layer(vo, vs->fb, true);
++	writel(AR_VO_TAPS | AR_VO_TAPS << 4, vo->regs + VO_FB_SCALE_CFG);
++	writel(ar_vo_scale_factor(sw, dw), vo->regs + VO_FB_SCALE_X);
++	writel(ar_vo_scale_factor(sh, dh), vo->regs + VO_FB_SCALE_Y);
++	writel((sw & 0x7fff) | (sh & 0x7fff) << 15, vo->regs + VO_FB_SIZE);
++	ar_vo_set_fb_addr(vo, vs);
++	vo->cur_cfg |= VO_MAIN_START;
++	writel(vo->cur_cfg, vo->regs + VO_MAIN_CTRL);
++	ar_vo_load_filter(vo, VO_FB_HFILTER_INDEX, VO_FB_HFILTER_DATA, sw, dw);
++	ar_vo_load_filter(vo, VO_FB_VFILTER_INDEX, VO_FB_VFILTER_DATA, sh, dh);
++
++	vo->fb_scaled = true;
++	vo->scl_sw = sw;
++	vo->scl_sh = sh;
++	vo->scl_dw = dw;
++	vo->scl_dh = dh;
++}
++
++/* The framebuffer layer back onto the primary, unscaled. */
++static void ar_vo_show_primary(struct ar_vo *vo, struct drm_plane_state *state,
++			       const struct drm_display_mode *mode)
++{
++	ar_vo_program_layer(vo, state->fb, false);
++	if (vo->fb_scaled) {
++		writel(0, vo->regs + VO_FB_SCALE_CFG);
++		writel(0, vo->regs + VO_FB_SCALE_X);
++		writel(0, vo->regs + VO_FB_SCALE_Y);
++		writel(ar_vo_fb_size(vo, mode), vo->regs + VO_FB_SIZE);
++		vo->fb_scaled = false;
++	}
++	ar_vo_set_fb_addr(vo, state);
++	vo->cur_cfg |= VO_MAIN_START;	/* see ar_vo_pipe_enable */
++	writel(vo->cur_cfg, vo->regs + VO_MAIN_CTRL);
+ }
+ 
+ static void ar_vo_pipe_enable(struct drm_simple_display_pipe *pipe,
+@@ -515,18 +637,19 @@ static void ar_vo_pipe_enable(struct drm_simple_display_pipe *pipe,
+ 	/* Timing words and FB_SIZE: hardcoded 1080p60 panel words, or from the mode. */
+ 	ar_vo_program_timing(vo, mode);
+ 
+-	/* Layer surface geometry. Window origin is (0,0); the FIFO thresholds must be non-zero or
+-	 * the DC fetches but never emits. Per-plane strides, format, and CSC are in ar_vo_program_layer
+-	 * below (the Y stride at 0x1408 was previously written here).
++	/* Layer surface geometry: unscaled, the chroma strides a 1920-wide I420 frame's (as ever;
++	 * an RGB layer has none, a YUV one gets its own in ar_vo_program_layer). Per-plane
++	 * strides, format, and CSC are in ar_vo_program_layer below.
+ 	 */
+-	writel(0, vo->regs + VO_WIN_X);
+-	writel(0, vo->regs + VO_WIN_Y);
+-	writel(0x3c0, vo->regs + VO_FIFO_THRESH0);
+-	writel(0x3c0, vo->regs + VO_FIFO_THRESH1);
++	writel(0, vo->regs + VO_FB_SCALE_X);
++	writel(0, vo->regs + VO_FB_SCALE_Y);
++	writel(0x3c0, vo->regs + VO_FB_U_STRIDE);
++	writel(0x3c0, vo->regs + VO_FB_V_STRIDE);
+ 	writel(0xff000000, vo->regs + VO_LAYER_ALPHA);
+-	writel(0x80008000, vo->regs + VO_SCALER_RATIO);
++	writel(0x80008000, vo->regs + VO_FB_INIT_OFFSET);
+ 
+-	writel(VO_1080P60_SCALE_CFG, vo->regs + VO_FB_FORMAT);	/* 0x1520 = scaler cfg, not format */
++	writel(VO_1080P60_SCALE_CFG, vo->regs + VO_FB_SCALE_CFG);	/* unscaled */
++	vo->fb_scaled = false;		/* ar_vo_pipe_update puts a scaled video0 back on */
+ 	writel(VO_1080P60_DPI_FORMAT, vo->regs + VO_DPI_FORMAT);
+ 	writel(VO_1080P60_PANEL_CTRL, vo->regs + VO_PANEL_CTRL);
+ 	writel(VO_1080P60_DPI_CTRL, vo->regs + VO_DPI_CTRL);
+@@ -538,7 +661,7 @@ static void ar_vo_pipe_enable(struct drm_simple_display_pipe *pipe,
+ 	 * config-lock window, then assert display-start LAST. This mirrors stock's
+ 	 * reg_framebuffer_set -> dc_set_frameaddr2 -> reg_display_start order.
+ 	 */
+-	ar_vo_program_layer(vo, fb);
++	ar_vo_program_layer(vo, fb, false);
+ 	ar_vo_set_fb_addr(vo, plane_state);
+ 	vo->cur_cfg |= VO_MAIN_START;	/* keep START in cur_cfg: every later LOCK/unlock
+ 					 * bracket rewrites 0x1518 with cur_cfg, and a write
+@@ -568,20 +691,35 @@ static void ar_vo_pipe_update(struct drm_simple_display_pipe *pipe,
+ {
+ 	struct ar_vo *vo = to_ar_vo(pipe->crtc.dev);
+ 	struct drm_plane_state *state = pipe->plane.state;
++	struct drm_plane_state *vs = vo->video[0].base.state;
+ 	struct drm_crtc *crtc = &pipe->crtc;
+ 
+-	if (state->fb) {
+-		/* Reprogram geometry/format/CSC only on a format switch (e.g. RGB console ->
+-		 * YUV video); steady-state video just re-latches the plane addresses.
+-		 */
+-		if (state->fb->format->format != vo->cur_format) {
+-			ar_vo_program_layer(vo, state->fb);
+-			ar_vo_set_fb_addr(vo, state);
+-			vo->cur_cfg |= VO_MAIN_START;	/* see ar_vo_pipe_enable */
+-			writel(vo->cur_cfg, vo->regs + VO_MAIN_CTRL);
+-		} else {
++	/*
++	 * Every commit runs through here before the overlay planes (the simple pipe adds all of
++	 * the CRTC's planes, the primary first). A scaled video0 frame takes the framebuffer
++	 * layer, which then scans it through the scaler (the primary, hidden under a full-screen
++	 * opaque video anyway, is not shown); otherwise the layer shows the primary 1:1.
++	 * Reprogram geometry/format/CSC only when what the layer shows changes; steady-state
++	 * video just re-latches the plane addresses.
++	 */
++	if (ar_vo_vid_scaled(vs)) {
++		u32 sw = drm_rect_width(&vs->src) >> 16;
++		u32 sh = drm_rect_height(&vs->src) >> 16;
++		u32 dw = drm_rect_width(&vs->dst);
++		u32 dh = drm_rect_height(&vs->dst);
++
++		if (!vo->fb_scaled || vs->fb->format->format != vo->cur_format ||
++		    vs->fb->pitches[0] != vo->cur_pitch || sw != vo->scl_sw || sh != vo->scl_sh ||
++		    dw != vo->scl_dw || dh != vo->scl_dh)
++			ar_vo_show_scaled(vo, vs, sw, sh, dw, dh);
++		else
++			ar_vo_set_fb_addr(vo, vs);
++	} else if (state->fb) {
++		if (vo->fb_scaled || state->fb->format->format != vo->cur_format ||
++		    state->fb->pitches[0] != vo->cur_pitch)
++			ar_vo_show_primary(vo, state, &crtc->state->adjusted_mode);
++		else
+ 			ar_vo_set_fb_addr(vo, state);
+-		}
+ 	}
+ 
+ 	/* Arm the flip event on the real vsync: the shadow registers latch at frame start,
+@@ -653,7 +791,9 @@ static const struct drm_simple_display_pipe_funcs ar_vo_pipe_funcs = {
+  *    frame in hardware). NV12 uses surface-format enum 17 (INFERRED, DC8000 standard, never
+  *    programmed by stock); I420/YV12 uses enum 15 (CONFIRMED, the live primary format).
+  *
+- * All planes are positionable, 1:1 only (scaling rejected in atomic_check). Registers per
++ * All planes are positionable and 1:1, except that video0 may also cover the whole screen
++ * scaled (I420/YV12, half to eight times the source size), shown on the framebuffer layer's
++ * scaler (ar_vo_pipe_update). Registers per
+  * ../../../../../docs/artosyn-vo-video-path.md ("The overlay plane").
+  */
+ static const u32 ar_vo_hud_formats[] = {
+@@ -669,14 +809,33 @@ static const u32 ar_vo_vid_formats[] = {
+ static int ar_vo_ovl_check(struct drm_plane *plane, struct drm_atomic_state *state)
+ {
+ 	struct drm_plane_state *ns = drm_atomic_get_new_plane_state(state, plane);
++	struct ar_vo *vo = to_ar_vo(plane->dev);
++	bool can_scale = plane == &vo->video[0].base;
+ 	struct drm_crtc_state *cs;
++	u32 fmt;
++	int ret;
+ 
+ 	if (!ns->crtc)
+ 		return 0;
+ 
+ 	cs = drm_atomic_get_new_crtc_state(state, ns->crtc);
+-	return drm_atomic_helper_check_plane_state(ns, cs, DRM_PLANE_NO_SCALING,
+-						   DRM_PLANE_NO_SCALING, true, true);
++	ret = drm_atomic_helper_check_plane_state(ns, cs,
++						  can_scale ? AR_VO_SCALE_MIN : DRM_PLANE_NO_SCALING,
++						  can_scale ? AR_VO_SCALE_MAX : DRM_PLANE_NO_SCALING,
++						  true, true);
++	if (ret || !ar_vo_vid_scaled(ns))
++		return ret;
++
++	/* Scaled: on the framebuffer layer, which covers the screen; planar I420/YV12 (the
++	 * layer's proven YUV format).
++	 */
++	fmt = ns->fb->format->format;
++	if (ns->dst.x1 || ns->dst.y1 || drm_rect_width(&ns->dst) != cs->mode.hdisplay ||
++	    drm_rect_height(&ns->dst) != cs->mode.vdisplay)
++		return -EINVAL;
++	if (fmt != DRM_FORMAT_YUV420 && fmt != DRM_FORMAT_YVU420)
++		return -EINVAL;
++	return 0;
+ }
+ 
+ /*
+@@ -756,6 +915,13 @@ static void ar_vo_vid_update(struct drm_plane *plane, struct drm_atomic_state *s
+ 	if (!ns->fb || !ns->crtc || !ns->crtc->state->active)
+ 		return;
+ 
++	/* Scaled: shown on the framebuffer layer (ar_vo_pipe_update), the bank stays off. */
++	if (ar_vo_vid_scaled(ns)) {
++		ar_vo_ovl_wr(vo, bank, VO_OVL_CONFIG,
++			     ar_vo_ovl_rd(vo, bank, VO_OVL_CONFIG) & ~VO_OVL_EMIT);
++		return;
++	}
++
+ 	fmt = ar_vo_surface_enum(ns->fb->format->format, &yuv);
+ 	y = lower_32_bits(drm_fb_dma_get_gem_addr(ns->fb, ns, 0));
+ 
+@@ -879,7 +1045,7 @@ static void ar_vo_dbg_tick(struct timer_list *t)
+ 			 readl(vo->regs + VO_PANEL_CTRL),
+ 			 readl(vo->regs + VO_H_ACT_FP), readl(vo->regs + VO_H_SA_BP),
+ 			 readl(vo->regs + VO_V_ACT_FP), readl(vo->regs + VO_V_SA_BP),
+-			 readl(vo->regs + VO_FIFO_THRESH0), readl(vo->regs + VO_FIFO_THRESH1),
++			 readl(vo->regs + VO_FB_U_STRIDE), readl(vo->regs + VO_FB_V_STRIDE),
+ 			 readl(vo->crg + CRG_DC));
+ 	}
+ 
+@@ -905,8 +1071,8 @@ DEFINE_DRM_GEM_DMA_FOPS(ar_vo_fops);
+  *
+  * 8-bpp allocations are YUV planes: the DC scans a 64-px-aligned luma stride cleanly
+  * (verified on-panel 2026-07-05: i420_test with LSTRIDE=1920 renders identically to 2048),
+- * and the chroma stride is HARDCODED to width/2 in hardware (VO_U/V_STRIDE ignored).
+- * Generic DRM clients (kmssink, dma-buf importers) derive the chroma stride as
++ * and (as found then) the chroma stride is width/2 - in fact VO_FB_U/V_STRIDE, whose fixed
++ * 0x3c0 matched every 1920-wide frame; the primary now programs them. Generic DRM clients (kmssink, dma-buf importers) derive the chroma stride as
+  * luma-pitch/2, so the luma pitch must NOT be padded, or their chroma layout lands at
+  * pitch/2 != width/2 and shears (the "green stair"). 64-px alignment keeps luma-pitch/2
+  * equal to width/2 for any 128-px-aligned width, and matches the wave5 decoder's native
+@@ -991,8 +1157,9 @@ static int ar_vo_probe(struct platform_device *pdev)
+ 
+ 	vo->drm.mode_config.min_width = 0;
+ 	vo->drm.mode_config.min_height = 0;
+-	vo->drm.mode_config.max_width = 1920;
+-	vo->drm.mode_config.max_height = 1080;
++	/* Larger than the screen for sources the framebuffer layer scales down (to half). */
++	vo->drm.mode_config.max_width = 2560;
++	vo->drm.mode_config.max_height = 1440;
+ 	vo->drm.mode_config.funcs = &ar_vo_mode_config_funcs;
+ 
+ 	ret = drm_vblank_init(&vo->drm, 1);
+diff --git a/drivers/gpu/drm/artosyn/artosyn_vo_coef.h b/drivers/gpu/drm/artosyn/artosyn_vo_coef.h
+new file mode 100644
+index 0000000..bd2ba6d
+--- /dev/null
++++ b/drivers/gpu/drm/artosyn/artosyn_vo_coef.h
+@@ -0,0 +1,96 @@
++/* SPDX-License-Identifier: GPL-2.0 */
++/*
++ * The DC framebuffer layer's filter tables, as stock computes them (libmpp, the helper of
++ * dc_set_zoom): 17 phases x 9 tap slots of Q14 weights, phase p at a sample offset of
++ * 0.5 - p/32 pixel from slot 4, a Lanczos-a kernel (a = taps / 2) over x = (k + offset)
++ * * min(1, dst/src), each phase normalised to 16384 with the truncation remainder on
++ * slot 4, packed two to a word (77 words). Integer: sin(pi x) by an odd Taylor
++ * polynomial on [0, 1/2] after range reduction, everything in Q30.
++ * Shared by the driver and a host test against stock's own tables (the includer defines
++ * AR_COEF_S64 and AR_COEF_U32).
++ */
++#define AR_COEF_PHASES	17
++#define AR_COEF_SLOTS	9
++#define AR_COEF_WORDS	77		/* 153 Q14 weights, two per word */
++#define AR_Q30		(1LL << 30)
++#define AR_PI_Q30	3373259426LL	/* pi * 2^30 */
++
++static AR_COEF_S64 ar_coef_mul(AR_COEF_S64 a, AR_COEF_S64 b)
++{
++	return (a * b) >> 30;
++}
++
++/* sin(pi x), x and result in Q30 */
++static AR_COEF_S64 ar_coef_sinpi(AR_COEF_S64 x)
++{
++	AR_COEF_S64 t, t2, s;
++	int neg = 0;
++
++	x %= 2 * AR_Q30;			/* sin(pi x) has period 2 */
++	if (x < 0)
++		x += 2 * AR_Q30;
++	if (x >= AR_Q30) {			/* sin(pi (x - 1)) = -sin(pi x) */
++		x -= AR_Q30;
++		neg = 1;
++	}
++	if (x > AR_Q30 / 2)			/* sin(pi x) = sin(pi (1 - x)) */
++		x = AR_Q30 - x;
++
++	t = ar_coef_mul(x, AR_PI_Q30);		/* 0 .. pi/2 */
++	t2 = ar_coef_mul(t, t);
++	s = AR_Q30 - t2 / 72;
++	s = AR_Q30 - ar_coef_mul(t2, s) / 42;
++	s = AR_Q30 - ar_coef_mul(t2, s) / 20;
++	s = AR_Q30 - ar_coef_mul(t2, s) / 6;
++	s = ar_coef_mul(t, s);
++	return neg ? -s : s;
++}
++
++/* sin(pi x) / (pi x), Q30; pi x from x >> 8 so that |x| up to 4.5 stays in 64 bits */
++static AR_COEF_S64 ar_coef_sinc(AR_COEF_S64 x)
++{
++	if (!x)
++		return AR_Q30;
++	return ar_coef_sinpi(x) * AR_Q30 / (((x >> 8) * AR_PI_Q30) >> 22);
++}
++
++/* Lanczos-a weight at x (Q30), Q30 */
++static AR_COEF_S64 ar_coef_lanczos(AR_COEF_S64 x, int a)
++{
++	AR_COEF_S64 ax = x < 0 ? -x : x;
++
++	if (ax >= (AR_COEF_S64)a * AR_Q30)
++		return 0;
++	return ar_coef_mul(ar_coef_sinc(x), ar_coef_sinc(x / a));
++}
++
++/* The table for taps (3, 5, 7, 9) and a dst/src ratio, as the 77 register words. */
++static void ar_coef_table(AR_COEF_U32 *words, int taps, unsigned int src, unsigned int dst)
++{
++	int a = taps / 2, p, k, i;
++	short w[AR_COEF_PHASES * AR_COEF_SLOTS + 1];
++
++	for (p = 0; p < AR_COEF_PHASES; p++) {
++		AR_COEF_S64 v[AR_COEF_SLOTS], sum = 0;
++		int q = 0;
++
++		for (k = -4; k <= 4; k++) {
++			/* x = (k + 1/2 - p/32), scaled by dst/src when shrinking */
++			AR_COEF_S64 x = ((AR_COEF_S64)(32 * k + 16 - p) * AR_Q30) / 32;
++
++			if (dst < src)
++				x = x * dst / src;
++			v[k + 4] = (k >= -a && k <= a) ? ar_coef_lanczos(x, a) : 0;
++			sum += v[k + 4];
++		}
++		for (i = 0; i < AR_COEF_SLOTS; i++) {
++			w[p * AR_COEF_SLOTS + i] = (short)(v[i] * 16384 / sum);
++			q += w[p * AR_COEF_SLOTS + i];
++		}
++		w[p * AR_COEF_SLOTS + 4] += 16384 - q;
++	}
++	w[AR_COEF_PHASES * AR_COEF_SLOTS] = 0;
++	for (i = 0; i < AR_COEF_WORDS; i++)
++		words[i] = (AR_COEF_U32)(unsigned short)w[2 * i] |
++			   (AR_COEF_U32)(unsigned short)w[2 * i + 1] << 16;
++}
+-- 
+2.43.0
+
