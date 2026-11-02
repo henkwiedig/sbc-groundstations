@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Henk Wiedig <henk@wiedig.de>
 Date: Mon, 2 Nov 2026 17:50:36 +0100
-Subject: [PATCH] clk: ar9311-cgu: pixel clock below 100 MHz through the leaf
+Subject: [PATCH 3/3] clk: ar9311-cgu: pixel clock below 100 MHz through the leaf
  divider
 
 The BetaFPV P1 HD VRX drives 720p HDMI at 79.74/82.95 MHz, outside the

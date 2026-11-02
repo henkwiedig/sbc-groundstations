@@ -23,19 +23,23 @@ picture is still reachable and goes back to stock from the SD card.
   backlight and the GPIO 107 strap hog, plus the bridge on i2c0 (0x41,
   reset GPIO 107 active low, HPD GPIO 67) and `artosyn,timing-from-mode` on
   the VO and DSI nodes
-- `linux-patches/` (on ml-kernel's display drivers):
-  - 0001 artosyn_vo: timing words from the (adjusted) mode; the pixel clock
-    corrected for the CGU model's 1.034654 (`pclk_hz` then speaks true Hz of
-    the mode userspace set)
-  - 0002 artosyn_dsi: DSI line timing, lane rate and MIPI TX PLL from the
-    mode, stock's D-PHY blocks for the LT9611EX's lane rates
-  - 0003 lontium-lt9611ex: the bridge driver (EDID modes, stock's DSI-side
-    timing per HDMI mode)
-  - 0004 clk-ar9311-cgu: the pixel PLL over the VCO range stock uses and the
-    display leaf's divider, for the clocks below 100 MHz (720p)
-  - 0005 artosyn_vo: video scaled to the screen through the framebuffer
+- kernel patches, on ml-kernel's display drivers: first the ones the VR04
+  carries too (`../p1-gnd/linux-patches/`),
+  - 0001 artosyn_vo: timing words from the (adjusted) mode with the DT
+    property `artosyn,timing-from-mode`; the pixel clock corrected for the
+    CGU model's 1.034654 (`pclk_hz` then speaks true Hz of the mode
+    userspace set)
+  - 0002 artosyn_vo: video scaled to the screen through the framebuffer
     layer's scaler (stock's filter tables), and that layer's real chroma
     stride registers
+
+  then this unit's (`linux-patches/`):
+  - 0001 artosyn_dsi: DSI line timing, lane rate and MIPI TX PLL from the
+    mode, stock's D-PHY blocks for the LT9611EX's lane rates
+  - 0002 lontium-lt9611ex: the bridge driver (EDID modes, stock's DSI-side
+    timing per HDMI mode)
+  - 0003 clk-ar9311-cgu: the pixel PLL over the VCO range stock uses and the
+    display leaf's divider, for the clocks below 100 MHz (720p)
 - `overlay/`: `/etc/default/p1-gnd` (USB name "BetaFPV P1 HD VRX", stock
   product P1_GND_VRX, display modules, no backlight), update screens
   ("receiver"), `/usr/sbin/p1-vrx-diag`
@@ -93,9 +97,10 @@ and 60 Hz variants both map to the 60 Hz row, at their own rate). A mode is
 listed when the VO's pixel clock reaches its rate. The pixel PLL's VCO is
 400 MHz * 2^28 / word, the display leaf takes VCO / 8 through its divider
 (0x0a10404c bits[6:0]); like stock's own clock code the CGU driver keeps the
-VCO at 800..1600 MHz and divides in the leaf below 100 MHz (linux patch
-0004), so every row is reachable. The rates themselves were measured on a
-VR04 (same CGU) by its vblank rate: the leaf divider halves exactly, the
+VCO at 800..1600 MHz and divides in the leaf below 100 MHz (this unit's
+linux patch 0003), so every row is reachable. The rates themselves were
+measured on a VR04 (same CGU) by its vblank rate: the leaf divider halves
+exactly, the
 720p60 setting gives 79.74 MHz, the 1080p60 one 154.78 MHz.
 
 The video is scaled to the screen as on the Rockchip targets: PixelPilot

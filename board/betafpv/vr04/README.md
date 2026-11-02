@@ -8,7 +8,7 @@ ADC button ladder. Kernel: mainline 6.18.36 with MissingLynk's ml-kernel BSP
 Board files: what the P1 ground units share (the P1 HD VRX, `betafpv_p1_vrx`,
 is the same board with HDMI out instead of the panel) is in
 `board/betafpv/p1-gnd/`: overlay, post-build/post-image, kernel and busybox
-fragments, the host scripts. This directory has the VR04's own part:
+fragments, display driver patches, the host scripts. This directory has the VR04's own part:
 `device.env` (the dtb, file names and display modules for post-build and
 post-image, which get this directory as their argument), the panel's
 backlight and brightness, the update screens' wording, the host udev rule;
@@ -143,6 +143,16 @@ The panel comes up early in /init: vr04-splash loads the display drivers
 switches the backlight on (BRIGHTNESS in /etc/default/vr04-display). The
 kernel shows the splash again whenever PixelPilot exits. ml-kernel's
 QY45043A0 init also drives the nd043fhdm30p.
+
+Kernel patches on ml-kernel's display controller driver, shared with the
+P1 HD VRX (`../p1-gnd/linux-patches/`): a video frame that covers the
+screen scaled is shown through the controller's scaler (only its
+framebuffer layer has one; stock's filter), so a 720p stream fills the
+panel, PixelPilot asking DRM for the scaled plane as on the Rockchip
+targets (video at the panel's size stays on the overlay as before); and
+that layer's chroma strides come from the frame (they were fixed at a
+1920-wide frame's). The timing-from-mode patch is the VRX's and does
+nothing without its device-tree property.
 
 ## RF front end
 
