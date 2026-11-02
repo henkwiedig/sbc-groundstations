@@ -1,0 +1,257 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Henk Wiedig <henk@wiedig.de>
+Date: Mon, 2 Nov 2026 17:50:36 +0100
+Subject: [PATCH] clk: ar9311-cgu: pixel clock below 100 MHz through the leaf
+ divider
+
+The BetaFPV P1 HD VRX drives 720p HDMI at 79.74/82.95 MHz, outside the
+pixel PLL's +-5 percent band around the boot rate. Stock reaches it the
+way its own AR9311 clock code is built: the PLL word only ever within
+[2^26, 2^27) (VCO 800..1600 MHz, the /4 tap at 100..200 MHz true), and
+below that a divider in the DC pixel leaf (bits[6:0], parent / (field +
+1)).
+
+- the pixel PLL clamps to that word range instead of the boot band
+- a request that moves the word by more than 1/64 is written at once
+  (a mode change, as stock does it); trims keep the slew-limited ramp
+- the pixel leaf composite gets that divider, so CCF picks the
+  divider and PLL rate together (CLK_SET_RATE_PARENT)
+
+Checked on a VR04 by vblank rate (panel timing 2091x1144): field 1
+halves the rate (60.0004 -> 30.0002 Hz); with word 0x05042d8c (VCO
+1275.8 MHz) 33.3346 Hz = 79.74 MHz, word 0x052b31b9 154.78 MHz. The PLL
+range register's output-divider field and mux sel 4 do not move the
+leaf and stay untouched.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ drivers/clk/clk-ar9311-cgu.c | 102 ++++++++++++++++++++++++++---------
+ 1 file changed, 77 insertions(+), 25 deletions(-)
+
+diff --git a/drivers/clk/clk-ar9311-cgu.c b/drivers/clk/clk-ar9311-cgu.c
+index a3e1899..6e5bda5 100644
+--- a/drivers/clk/clk-ar9311-cgu.c
++++ b/drivers/clk/clk-ar9311-cgu.c
+@@ -4,12 +4,13 @@
+  *
+  * Most of the tree is registered read-only (recalc/get_parent/is_enabled only,
+  * every clock CLK_IGNORE_UNUSED). The writable elements are: the pixel PLL
+- * (slew-limited, +/-5 percent clamped fractional-word set_rate,
+- * hardware-validated), cgu_cpu_clk (the cpufreq path, vendor bank-flip
+- * sequence, see its section below), and the camera leaves, whose gates are
+- * operable and whose sensor master clock also has a settable parent mux (see
+- * AR_LEAF_GATE / AR_LEAF_MUX). The register map was extracted from
+- * libmpp_service.so and live-validated on hardware.
++ * (fractional-word set_rate within stock's VCO range, slew-limited for
++ * trims, hardware-validated) with the DC pixel leaf's divider, cgu_cpu_clk
++ * (the cpufreq path, vendor bank-flip sequence, see its section below), and
++ * the camera leaves, whose gates are operable and whose sensor master clock
++ * also has a settable parent mux (see AR_LEAF_GATE / AR_LEAF_MUX). The
++ * register map was extracted from libmpp_service.so and live-validated on
++ * hardware.
+  *
+  * Tree shape (all names are the vendor cgu_* and source names so clk_summary
+  * diffs against vendor captures and the table doc):
+@@ -40,6 +41,18 @@
+  * feedback word is a period word, rate = ref * KNUM / word; KNUM calibrated so
+  * the leaf rate is the true pixel clock through the /4 tap (stock word
+  * 0x0592eab1 -> 148.5005 MHz).
++ * Stock's own AR9311 pixel PLL code (libmpp_service.so, set_freq of source
++ * 0x1f, ar9311_abb_get_pixel) has the VCO at 400 MHz * 2^28 / word and only
++ * ever writes words in [2^26, 2^27), the VCO at 800..1600 MHz; the /4 tap is
++ * VCO / 8, so its true rate is 100..200 MHz there (the KNUM model reads
++ * 3.4654 percent above true, a constant scale the VO accounts for). Below
++ * that, stock divides in the leaf: bits[6:0] of the leaf register, rate =
++ * parent / (field + 1). VR04, 2026-11-02 (vblank rate, panel timing
++ * 2091x1144): field 1 halves the rate (60.0004 -> 30.0002 Hz), field 1 with
++ * word 0x05042d8c (VCO 1275.8 MHz) gives 33.3346 Hz = 79.74 MHz, word
++ * 0x052b31b9 (VCO 1238.2 MHz) 64.7042 Hz = 154.78 MHz. The PLL range
++ * register's output-divider field (+0x98 bits[5:3], 3 from the SPL) and mux
++ * sel 4 do not move the leaf, so neither is used.
+  * pixel_pll_clkN taps are modelled /1 /2 /4 /8 (only the /4 tap is validated;
+  * the 2^(N-1) vs (N+1) divisor question for the other taps is open and
+  * irrelevant until something consumes them).
+@@ -68,6 +81,8 @@
+ #define AR_PIX_MUX_SHIFT	8
+ #define AR_PIX_MUX_WIDTH	3
+ #define AR_PIX_GATE_BIT		12
++#define AR_PIX_DIV_SHIFT	0
++#define AR_PIX_DIV_WIDTH	7
+ /* reg index 2: PLL bank 0x0a108000 */
+ #define AR_PLL_POWER		0x00
+ #define AR_PLL_RANGE		0x98
+@@ -75,8 +90,15 @@
+ 
+ /* Calibrated VCO-model constant: rate = parent * AR_PLL_KNUM / word (see header). */
+ #define AR_PLL_KNUM		2314489657ULL
+-/* Steering band around the boot nominal, in tenths of a percent. */
+-#define AR_PLL_BAND_PERMILLE	50
++/* The words stock writes (VCO 800..1600 MHz, see header). */
++#define AR_PLL_WORD_MIN		(1U << 26)
++#define AR_PLL_WORD_MAX		((1U << 27) - 1)
++/*
++ * A request that moves the word by more than 1/64 (~1.6 percent) is a mode
++ * change, not a trim: written at once, as stock does, the display being off
++ * or about to be reprogrammed for it. Trims keep the ramp below.
++ */
++#define AR_PLL_JUMP_SHIFT	6
+ /*
+  * Per-write slew limit, hardware-measured via the DSI INT_ST1 bit7 latch: single
+  * word steps >= ~0.2 percent fire a transient DPI-FIFO error in either direction
+@@ -89,7 +111,7 @@
+ 
+ static DEFINE_SPINLOCK(ar9311_cgu_lock);
+ 
+-/* ---------------- pixel PLL (the only settable element, unchanged) --------- */
++/* ---------------- pixel PLL ------------------------------------------------ */
+ 
+ struct ar9311_pixel_pll {
+ 	struct clk_hw hw;
+@@ -111,21 +133,33 @@ static unsigned long ar9311_pixel_pll_recalc_rate(struct clk_hw *hw,
+ 	return (unsigned long)div64_u64((u64)parent_rate * AR_PLL_KNUM, word);
+ }
+ 
+-static unsigned long ar9311_pixel_pll_clamp(struct ar9311_pixel_pll *pll,
++/* the rates of the words stock uses */
++static unsigned long ar9311_pixel_pll_clamp(unsigned long parent_rate,
+ 					    unsigned long rate)
+ {
+-	unsigned long lo = pll->boot_rate / 1000 * (1000 - AR_PLL_BAND_PERMILLE);
+-	unsigned long hi = pll->boot_rate / 1000 * (1000 + AR_PLL_BAND_PERMILLE);
++	u64 num = (u64)parent_rate * AR_PLL_KNUM;
++	unsigned long lo = (unsigned long)DIV64_U64_ROUND_UP(num, AR_PLL_WORD_MAX);
++	unsigned long hi = (unsigned long)div64_u64(num, AR_PLL_WORD_MIN);
+ 
+ 	return clamp(rate, lo, hi);
+ }
+ 
++/*
++ * The rate the PLL runs at for a request, through the word set_rate writes:
++ * the leaf divider takes DIV_ROUND_UP(parent, rate), so a PLL that ran a few
++ * Hz above what it reported here would turn a /1 into a /2.
++ */
+ static int ar9311_pixel_pll_determine_rate(struct clk_hw *hw,
+ 					   struct clk_rate_request *req)
+ {
+-	struct ar9311_pixel_pll *pll = to_ar9311_pixel_pll(hw);
++	u64 num = (u64)req->best_parent_rate * AR_PLL_KNUM;
++	unsigned long rate;
++
++	if (!req->best_parent_rate)
++		return -EINVAL;
+ 
+-	req->rate = ar9311_pixel_pll_clamp(pll, req->rate);
++	rate = ar9311_pixel_pll_clamp(req->best_parent_rate, req->rate);
++	req->rate = (unsigned long)div64_u64(num, div64_u64(num, rate));
+ 	return 0;
+ }
+ 
+@@ -139,10 +173,18 @@ static int ar9311_pixel_pll_set_rate(struct clk_hw *hw, unsigned long rate,
+ 	if (!parent_rate)
+ 		return -EINVAL;
+ 
+-	rate = ar9311_pixel_pll_clamp(pll, rate);
++	rate = ar9311_pixel_pll_clamp(parent_rate, rate);
+ 	/* Period word: bigger word = slower clock. */
+ 	word = (u32)div64_u64((u64)parent_rate * AR_PLL_KNUM, rate);
+ 
++	cur = readl(pll->base + AR_PLL_FBWORD);
++	if (abs_diff(word, cur) > cur >> AR_PLL_JUMP_SHIFT) {
++		spin_lock_irqsave(&ar9311_cgu_lock, flags);
++		writel(word, pll->base + AR_PLL_FBWORD);
++		spin_unlock_irqrestore(&ar9311_cgu_lock, flags);
++		return 0;
++	}
++
+ 	/*
+ 	 * Ramp to the target in slew-limited steps (see AR_PLL_SLEW_SHIFT). A
+ 	 * plain word write suffices per step, no relock kick: the fractional
+@@ -153,7 +195,6 @@ static int ar9311_pixel_pll_set_rate(struct clk_hw *hw, unsigned long rate,
+ 	 * only writer of the word, so one read up front suffices; each step
+ 	 * then moves cur at least 1 toward word, bounding the loop.
+ 	 */
+-	cur = readl(pll->base + AR_PLL_FBWORD);
+ 	while (cur != word) {
+ 		u32 max_step = max(cur >> AR_PLL_SLEW_SHIFT, 1U);
+ 
+@@ -186,8 +227,8 @@ static const struct clk_ops ar9311_pixel_pll_ops = {
+ 
+ /*
+  * Debugfs steering knob, /sys/kernel/debug/ar9311_pixclk_rate: read = current leaf
+- * rate, write = clk_set_rate on the leaf (propagates to the PLL through the
+- * read-only mux, clamped to the +/-5 percent band). Mainline's writable
++ * rate, write = clk_set_rate on the leaf (the leaf divider and, through the
++ * read-only mux, the PLL, within its range). Mainline's writable
+  * clk debugfs needs a compile-time define, so validation and userspace pacing
+  * prototypes get their own knob here instead.
+  */
+@@ -1093,6 +1134,7 @@ static int ar9311_cgu_probe(struct platform_device *pdev)
+ 	struct clk_hw_onecell_data *data;
+ 	struct clk_hw *hw, *pix_hw;
+ 	struct clk_mux *mux;
++	struct clk_divider *div;
+ 	struct clk_gate *gate;
+ 	struct clk_init_data init = {};
+ 	const char *osc_name;
+@@ -1173,14 +1215,17 @@ static int ar9311_cgu_probe(struct platform_device *pdev)
+ 	}
+ 
+ 	/* 3. The DC pixel leaf (id 0x29), the one leaf with a consumer. Mux is
+-	 * READ-ONLY; the gate is operable (artosyn_vo enables it); rate requests
+-	 * propagate through the selected tap into the PLL: with no rate hw in
+-	 * the composite and CLK_SET_RATE_PARENT set, CCF forwards round/set_rate
+-	 * to the current parent (leaf rate == tap rate == PLL/4 on this hardware).
++	 * READ-ONLY; the gate is operable (artosyn_vo enables it); the divider
++	 * (bits[6:0], parent / (field + 1)) is the rate element: with
++	 * CLK_SET_RATE_PARENT its determine_rate weighs each divider against
++	 * what the PLL behind the selected tap can do (leaf rate == tap rate ==
++	 * PLL/4 at field 0, the boot state), so a rate below the PLL's range
++	 * takes a divider and the PLL stays in it.
+ 	 */
+ 	mux = devm_kzalloc(dev, sizeof(*mux), GFP_KERNEL);
++	div = devm_kzalloc(dev, sizeof(*div), GFP_KERNEL);
+ 	gate = devm_kzalloc(dev, sizeof(*gate), GFP_KERNEL);
+-	if (!mux || !gate)
++	if (!mux || !div || !gate)
+ 		return -ENOMEM;
+ 
+ 	mux->reg = crg_base + AR_PIX_CRG_REG;
+@@ -1188,6 +1233,12 @@ static int ar9311_cgu_probe(struct platform_device *pdev)
+ 	mux->mask = BIT(AR_PIX_MUX_WIDTH) - 1;
+ 	mux->lock = &ar9311_cgu_lock;
+ 
++	div->reg = crg_base + AR_PIX_CRG_REG;
++	div->shift = AR_PIX_DIV_SHIFT;
++	div->width = AR_PIX_DIV_WIDTH;
++	div->flags = CLK_DIVIDER_ROUND_CLOSEST;
++	div->lock = &ar9311_cgu_lock;
++
+ 	gate->reg = crg_base + AR_PIX_CRG_REG;
+ 	gate->bit_idx = AR_PIX_GATE_BIT;
+ 	gate->lock = &ar9311_cgu_lock;
+@@ -1201,7 +1252,7 @@ static int ar9311_cgu_probe(struct platform_device *pdev)
+ 					   ar9311_pixclk_parents,
+ 					   ARRAY_SIZE(ar9311_pixclk_parents),
+ 					   &mux->hw, &clk_mux_ro_ops,
+-					   NULL, NULL,
++					   &div->hw, &clk_divider_ops,
+ 					   &gate->hw, &clk_gate_ops,
+ 					   CLK_SET_RATE_PARENT | CLK_IGNORE_UNUSED);
+ 
+@@ -1311,11 +1362,12 @@ static int ar9311_cgu_probe(struct platform_device *pdev)
+ 
+ 	crg = readl(crg_base + AR_PIX_CRG_REG);
+ 	dev_info(dev,
+-		 "CGU up: %zu leaves (%zu with operable gates) + settable cpu clk (%lu Hz, reg=0x%08x mirror=0x%08x); pixel fbword=0x%08x (model %lu Hz), sel=%lu gate=%s\n",
++		 "CGU up: %zu leaves (%zu with operable gates) + settable cpu clk (%lu Hz, reg=0x%08x mirror=0x%08x); pixel fbword=0x%08x (model %lu Hz), sel=%lu div=%lu gate=%s\n",
+ 		 ARRAY_SIZE(ar9311_leaves) + 1, gated, clk_hw_get_rate(&cpu->hw),
+ 		 readl(cpu->reg), readl(cpu->mirror),
+ 		 readl(pll_base + AR_PLL_FBWORD), pll->boot_rate,
+ 		 (crg >> AR_PIX_MUX_SHIFT) & (BIT(AR_PIX_MUX_WIDTH) - 1UL),
++		 ((crg >> AR_PIX_DIV_SHIFT) & (BIT(AR_PIX_DIV_WIDTH) - 1UL)) + 1,
+ 		 (crg & BIT(AR_PIX_GATE_BIT)) ? "on" : "off");
+ 
+ 	return 0;
+-- 
+2.43.0
+
