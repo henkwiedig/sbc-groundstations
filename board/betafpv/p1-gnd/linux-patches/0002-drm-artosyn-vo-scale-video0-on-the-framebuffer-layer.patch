@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Henk Wiedig <henk@wiedig.de>
 Date: Mon, 2 Nov 2026 19:53:59 +0100
-Subject: [PATCH] drm/artosyn: vo: scale video0 on the framebuffer layer
+Subject: [PATCH 2/2] drm/artosyn: vo: scale video0 on the framebuffer layer
 
 The DC's framebuffer layer (the primary) has a scaler, the overlay banks
 have none (stock's reg_overlay_set writes no scale register). Stock
