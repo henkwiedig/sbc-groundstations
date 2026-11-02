@@ -31,6 +31,8 @@ picture is still reachable and goes back to stock from the SD card.
     mode, stock's D-PHY blocks for the LT9611EX's lane rates
   - 0003 lontium-lt9611ex: the bridge driver (EDID modes, stock's DSI-side
     timing per HDMI mode)
+  - 0004 clk-ar9311-cgu: the pixel PLL over the VCO range stock uses and the
+    display leaf's divider, for the clocks below 100 MHz (720p)
 - `overlay/`: `/etc/default/p1-gnd` (USB name "BetaFPV P1 HD VRX", stock
   product P1_GND_VRX, display modules, no backlight), update screens
   ("receiver"), `/usr/sbin/p1-vrx-diag`
@@ -74,23 +76,26 @@ userspace probes it, with the sink's preferred mode marked; PixelPilot takes
 its `--screen-mode` (PIXELPILOT_SCREEN_MODE, the menu) when the list has it,
 else the preferred one. Listed are the modes this chain drives:
 
-| HDMI mode | DSI side (stock) | pixel clock | now |
+| HDMI mode | DSI side (stock) | pixel clock | PLL VCO, leaf divider |
 |---|---|---|---|
-| 1920x1080@60 | 2293x1125, 928.8 Mbps | 154.78 MHz | yes |
-| 1920x1080@50 | 2880x1125, 972 Mbps | 162.0 MHz | no |
-| 1280x720@60 | 1772x750, 478.44 Mbps | 79.74 MHz | no |
-| 1280x720@50 | 2212x750, 498 Mbps | 82.95 MHz | no |
-| 1920x1080@30 | 2293x1125, 464.4 Mbps | 77.39 MHz | no |
+| 1920x1080@60 | 2293x1125, 928.8 Mbps | 154.78 MHz | 1238.2 MHz, /1 |
+| 1920x1080@50 | 2880x1125, 972 Mbps | 162.0 MHz | 1296.0 MHz, /1 |
+| 1280x720@60 | 1772x750, 478.44 Mbps | 79.74 MHz | 1275.8 MHz, /2 |
+| 1280x720@50 | 2212x750, 498 Mbps | 82.95 MHz | 1327.2 MHz, /2 |
+| 1920x1080@30 | 2293x1125, 464.4 Mbps | 77.39 MHz | 1238.2 MHz, /2 |
 
 The bridge puts the DSI-side timing of the chosen mode into the adjusted
 mode, the VO and DSI host scan that, the chip outputs the HDMI mode (59.94
 and 60 Hz variants both map to the 60 Hz row, at their own rate). A mode is
-listed when the VO's pixel clock reaches its rate: ml-kernel's CGU driver
-keeps the pixel PLL within +-5 % of its boot rate (~141-156 MHz true), so
-today that is 1080p60 only; the other rows (and their D-PHY sets) are there
-for when the clock goes further (stock clocks them from the MIPI TX PLL).
-The VO's video planes do not scale: 1080p video on a 720p mode would show
-a 1280x720 cut of it. When the sink's preferred mode is not drivable the
+listed when the VO's pixel clock reaches its rate. The pixel PLL's VCO is
+400 MHz * 2^28 / word, the display leaf takes VCO / 8 through its divider
+(0x0a10404c bits[6:0]); like stock's own clock code the CGU driver keeps the
+VCO at 800..1600 MHz and divides in the leaf below 100 MHz (linux patch
+0004), so every row is reachable. The rates themselves were measured on a
+VR04 (same CGU) by its vblank rate: the leaf divider halves exactly, the
+720p60 setting gives 79.74 MHz, the 1080p60 one 154.78 MHz. The VO's video
+planes do not scale: 1080p video on a 720p mode would show a 1280x720 cut
+of it. When the sink's preferred mode is not drivable the
 first drivable row becomes the preferred one; with no EDID (no sink at boot,
 no I2C answer) the list is the drivable rows, 1080p60 preferred. The
 connector stays "connected" (PixelPilot needs that; the chip follows the
@@ -159,11 +164,13 @@ An OpenIPC image carries its unit's device tree: sysupgrade (SD card or
 - Whether the bridge locks to this DSI timing and keeps the picture under
   the vsync lock's +-1000 ppm pixel clock trims (`--vsync-lock` is on, as on
   the VR04).
-- The pixel clock: 154.7775 MHz true = 160.14 MHz in the CGU model, close
-  to the top of its +-5 % band around the boot rate (161.3 MHz). The other
-  modes need the CGU driver to go further (another divider tap or stock's
-  MIPI TX PLL source); that can be tried on a VR04 (same CGU) by its vsync
-  rate.
+- Whether the LT9611EX locks to each mode's DSI timing. The SoC side of all
+  five rows ran on a VR04 with this image (RAM boot, 2026-11-02, the bridge
+  driver in its no-I2C mode): each mode set through DRM scans at its rate
+  (60.0003, 50.0001, 60.0002, 50.0003, 30.0000 Hz), the DSI at stock's lane
+  rate with no DSI error, PixelPilot's `--screen-mode` takes 720p60/50 and
+  falls back to 1080p60 for a mode the list lacks, and `pclk_hz` trims
+  +-500 ppm at 720p (60.0303 / 59.9699 Hz).
 - The EDID read (RH2:/RH3:) is from stock's code, not seen.
 - Which buttons the VRX has (the ladder is the goggles', stock's DT is the
   same; 2.1.x adds a "res" key at 1.7 V).
