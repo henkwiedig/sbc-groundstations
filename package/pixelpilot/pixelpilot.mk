@@ -7,7 +7,7 @@
 # The V4L2 platform (the BetaFPV VR04's wave5 decoder/encoder and Artosyn VO)
 # is PixelPilot's v4l2-wave5 branch, on top of the Rockchip commit below.
 ifeq ($(BR2_PACKAGE_PIXELPILOT_V4L2),y)
-PIXELPILOT_VERSION=df021f78755ef9b2e727797cbf06f7d68f1960c5
+PIXELPILOT_VERSION=e6a2b5b344150cef3bea28962806a1b0a6e182b3
 else
 PIXELPILOT_VERSION=a03c0947808f50f9679f74cf106ba19c40de1ee1
 endif
