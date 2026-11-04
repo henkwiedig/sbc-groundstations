@@ -1,0 +1,959 @@
+From: Gee <gehee@users.noreply.github.com>
+Subject: [PATCH] video: rockchip: mpp: rkvdec2: decode a picture as its slices arrive
+
+A picture had to be in memory whole before the RK3568's decoder could start
+on it, so over a link that sends each picture in slices, decoding began only
+once the last slice was in. The decoder can do better, undocumented: in
+stream mode (h26x_stream_mode set, h26x_stream_lastpacket clear) it raises
+buf_empty when its data runs out, without an error, and waits; given the
+next part as a new packet - RLC base at it, 16-byte aligned with the rest in
+strm_start_bit, str_len its length, lastpacket on the last part, dec_e
+written again with dec_e_rewrite_valid set - it goes on. Raising str_len
+alone, not writing dec_e, or writing it without dec_e_rewrite_valid does
+not wake it, nor does a part that ends at its last byte with no zero
+padding after it. Tested on the air unit's 1080p100 stream: bit-exact,
+deblocking and SAO across the slice boundary included, with waits of up to
+10 ms between parts; the time from the last slice to the finished picture
+halves (median 0.95 ms against 1.8 ms for the whole picture, on the
+decoder; 2.0 ms against 5.1 ms through MPP).
+
+An interrupt is a pause only when buf_empty is the one status bit set of
+bits 2-9 (0x043 seen at a pause): with ready, cabac_end or colmv_ref_err as
+well the decoder is done or failed, and a restart would set it going again.
+
+MPP_CMD_STREAM_APPEND, in a range of its own (0x800), hands a session's
+streamed picture its next part: an offset and length in its stream buffer,
+and MPP_STREAM_LAST on the last. The decoder gets it at once if it is
+waiting, or from the queue when it runs out. No data with MPP_STREAM_LAST
+ends a picture whose rest is lost: it gets 64 zero bytes as its last part,
+the end its data would have had - or, on a full queue, the part queued last
+becomes the last. A part the picture cannot take, outside its buffer or with
+no room in its queue, ends it the same way and comes back
+MPP_STREAM_NO_PICTURE, as for a picture already ended. Busy or late is a
+result, never an error: an error would leave the picture open, the decoder
+waiting for a part that is not coming, and the request's msgs behind in
+mpp_collect_msgs(), which now gives them back on any error. The appends name
+no picture: they go to the session's newest streamed one, and one still open
+when the next is sent is ended then. MPP_STREAM_PROBE asks whether the
+device streams at all.
+
+The decoder's own watchdog counts during a wait and tops out near 1 ms, so a
+streamed task runs without it, and the driver keeps the watch.
+rk_vcodec.rkvdec2_stream_wait_ms bounds a wait, then ends the picture the
+same way. It is a safety net - the client ends a picture whose rest is lost
+as soon as it knows - and has to outlast a key picture's second slice, which
+can take over 250 ms over the radio: 400 ms by default, below the 500 ms
+task timeout. rk_vcodec.rkvdec2_stream_stall_ms (50 ms, 0 for none) bounds
+the decoding in between: a decoder that raises nothing for that long after it
+was started or given a part is taken for hung, and its task ends as the task
+timeout ends one - dec_timeout_sta, a reset - but now, not after 500 ms. A
+whole 1080p picture decodes in under 4 ms. The waits stay under the task
+timeout counted from the task's start as the driver records it:
+mpp_task.on_run is only kept with timing_en on. A picture sent for streaming
+to a decoder that cannot stream gets its last packet, and its watchdog, back.
+
+MPP_STREAM_WAIT waits until the session's streamed picture has decoded the
+data it has - its first slice is then in its output buffer, the second
+still on its way - or is done, and says when it paused: a client can put
+the picture on screen before the rest arrives. A signal ends the wait as its
+timeout does. MPP_STREAM_PROBE answers MPP_STREAM_CAP_WAIT in length; a
+kernel without it would have taken the wait for an append.
+
+Link mode hands the decoder tasks from tables and cannot pause one, so with
+rk_vcodec.rkvdec2_stream (on by default, read at probe) the RK3568 decoder
+uses the single-task path. The link-mode node dump, run on IOMMU faults,
+skips the tables that path does not have, and there dumps once a minute at
+most: it busy-waits 28 ms in hard irq.
+
+Signed-off-by: Gee <gehee@users.noreply.github.com>
+---
+ drivers/video/rockchip/mpp/mpp_common.c       |   3 +
+ drivers/video/rockchip/mpp/mpp_rkvdec2.c      | 554 +++++++++++++++++++++++++-
+ drivers/video/rockchip/mpp/mpp_rkvdec2.h      |  80 ++++
+ drivers/video/rockchip/mpp/mpp_rkvdec2_link.c |  18 +-
+ include/uapi/linux/rk-mpp.h                   |  49 +++
+ 5 files changed, 701 insertions(+), 3 deletions(-)
+
+diff --git a/drivers/video/rockchip/mpp/mpp_common.c b/drivers/video/rockchip/mpp/mpp_common.c
+index db93061..17476b6 100644
+--- a/drivers/video/rockchip/mpp/mpp_common.c
++++ b/drivers/video/rockchip/mpp/mpp_common.c
+@@ -1185,6 +1185,7 @@ static int mpp_check_cmd_v1(__u32 cmd)
+ 	found = (cmd >= MPP_CMD_SEND_BASE && cmd < MPP_CMD_SEND_BUTT) ? true : found;
+ 	found = (cmd >= MPP_CMD_POLL_BASE && cmd < MPP_CMD_POLL_BUTT) ? true : found;
+ 	found = (cmd >= MPP_CMD_CONTROL_BASE && cmd < MPP_CMD_CONTROL_BUTT) ? true : found;
++	found = (cmd >= MPP_CMD_STREAM_BASE && cmd < MPP_CMD_STREAM_BUTT) ? true : found;
+ 
+ 	return found ? 0 : -EINVAL;
+ }
+@@ -1619,6 +1620,8 @@ session_switch_done:
+ 	if (ret) {
+ 		mpp_err("session %d process cmd %x ret %d\n",
+ 			session->index, req->cmd, ret);
++		/* fpvOS: give the msgs back; each refused request kept one until close */
++		put_task_msgs(msgs);
+ 		return ret;
+ 	}
+ 
+diff --git a/drivers/video/rockchip/mpp/mpp_rkvdec2.c b/drivers/video/rockchip/mpp/mpp_rkvdec2.c
+index 50ec933..dbe0cce 100644
+--- a/drivers/video/rockchip/mpp/mpp_rkvdec2.c
++++ b/drivers/video/rockchip/mpp/mpp_rkvdec2.c
+@@ -391,6 +391,520 @@ void *rkvdec2_alloc_task(struct mpp_session *session,
+ 	return &task->mpp_task;
+ }
+ 
++/*
++ * Stream mode (fpvOS). A picture can go to the decoder with only its first
++ * part, its first slice, in memory, and the rest is handed over while it
++ * decodes, by MPP_CMD_STREAM_APPEND: the decoder starts on the first slice
++ * while the next is still on its way. Nothing of this is documented by
++ * Rockchip; it was found on the RK3568 (vdpu34x) by experiment:
++ *
++ * - With h26x_stream_mode set and h26x_stream_lastpacket clear, a decoder
++ *   that runs out of data raises buf_empty (no error) and waits.
++ * - It goes on when given the next part as a new packet: RLC base at the
++ *   part (16-byte aligned, the rest of the way in strm_start_bit), str_len
++ *   its length, lastpacket set on the last part, and dec_e written again -
++ *   which it only takes with dec_e_rewrite_valid set. Raising str_len
++ *   alone, or not writing dec_e, does not wake it. A part should end in
++ *   zero padding, as MPP pads a whole picture: one that stops at its last
++ *   byte leaves the decoder waiting.
++ * - The result is bit-exact, deblocking and SAO across the slice boundary
++ *   included, with a wait of 10 ms between the parts.
++ * - Its own watchdog (dec_timeout_e) counts during the wait and has a
++ *   ceiling near 1 ms, so a stream task runs without it. The driver keeps
++ *   the watch instead, a timer for each state the decoder is in: waiting
++ *   for data, bounded by rkvdec2_stream_wait_ms, and decoding the data it
++ *   has, bounded by rkvdec2_stream_stall_ms.
++ *
++ * Link mode hands the decoder its tasks from tables and has no way to pause
++ * one, so streaming needs the single-task path: rkvdec2_stream (read at
++ * probe) turns the RK3568's link mode off.
++ */
++static bool rkvdec2_stream = true;
++module_param(rkvdec2_stream, bool, 0444);
++MODULE_PARM_DESC(rkvdec2_stream, "RK3568: take pictures streamed slice by slice (turns link mode off)");
++
++/*
++ * A safety net: the client ends a picture whose rest is lost as soon as it
++ * knows (the next picture's first slice). It has to outlast the slowest part:
++ * a key picture's second slice can take over 250 ms to come over the radio.
++ * Below the 500 ms after which a task times out.
++ */
++static int rkvdec2_stream_wait_ms = 400;
++module_param(rkvdec2_stream_wait_ms, int, 0644);
++MODULE_PARM_DESC(rkvdec2_stream_wait_ms, "how long a streamed picture waits for its next part before it is ended");
++
++/*
++ * The decoder's own watchdog, in software: how long it may work on the data
++ * it has without an interrupt - the end of that data, or of the picture -
++ * before it is taken for hung and reset, as its watchdog would have done
++ * within a millisecond. Without it a hang mid-picture held the decoder until
++ * the task's 500 ms timeout. A whole 1080p picture decodes in under 4 ms;
++ * the rest is room for a slow clock and a busy memory bus. 0 leaves it to
++ * the task timeout.
++ */
++static int rkvdec2_stream_stall_ms = 50;
++module_param(rkvdec2_stream_stall_ms, int, 0644);
++MODULE_PARM_DESC(rkvdec2_stream_stall_ms, "how long a streamed picture may decode without an interrupt before it is taken for hung (0: off)");
++
++#define RKVDEC_STRM_ZERO_SIZE	SZ_4K
++#define RKVDEC_STRM_ZERO_LEN	64
++
++static bool rkvdec2_strm_capable(struct mpp_dev *mpp)
++{
++	struct rkvdec2_dev *dec = to_rkvdec2_dev(mpp);
++
++	return rkvdec2_stream && mpp->task_capacity == 1 && dec->strm_zero;
++}
++
++/* Under strm_lock: the decoder works on data it has; watch it for a hang. */
++static void rkvdec2_strm_watch(struct rkvdec2_dev *dec, struct rkvdec2_task *task)
++{
++	int ms = READ_ONCE(rkvdec2_stream_stall_ms);
++
++	if (ms <= 0)
++		return;
++	dec->strm_runner = task;
++	dec->strm_stall_due = ktime_add_ms(ktime_get(), ms);
++	hrtimer_start(&dec->strm_stall_timer, dec->strm_stall_due, HRTIMER_MODE_ABS_HARD);
++}
++
++/* Under strm_lock: the decoder stopped, or the task is gone. */
++static void rkvdec2_strm_unwatch(struct rkvdec2_dev *dec, struct rkvdec2_task *task)
++{
++	if (dec->strm_runner == task) {
++		dec->strm_runner = NULL;
++		/* never hrtimer_cancel() here: the callback takes this lock */
++		hrtimer_try_to_cancel(&dec->strm_stall_timer);
++	}
++}
++
++/* Under strm_lock, with the task on the decoder: give it the next part. */
++static void rkvdec2_strm_feed(struct mpp_dev *mpp, struct rkvdec2_task *task,
++			      const struct rkvdec2_strm_chunk *c)
++{
++	u32 skip = c->addr & 15;
++	u32 r15 = task->reg[RKVDEC_REG_STRM_PARAM_INDEX] & ~RKVDEC_STRM_START_BIT_MASK;
++	u32 r64 = task->reg[RKVDEC_REG_H26X_SET_INDEX];
++
++	mpp_write_relaxed(mpp, RKVDEC_REG_RLC_BASE, c->addr - skip);
++	mpp_write_relaxed(mpp, RKVDEC_REG_STRM_PARAM,
++			  r15 | ((skip * 8) << RKVDEC_STRM_START_BIT_SHIFT));
++	mpp_write_relaxed(mpp, RKVDEC_REG_STR_LEN, c->len + skip);
++	mpp_write_relaxed(mpp, RKVDEC_REG_H26X_SET,
++			  c->last ? r64 | RKVDEC_H26X_LASTPACKET : r64);
++	/* the registers before the restart */
++	wmb();
++	mpp_write(mpp, RKVDEC_REG_START_EN_BASE,
++		  task->reg[mpp->var->hw_info->reg_en] | RKVDEC_START_EN);
++	rkvdec2_strm_watch(to_rkvdec2_dev(mpp), task);
++	if (c->last)
++		task->strm_last = true;
++}
++
++/* Under strm_lock: stop the wait timer if it watches this task. */
++static void rkvdec2_strm_unwait(struct rkvdec2_dev *dec, struct rkvdec2_task *task)
++{
++	task->strm_waiting = false;
++	if (dec->strm_waiter == task) {
++		dec->strm_waiter = NULL;
++		/* never hrtimer_cancel() here: the callback takes this lock */
++		hrtimer_try_to_cancel(&dec->strm_timer);
++	}
++}
++
++/*
++ * Under strm_lock: hand the task a part - to the decoder if it waits for
++ * one, else to its queue. False if the queue is full.
++ */
++static bool rkvdec2_strm_give(struct mpp_dev *mpp, struct rkvdec2_task *task,
++			      const struct rkvdec2_strm_chunk *c)
++{
++	if (task->strm_waiting && mpp->cur_task == &task->mpp_task) {
++		/* it waits for exactly this */
++		rkvdec2_strm_unwait(to_rkvdec2_dev(mpp), task);
++		rkvdec2_strm_feed(mpp, task, c);
++	} else if (task->strm_count - task->strm_head < RKVDEC_STRM_CHUNKS) {
++		task->strm_q[task->strm_count++ % RKVDEC_STRM_CHUNKS] = *c;
++	} else {
++		return false;
++	}
++	if (c->last)
++		task->strm_closed = true;
++	return true;
++}
++
++/*
++ * Under strm_lock: the rest of the picture is lost - end it where its data
++ * ends. It gets 64 zero bytes as its last part, the end its data would have
++ * had; on a full queue the part queued last becomes the last instead, its
++ * own zero padding the end. An end always gets in: a picture left open would
++ * hold the decoder until its wait ran out.
++ */
++static void rkvdec2_strm_cut(struct mpp_dev *mpp, struct rkvdec2_task *task)
++{
++	struct rkvdec2_dev *dec = to_rkvdec2_dev(mpp);
++	struct rkvdec2_strm_chunk c = {
++		.addr = (u32)dec->strm_zero->iova,
++		.len = RKVDEC_STRM_ZERO_LEN,
++		.last = true,
++	};
++
++	dec->strm_lost++;
++	task->strm_closed = true;
++	/* full, so not empty; and a task waiting for data has an empty queue */
++	if (!rkvdec2_strm_give(mpp, task, &c))
++		task->strm_q[(task->strm_count - 1) % RKVDEC_STRM_CHUNKS].last = true;
++}
++
++/*
++ * Hard irq, a streamed picture's interrupt. Out of data and nothing else -
++ * of status bits 2-9 only buf_empty: not done, no error - is a pause: give
++ * the decoder the next part if one is queued, else let it wait for one.
++ * False for the end of the picture: done or failed, out of data after its
++ * last part, or already taken for hung.
++ */
++static bool rkvdec2_strm_irq(struct mpp_dev *mpp, struct rkvdec2_task *task, u32 status)
++{
++	struct rkvdec2_dev *dec = to_rkvdec2_dev(mpp);
++	unsigned long flags;
++	bool taken = true;
++
++	spin_lock_irqsave(&dec->strm_lock, flags);
++	/* it stopped: whatever comes next, it is not decoding what it had */
++	rkvdec2_strm_unwatch(dec, task);
++	if (task->strm_last || task->strm_hung) {
++		taken = false;
++	} else if ((status & RKVDEC_STRM_STA_MASK) != RKVDEC_BUF_EMPTY_STA) {
++		/*
++		 * Out of data but also done, or with an error: an end. A
++		 * restart would set a finished decoder going again. Kept for
++		 * the log when buf_empty came with a bit that is no error.
++		 */
++		if ((status & RKVDEC_BUF_EMPTY_STA) &&
++		    !(status & (RKVDEC_ERROR_STA | RKVDEC_TIMEOUT_STA | RKVDEC_BUS_STA)))
++			task->strm_end_sta = status;
++		taken = false;
++	} else if (task->strm_head < task->strm_count) {
++		rkvdec2_strm_feed(mpp, task, &task->strm_q[task->strm_head++ % RKVDEC_STRM_CHUNKS]);
++	} else {
++		task->strm_waiting = true;
++		dec->strm_waiter = task;
++		dec->strm_waits++;
++		if (!task->strm_paused) {
++			struct rkvdec2_session_priv *priv = task->mpp_task.session ?
++				task->mpp_task.session->priv : NULL;
++
++			task->strm_paused = true;
++			if (priv) {
++				priv->strm_pause_us = ktime_to_us(ktime_get());
++				priv->strm_paused_seq = task->strm_seq;
++				wake_up_all(&dec->strm_wq);
++			}
++		}
++		{
++			/* The wait restarts at each pause, but the task's own 500 ms
++			 * timeout runs from its start: end the picture before that,
++			 * whatever its pauses add up to. */
++			s64 ran = ktime_ms_delta(ktime_get(), task->strm_start);
++			s64 wait = min_t(s64, READ_ONCE(rkvdec2_stream_wait_ms), 450 - ran);
++
++			hrtimer_start(&dec->strm_timer, ms_to_ktime(max_t(s64, wait, 1)),
++				      HRTIMER_MODE_REL_HARD);
++		}
++	}
++	spin_unlock_irqrestore(&dec->strm_lock, flags);
++
++	return taken;
++}
++
++/* The wait ran out: end the picture where its data ends. */
++static enum hrtimer_restart rkvdec2_strm_timer(struct hrtimer *timer)
++{
++	struct rkvdec2_dev *dec = container_of(timer, struct rkvdec2_dev, strm_timer);
++	struct rkvdec2_task *task;
++	unsigned long flags;
++
++	spin_lock_irqsave(&dec->strm_lock, flags);
++	task = dec->strm_waiter;
++	if (task && task->strm_waiting && dec->mpp.cur_task == &task->mpp_task) {
++		task->strm_timed_out = true;
++		rkvdec2_strm_cut(&dec->mpp, task);
++	}
++	spin_unlock_irqrestore(&dec->strm_lock, flags);
++
++	return HRTIMER_NORESTART;
++}
++
++/*
++ * The decoder had data for rkvdec2_stream_stall_ms and raised nothing: it
++ * hangs. Handled as an interrupt of its own watchdog would be, now instead
++ * of at the task's 500 ms timeout: the task ends with dec_timeout_sta, the
++ * way mpp_task_timeout_work() ends one, and the decoder is reset.
++ */
++static enum hrtimer_restart rkvdec2_strm_stall(struct hrtimer *timer)
++{
++	struct rkvdec2_dev *dec = container_of(timer, struct rkvdec2_dev, strm_stall_timer);
++	struct mpp_dev *mpp = &dec->mpp;
++	struct rkvdec2_task *task;
++	struct mpp_task *mpp_task;
++	unsigned long flags;
++
++	spin_lock_irqsave(&dec->strm_lock, flags);
++	task = dec->strm_runner;
++	/* watched again while this waited for the lock: not due yet */
++	if (!task || ktime_before(ktime_get(), dec->strm_stall_due))
++		goto unlock;
++	dec->strm_runner = NULL;
++	mpp_task = &task->mpp_task;
++	/* unless an interrupt or the task timeout is handling it already */
++	if (mpp->cur_task != mpp_task ||
++	    test_and_set_bit(TASK_STATE_HANDLE, &mpp_task->state))
++		goto unlock;
++	task->strm_hung = true;
++	dec->strm_hangs++;
++	cancel_delayed_work(&mpp_task->timeout_work);
++	mpp->irq_status = RKVDEC_TIMEOUT_STA | RKVDEC_IRQ_RAW | RKVDEC_IRQ;
++	set_bit(TASK_STATE_TIMEOUT, &mpp_task->state);
++	kthread_queue_work(&mpp->queue->worker, &mpp->work);
++unlock:
++	spin_unlock_irqrestore(&dec->strm_lock, flags);
++
++	return HRTIMER_NORESTART;
++}
++
++/* A task being made: is it a streamed picture? Then it takes appends. */
++static void rkvdec2_strm_open(struct mpp_session *session, struct rkvdec2_task *task)
++{
++	struct mpp_dev *mpp = session->mpp;
++	struct rkvdec2_dev *dec = to_rkvdec2_dev(mpp);
++	struct rkvdec2_session_priv *priv = session->priv;
++	struct mpp_task *mpp_task = &task->mpp_task;
++	u32 r64 = task->reg[RKVDEC_REG_H26X_SET_INDEX];
++	struct rkvdec2_task *prev;
++	unsigned long flags;
++	u32 i;
++
++	if (!(r64 & RKVDEC_H26X_STREAM_MODE) || (r64 & RKVDEC_H26X_LASTPACKET) || !priv)
++		return;
++	if (!rkvdec2_strm_capable(mpp)) {
++		/* nothing more will come: decode what there is, watched as any */
++		task->reg[RKVDEC_REG_H26X_SET_INDEX] |= RKVDEC_H26X_LASTPACKET;
++		task->reg[RKVDEC_REG_IMPORTANT_INDEX] |= RKVDEC_DEC_TIMEOUT_E;
++		return;
++	}
++	for (i = 0; i < mpp_task->mem_count; i++) {
++		struct mpp_mem_region *r = &mpp_task->mem_regions[i];
++
++		if (r->reg_idx == RKVDEC_REG_RLC_BASE_INDEX) {
++			task->strm_buf = (u32)r->iova;
++			task->strm_buf_len = r->len;
++			break;
++		}
++	}
++	if (!task->strm_buf_len) {
++		task->reg[RKVDEC_REG_H26X_SET_INDEX] |= RKVDEC_H26X_LASTPACKET;
++		task->reg[RKVDEC_REG_IMPORTANT_INDEX] |= RKVDEC_DEC_TIMEOUT_E;
++		return;
++	}
++
++	/* its watchdog counts while it waits; the driver's timers watch it instead */
++	task->reg[RKVDEC_REG_IMPORTANT_INDEX] &= ~RKVDEC_DEC_TIMEOUT_E;
++	/* the pause, and the restart that ends it */
++	task->reg[RKVDEC_REG_IMPORTANT_INDEX] |= RKVDEC_BUF_EMPTY_EN | RKVDEC_DEC_E_REWRITE_VALID;
++	task->strm = true;
++
++	spin_lock_irqsave(&dec->strm_lock, flags);
++	/*
++	 * The session's appends go to its newest streamed picture: they name
++	 * none. One still open gets no more, so it ends here, rather than hold
++	 * the decoder until its wait runs out.
++	 */
++	prev = priv->strm_task;
++	if (prev && !prev->strm_closed)
++		rkvdec2_strm_cut(mpp, prev);
++	priv->strm_task = task;
++	task->strm_seq = ++priv->strm_seq;
++	if (!dec->strm_pictures++)
++		dev_info(mpp->dev, "decoding pictures as their slices arrive (stream mode)\n");
++	spin_unlock_irqrestore(&dec->strm_lock, flags);
++}
++
++/* The task goes on the decoder with its first part: its timers start now. */
++static void rkvdec2_strm_run(struct mpp_dev *mpp, struct rkvdec2_task *task)
++{
++	struct rkvdec2_dev *dec = to_rkvdec2_dev(mpp);
++	unsigned long flags;
++
++	spin_lock_irqsave(&dec->strm_lock, flags);
++	/* not mpp_task.on_run: that one is only kept while timing_en is on */
++	task->strm_start = ktime_get();
++	rkvdec2_strm_watch(dec, task);
++	spin_unlock_irqrestore(&dec->strm_lock, flags);
++}
++
++/* A task done or dropped: it takes no more appends. */
++static void rkvdec2_strm_close(struct mpp_session *session, struct rkvdec2_task *task)
++{
++	struct rkvdec2_dev *dec;
++	struct rkvdec2_session_priv *priv;
++	unsigned long flags;
++
++	if (!task->strm || !session || !session->mpp)
++		return;
++	dec = to_rkvdec2_dev(session->mpp);
++	priv = session->priv;
++
++	spin_lock_irqsave(&dec->strm_lock, flags);
++	task->strm_closed = true;
++	rkvdec2_strm_unwait(dec, task);
++	rkvdec2_strm_unwatch(dec, task);
++	if (priv && priv->strm_task == task)
++		priv->strm_task = NULL;
++	if (priv && (s32)(task->strm_seq - priv->strm_done_seq) > 0)
++		priv->strm_done_seq = task->strm_seq;
++	spin_unlock_irqrestore(&dec->strm_lock, flags);
++	wake_up_all(&dec->strm_wq);
++
++	if (task->strm_timed_out) {
++		task->strm_timed_out = false;
++		dev_info_ratelimited(session->mpp->dev,
++				     "a streamed picture's rest did not come in %d ms: ended (%llu of %llu pictures lost their rest, %llu waited)\n",
++				     READ_ONCE(rkvdec2_stream_wait_ms), dec->strm_lost,
++				     dec->strm_pictures, dec->strm_waits);
++	}
++	if (task->strm_hung) {
++		task->strm_hung = false;
++		dev_info_ratelimited(session->mpp->dev,
++				     "a streamed picture's decoder ran %d ms on its data without an interrupt: taken for hung, reset (%llu so far)\n",
++				     READ_ONCE(rkvdec2_stream_stall_ms), dec->strm_hangs);
++	}
++	if (task->strm_end_sta) {
++		u64 n = ++dec->strm_odd_ends;
++
++		if (n <= 3 || !(n % 1000))
++			dev_info(session->mpp->dev,
++				 "a streamed picture's decoder ran out of data with status %#x before its last part: taken for its end (%llu so far)\n",
++				 task->strm_end_sta, n);
++		task->strm_end_sta = 0;
++	}
++}
++
++/*
++ * MPP_CMD_STREAM_APPEND. Busy, late or lost, the outcome is in result: the
++ * ioctl fails only on memory it cannot read or write. An error would leave
++ * the request's msgs behind in mpp_collect_msgs() and two lines on the
++ * console, and tell the client no more than result does.
++ */
++static int rkvdec2_strm_append(struct mpp_session *session, struct mpp_request *req)
++{
++	struct mpp_dev *mpp = session->mpp;
++	struct rkvdec2_dev *dec = to_rkvdec2_dev(mpp);
++	struct rkvdec2_session_priv *priv = session->priv;
++	struct mpp_stream_append a;
++	struct rkvdec2_strm_chunk c;
++	struct rkvdec2_task *task;
++	unsigned long flags;
++
++	size_t len = min_t(size_t, req->size, sizeof(a));
++
++	/* time_us, the last field, only MPP_STREAM_WAIT needs */
++	memset(&a, 0, sizeof(a));
++	if (len < offsetof(struct mpp_stream_append, time_us) ||
++	    copy_from_user(&a, req->data, len))
++		return -EFAULT;
++
++	if ((a.flags & MPP_STREAM_WAIT) && priv && rkvdec2_strm_capable(mpp)) {
++		u32 seq;
++
++		spin_lock_irqsave(&dec->strm_lock, flags);
++		seq = priv->strm_seq;
++		spin_unlock_irqrestore(&dec->strm_lock, flags);
++		/* a signal ends the wait as its timeout does */
++		(void)wait_event_interruptible_timeout(dec->strm_wq,
++				READ_ONCE(priv->strm_paused_seq) == seq ||
++				(s32)(READ_ONCE(priv->strm_done_seq) - seq) >= 0 ||
++				READ_ONCE(priv->strm_seq) != seq,
++				msecs_to_jiffies(min_t(u32, a.length, 1000)));
++		spin_lock_irqsave(&dec->strm_lock, flags);
++		if (priv->strm_paused_seq == seq) {
++			a.result = MPP_STREAM_PAUSED;
++			a.time_us = priv->strm_pause_us;
++		} else if ((s32)(priv->strm_done_seq - seq) >= 0 || priv->strm_seq != seq) {
++			a.result = MPP_STREAM_DONE;
++		} else {
++			a.result = MPP_STREAM_TIMEOUT;
++		}
++		spin_unlock_irqrestore(&dec->strm_lock, flags);
++		goto out;
++	}
++
++	if (a.flags & MPP_STREAM_PROBE) {
++		a.result = rkvdec2_strm_capable(mpp) ? MPP_STREAM_SUPPORTED : MPP_STREAM_NO_PICTURE;
++		a.length = MPP_STREAM_CAP_WAIT;
++		goto out;
++	}
++	a.result = MPP_STREAM_NO_PICTURE;
++	if (!rkvdec2_strm_capable(mpp) || !priv)
++		goto out;
++
++	spin_lock_irqsave(&dec->strm_lock, flags);
++	task = priv->strm_task;
++	if (!task || task->strm_closed)
++		goto unlock;
++	if (!a.length) {
++		/* nothing to add: only an end means anything */
++		if (a.flags & MPP_STREAM_LAST)
++			rkvdec2_strm_cut(mpp, task);
++		a.result = MPP_STREAM_TAKEN;
++		goto unlock;
++	}
++	if (a.offset < task->strm_buf_len && a.length <= task->strm_buf_len - a.offset) {
++		c.addr = task->strm_buf + a.offset;
++		c.len = a.length;
++		c.last = !!(a.flags & MPP_STREAM_LAST);
++		if (rkvdec2_strm_give(mpp, task, &c)) {
++			a.result = MPP_STREAM_TAKEN;
++			goto unlock;
++		}
++	}
++	/*
++	 * Outside its buffer, or no room in its queue: the picture cannot have
++	 * this part, nor any after it. It ends where its data ends, and the
++	 * client hears NO_PICTURE, as for a picture ended already - not left
++	 * open, waiting for a part that is not coming.
++	 */
++	rkvdec2_strm_cut(mpp, task);
++unlock:
++	spin_unlock_irqrestore(&dec->strm_lock, flags);
++out:
++	if (copy_to_user(req->data, &a, len))
++		return -EFAULT;
++	return 0;
++}
++
++static int rkvdec2_rk3568_irq(struct mpp_dev *mpp)
++{
++	struct mpp_task *mpp_task = mpp->cur_task;
++	u32 status = mpp_read(mpp, RKVDEC_REG_INT_EN);
++
++	if (!(status & RKVDEC_IRQ_RAW))
++		return IRQ_NONE;
++
++	/*
++	 * Cleared before anything restarts the decoder: a short part can end,
++	 * and raise its own interrupt, before a later clear would wipe it.
++	 */
++	mpp->irq_status = status;
++	mpp_write(mpp, RKVDEC_REG_INT_EN, 0);
++
++	/* a streamed picture's pause is handled here; its end as any other */
++	if (mpp_task && to_rkvdec2_task(mpp_task)->strm &&
++	    rkvdec2_strm_irq(mpp, to_rkvdec2_task(mpp_task), status))
++		return IRQ_HANDLED;
++
++	return IRQ_WAKE_THREAD;
++}
++
+ static void *rkvdec2_rk3568_alloc_task(struct mpp_session *session,
+ 				       struct mpp_task_msgs *msgs)
+ {
+@@ -408,6 +922,8 @@ static void *rkvdec2_rk3568_alloc_task(struct mpp_session *session,
+ 	fmt = RKVDEC_GET_FORMAT(task->reg[reg_fmt]);
+ 	/* workaround for rk356x, fix the hw bug of cabac/cavlc switch only in h264d */
+ 	task->need_hack = (fmt == RKVDEC_FMT_H264D);
++	if (fmt == RKVDEC_FMT_H265D)
++		rkvdec2_strm_open(session, task);
+ 
+ 	return mpp_task;
+ }
+@@ -478,6 +994,8 @@ static int rkvdec2_rk3568_run(struct mpp_dev *mpp, struct mpp_task *mpp_task)
+ 	if (task->need_hack)
+ 		rkvdec2_3568_hack_fix(mpp);
+ 
++	if (task->strm)
++		rkvdec2_strm_run(mpp, task);
+ 	ret = rkvdec2_run(mpp, mpp_task);
+ 
+ 	mpp_debug_leave();
+@@ -711,6 +1229,8 @@ static int rkvdec2_finish(struct mpp_dev *mpp, struct mpp_task *mpp_task)
+ 			mpp_read_req(mpp, task->reg, s, e);
+ 		}
+ 	}
++	rkvdec2_strm_close(mpp_task->session, task);
++
+ 	/* revert hack for irq status */
+ 	reg_ret_status = mpp->var->hw_info->reg_ret_status;
+ 	task->reg[reg_ret_status] = task->irq_status;
+@@ -774,6 +1294,8 @@ int rkvdec2_free_task(struct mpp_session *session, struct mpp_task *mpp_task)
+ {
+ 	struct rkvdec2_task *task = to_rkvdec2_task(mpp_task);
+ 
++	rkvdec2_strm_close(session, task);
++
+ 	mpp_task_finalize(session, mpp_task);
+ 	kfree(task);
+ 
+@@ -814,6 +1336,11 @@ static int rkvdec2_control(struct mpp_session *session, struct mpp_request *req)
+ 			}
+ 		}
+ 	} break;
++	case MPP_CMD_STREAM_APPEND: {
++		if (!session || !session->mpp)
++			return -EINVAL;
++		return rkvdec2_strm_append(session, req);
++	} break;
+ 	default: {
+ 		mpp_err("unknown mpp ioctl cmd %x\n", req->cmd);
+ 	} break;
+@@ -1228,6 +1755,20 @@ static int rkvdec2_rk3568_init(struct mpp_dev *mpp)
+ 	else
+ 		dev_err(mpp->dev, "failed to create buffer for hack\n");
+ 
++	spin_lock_init(&dec->strm_lock);
++	init_waitqueue_head(&dec->strm_wq);
++	hrtimer_init(&dec->strm_timer, CLOCK_MONOTONIC, HRTIMER_MODE_REL_HARD);
++	dec->strm_timer.function = rkvdec2_strm_timer;
++	hrtimer_init(&dec->strm_stall_timer, CLOCK_MONOTONIC, HRTIMER_MODE_ABS_HARD);
++	dec->strm_stall_timer.function = rkvdec2_strm_stall;
++	if (rkvdec2_stream) {
++		dec->strm_zero = mpp_dma_alloc(mpp->dev, RKVDEC_STRM_ZERO_SIZE);
++		if (dec->strm_zero && dec->strm_zero->vaddr)
++			memset(dec->strm_zero->vaddr, 0, RKVDEC_STRM_ZERO_SIZE);
++		else if (!dec->strm_zero)
++			dev_err(mpp->dev, "stream mode off: no buffer for its zeros\n");
++	}
++
+ 	ret = rkvdec2_init(mpp);
+ 
+ 	return ret;
+@@ -1249,6 +1790,10 @@ static int rkvdec2_rk3568_exit(struct mpp_dev *mpp)
+ 	struct rkvdec2_dev *dec = to_rkvdec2_dev(mpp);
+ 
+ 	rkvdec2_devfreq_remove(mpp);
++	hrtimer_cancel(&dec->strm_timer);
++	hrtimer_cancel(&dec->strm_stall_timer);
++	if (dec->strm_zero)
++		mpp_dma_free(dec->strm_zero);
+ 
+ 	if (dec->fix)
+ 		mpp_dma_free(dec->fix);
+@@ -1509,7 +2054,7 @@ static struct mpp_dev_ops rkvdec_v2_dev_ops = {
+ static struct mpp_dev_ops rkvdec_rk3568_dev_ops = {
+ 	.alloc_task = rkvdec2_rk3568_alloc_task,
+ 	.run = rkvdec2_rk3568_run,
+-	.irq = rkvdec2_irq,
++	.irq = rkvdec2_rk3568_irq,
+ 	.isr = rkvdec2_isr,
+ 	.finish = rkvdec2_finish,
+ 	.result = rkvdec2_result,
+@@ -1918,6 +2463,13 @@ static int rkvdec2_probe_default(struct platform_device *pdev)
+ 	}
+ 
+ 	rkvdec2_alloc_rcbbuf(pdev, dec);
++	/* streaming needs the single-task path: link mode cannot pause a task */
++	if (rkvdec2_stream && mpp->task_capacity > 1 &&
++	    of_device_is_compatible(dev->of_node, "rockchip,rkv-decoder-rk3568")) {
++		dev_info(dev, "link mode off for stream mode (task-capacity %u -> 1)\n",
++			 mpp->task_capacity);
++		mpp->task_capacity = 1;
++	}
+ 	rkvdec2_link_init(pdev, dec);
+ 
+ 	irq_proc = mpp_dev_irq;
+diff --git a/drivers/video/rockchip/mpp/mpp_rkvdec2.h b/drivers/video/rockchip/mpp/mpp_rkvdec2.h
+index 1f91290..c8e180e 100644
+--- a/drivers/video/rockchip/mpp/mpp_rkvdec2.h
++++ b/drivers/video/rockchip/mpp/mpp_rkvdec2.h
+@@ -9,6 +9,7 @@
+ #ifndef __ROCKCHIP_MPP_RKVDEC2_H__
+ #define __ROCKCHIP_MPP_RKVDEC2_H__
+ 
++#include <linux/hrtimer.h>
+ #include <linux/iopoll.h>
+ #include <linux/of_platform.h>
+ #include <linux/of_address.h>
+@@ -69,6 +70,31 @@
+ #define RKVDEC_IRQ			BIT(0)
+ #define RKVDEC_PERF_WORKING_CNT		0x41c
+ 
++/* stream mode (MPP_CMD_STREAM_APPEND), RK3568 / vdpu34x registers */
++#define RKVDEC_DEC_TIMEOUT_E		BIT(5)		/* reg11 */
++#define RKVDEC_BUF_EMPTY_EN		BIT(6)		/* reg11 */
++#define RKVDEC_DEC_E_REWRITE_VALID	BIT(10)		/* reg11 */
++#define RKVDEC_REG_STRM_PARAM		0x3c		/* reg15 */
++#define RKVDEC_REG_STRM_PARAM_INDEX	15
++#define RKVDEC_STRM_START_BIT_SHIFT	5
++#define RKVDEC_STRM_START_BIT_MASK	(0x7f << RKVDEC_STRM_START_BIT_SHIFT)
++#define RKVDEC_REG_STR_LEN		0x40		/* reg16 */
++#define RKVDEC_REG_H26X_SET		0x100		/* reg64 */
++#define RKVDEC_REG_H26X_SET_INDEX	64
++#define RKVDEC_H26X_STREAM_MODE		BIT(2)
++#define RKVDEC_H26X_LASTPACKET		BIT(3)
++#define RKVDEC_STRM_CHUNKS		16
++/*
++ * Status bits 2-9 (reg224): a pause has buf_empty and none of the others.
++ * Seen on the RK3568: 0x043 at a pause, 0x107 (ready, cabac end) at the end
++ * of a picture, 0x023 at a watchdog timeout, 0x017 (ready, error) at the end
++ * of a cut one.
++ */
++#define RKVDEC_STRM_STA_MASK		(RKVDEC_READY_STA | RKVDEC_BUS_STA | \
++					 RKVDEC_ERROR_STA | RKVDEC_TIMEOUT_STA | \
++					 RKVDEC_BUF_EMPTY_STA | RKVDEC_COLMV_REF_ERR_STA | \
++					 RKVDEC_CABAC_END_STA | RKVDEC_SOFT_RESET_READY)
++
+ /* perf sel reference register */
+ #define RKVDEC_PERF_SEL_OFFSET		0x20000
+ #define RKVDEC_PERF_SEL_NUM		64
+@@ -116,6 +142,13 @@ struct rkvdec2_rcb_info {
+ 	struct rcb_info_elem elem[RKVDEC_MAX_RCB_NUM];
+ };
+ 
++/* part of a streamed picture's data, not yet handed to the decoder */
++struct rkvdec2_strm_chunk {
++	u32 addr;	/* iova of its first byte */
++	u32 len;
++	bool last;
++};
++
+ struct rkvdec2_task {
+ 	struct mpp_task mpp_task;
+ 
+@@ -144,6 +177,27 @@ struct rkvdec2_task {
+ 
+ 	/* link table DMA buffer */
+ 	struct mpp_dma_buffer *table;
++
++	/*
++	 * Stream mode: the picture was sent with only its first part, and the
++	 * rest comes by MPP_CMD_STREAM_APPEND while it decodes. All of it is
++	 * under the device's strm_lock.
++	 */
++	bool strm;		/* sent in stream mode */
++	bool strm_closed;	/* takes no more: its last part came, or it was ended */
++	bool strm_last;		/* the decoder has been given the last part */
++	bool strm_waiting;	/* the decoder ran out and waits for more */
++	bool strm_timed_out;	/* ended by rkvdec2_stream_wait_ms */
++	bool strm_paused;	/* it has waited at least once */
++	bool strm_hung;		/* taken for hung by rkvdec2_stream_stall_ms */
++	u32 strm_end_sta;	/* out of data with more status than that: its end */
++	ktime_t strm_start;	/* when it went on the decoder */
++	u32 strm_seq;		/* its number in the session (MPP_STREAM_WAIT) */
++	u32 strm_buf;		/* iova of the stream buffer's start */
++	u32 strm_buf_len;
++	u32 strm_head;		/* queue of parts not yet given to the decoder */
++	u32 strm_count;
++	struct rkvdec2_strm_chunk strm_q[RKVDEC_STRM_CHUNKS];
+ };
+ 
+ struct rkvdec2_session_priv {
+@@ -156,6 +210,17 @@ struct rkvdec2_session_priv {
+ 	} codec_info[DEC_INFO_BUTT];
+ 	/* rcb_info for sram */
+ 	struct rkvdec2_rcb_info rcb_inf;
++	/* the session's picture taking stream appends, under strm_lock */
++	struct rkvdec2_task *strm_task;
++	/*
++	 * MPP_STREAM_WAIT looks at these, not at the task, which may be gone by
++	 * the time a waiter wakes: the number of the newest streamed picture,
++	 * of the newest that paused and when, and of the newest done.
++	 */
++	u32 strm_seq;
++	u32 strm_paused_seq;
++	u32 strm_done_seq;
++	u64 strm_pause_us;
+ };
+ 
+ struct rkvdec2_dev {
+@@ -212,6 +277,21 @@ struct rkvdec2_dev {
+ 	/* mmu info */
+ 	void __iomem *mmu_base;
+ 	u32 mmu_fault;
++
++	/* stream mode, see rkvdec2_strm_irq() */
++	spinlock_t strm_lock;
++	struct hrtimer strm_timer;
++	struct rkvdec2_task *strm_waiter;	/* the waiting picture the timer ends */
++	struct hrtimer strm_stall_timer;
++	struct rkvdec2_task *strm_runner;	/* the decoding picture it watches */
++	ktime_t strm_stall_due;
++	wait_queue_head_t strm_wq;		/* MPP_STREAM_WAIT */
++	struct mpp_dma_buffer *strm_zero;	/* what a picture whose rest is lost ends on */
++	u64 strm_pictures;
++	u64 strm_waits;
++	u64 strm_lost;
++	u64 strm_hangs;
++	u64 strm_odd_ends;
+ };
+ 
+ int mpp_set_rcbbuf(struct mpp_dev *mpp, struct mpp_session *session,
+diff --git a/drivers/video/rockchip/mpp/mpp_rkvdec2_link.c b/drivers/video/rockchip/mpp/mpp_rkvdec2_link.c
+index eb02bef..6361481 100644
+--- a/drivers/video/rockchip/mpp/mpp_rkvdec2_link.c
++++ b/drivers/video/rockchip/mpp/mpp_rkvdec2_link.c
+@@ -317,12 +317,18 @@ static void rkvdec_link_status_update(struct rkvdec_link_dev *dev)
+ 
+ static void rkvdec_link_node_dump(const char *func, struct rkvdec_link_dev *dev)
+ {
+-	u32 *table_base = (u32 *)dev->table->vaddr;
++	u32 *table_base;
+ 	u32 reg_count = dev->link_reg_count;
+-	u32 iova = (u32)dev->table->iova;
++	u32 iova;
+ 	u32 *reg = NULL;
+ 	u32 i, j;
+ 
++	/* no tables on the single-task path */
++	if (!dev->table)
++		return;
++	table_base = (u32 *)dev->table->vaddr;
++	iova = (u32)dev->table->iova;
++
+ 	for (i = 0; i < dev->task_capacity; i++) {
+ 		reg = table_base + i * reg_count;
+ 
+@@ -378,7 +384,15 @@ int rkvdec_link_dump(struct mpp_dev *mpp)
+ {
+ 	struct rkvdec2_dev *dec = to_rkvdec2_dev(mpp);
+ 	struct rkvdec_link_dev *dev = dec->link_dec;
++	static DEFINE_RATELIMIT_STATE(single_rs, 60 * HZ, 1);
+ 
++	/*
++	 * fpvOS: on the single-task path this is the IOMMU fault handler's
++	 * dump, in hard irq: 28 ms of udelay() and some 290 lines. Once a
++	 * minute is enough to see what faulted.
++	 */
++	if (!dev->table && !__ratelimit(&single_rs))
++		return 0;
+ 	rkvdec_link_status_update(dev);
+ 	rkvdec_link_reg_dump(__func__, dev);
+ 	rkvdec_link_counter(__func__, dev);
+diff --git a/include/uapi/linux/rk-mpp.h b/include/uapi/linux/rk-mpp.h
+index 9a24407..9e4f393 100644
+--- a/include/uapi/linux/rk-mpp.h
++++ b/include/uapi/linux/rk-mpp.h
+@@ -51,6 +51,15 @@ enum MPP_DEV_COMMAND_TYPE {
+ 	MPP_CMD_SEND_CODEC_INFO		= MPP_CMD_CONTROL_BASE + 3,
+ 	MPP_CMD_CONTROL_BUTT,
+ 
++	/*
++	 * fpvOS: a picture streamed into a running decode. Its own range, away
++	 * from Rockchip's control commands, so that neither side's next command
++	 * takes the other's number.
++	 */
++	MPP_CMD_STREAM_BASE		= 0x800,
++	MPP_CMD_STREAM_APPEND		= MPP_CMD_STREAM_BASE + 0,
++	MPP_CMD_STREAM_BUTT,
++
+ 	MPP_CMD_BUTT,
+ };
+ 
+@@ -73,6 +82,46 @@ struct mpp_request {
+ 
+ #define MPP_BAT_MSG_DONE		(0x00000001)
+ 
++/*
++ * MPP_CMD_STREAM_APPEND: more of the picture this session is decoding in
++ * stream mode (h26x_stream_mode set, lastpacket clear, when it was sent).
++ * The bytes are already in that picture's stream buffer, at offset; the
++ * decoder is handed them when it runs out of the ones before. A zero length
++ * with MPP_STREAM_LAST says the rest of the picture is lost: the decoder ends
++ * it as if its data had ended there. MPP_STREAM_PROBE alone asks whether this
++ * device takes stream appends at all. The kernel writes the outcome to result;
++ * a part the picture cannot take (outside its buffer, no room in its queue)
++ * ends it where its data ends and comes back MPP_STREAM_NO_PICTURE.
++ *
++ * MPP_STREAM_WAIT alone waits, up to length milliseconds, until the session's
++ * streamed picture has decoded all the data it has and waits for more - the
++ * part of the picture that data covers is then in its output buffer - or is
++ * done: result MPP_STREAM_PAUSED, with time_us the moment it paused
++ * (CLOCK_MONOTONIC), MPP_STREAM_DONE or MPP_STREAM_TIMEOUT. time_us needs the
++ * full struct; the first four fields are enough for everything else.
++ */
++struct mpp_stream_append {
++	__u32 offset;
++	__u32 length;
++	__u32 flags;
++	__u32 result;
++	__u64 time_us;
++};
++
++#define MPP_STREAM_LAST			(0x00000001)
++#define MPP_STREAM_WAIT			(0x40000000)
++#define MPP_STREAM_PROBE		(0x80000000)
++
++#define MPP_STREAM_TAKEN		(0)	/* queued or handed to the decoder */
++#define MPP_STREAM_NO_PICTURE		(1)	/* no picture is open: it ended, or never streamed */
++#define MPP_STREAM_SUPPORTED		(2)	/* answer to MPP_STREAM_PROBE */
++#define MPP_STREAM_PAUSED		(3)	/* MPP_STREAM_WAIT: it decoded what it had */
++#define MPP_STREAM_DONE			(4)	/* MPP_STREAM_WAIT: it finished without waiting */
++#define MPP_STREAM_TIMEOUT		(5)	/* MPP_STREAM_WAIT: neither in time */
++
++/* what MPP_STREAM_PROBE also answers, in length: a kernel without them leaves it 0 */
++#define MPP_STREAM_CAP_WAIT		(0x00000001)
++
+ struct mpp_bat_msg {
+ 	__u64 flag;
+ 	__u32 fd;
