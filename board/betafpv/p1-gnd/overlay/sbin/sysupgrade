@@ -374,7 +374,11 @@ if want env && [ -n "$(img_len env0)" ]; then
 	write_raw env0 env$target
 	if [ "$kind" = openipc ]; then
 		echo "$(mtd env$target) 0x0 0x8000 0x20000" > "$WORK/env.config"
-		fw_printenv 2>/dev/null | sed 's/=/ /' | fw_setenv -c "$WORK/env.config" -s - ||
+		# fw_printenv and fw_setenv share a lock (/var/lock/fw_printenv.lock):
+		# piped into each other, fw_setenv can take it first and wait for
+		# input that fw_printenv, waiting for the lock, never sends.
+		fw_printenv 2>/dev/null | sed 's/=/ /' > "$WORK/env.txt" &&
+			fw_setenv -c "$WORK/env.config" -s "$WORK/env.txt" ||
 			die "cannot carry the U-Boot environment over"
 	fi
 fi
