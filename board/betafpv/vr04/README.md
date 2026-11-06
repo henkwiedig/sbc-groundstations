@@ -103,7 +103,9 @@ does not take.
 
 Every unit needs its own backup first (factory = RF calibration, unique).
 Never activate a slot that has not booted once through U-Boot. Power-cycle
-rather than reboot: the SPL can hang after a warm reset.
+rather than reboot stock or an OpenIPC build without
+`../p1-gnd/linux-patches/0003`: their kernel arms the watchdog reset with a
+2.7 ms timeout, and from that the unit hangs until a power cycle.
 
 1. Backup from running stock (reads only; serial console + RNDIS):
    `../p1-gnd/scripts/vr04-backup.py ../betafpv/rev/backup-vr04-gnd-<factory md5>-<date>`
@@ -130,8 +132,9 @@ through U-Boot (step 5).
 
 `/usr/sbin/vr04-uboot` drops a running OpenIPC into U-Boot: 0x3 into
 0x0A106138 (stock's /etc/fb_reboot; bit 0 alone, as in MissingLynk's
-uboot-trigger, boots normally here), then a watchdog reset. U-Boot's `reset`
-boots the active slot again. `vr04-uboot-boot.py --trigger openipc` uses it.
+uboot-trigger, boots normally here), then a reboot: the kernel's restart is a
+watchdog reset, which keeps the register. U-Boot's `reset` boots the active
+slot again. `vr04-uboot-boot.py --trigger openipc` uses it.
 
 Updating the active slot A in place: `vr04-uboot-boot.py ram --source ymodem
 --trigger openipc`, then `vr04-install.py install IMAGE --backup DIR` (writes
