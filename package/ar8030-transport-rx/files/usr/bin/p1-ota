@@ -1,0 +1,213 @@
+#!/bin/sh
+#
+# p1-ota: updates the BetaFPV P1 air unit's OpenIPC firmware over the AR8030
+# link (ar_net0), from an update image on this ground station -- builder's
+# P1_SKY_*_OpenIPC_*.img (devices/ar9311_artosyn_artlynk-p1).
+#
+# Copies the image into the air's /tmp over ssh (no HTTP server, so it also
+# runs on grounds without python3, the VR04 among them) and runs the air's
+# own sysupgrade on it. That script owns the A/B flashing: it writes the
+# slot that is not running, reads each partition back, and only then makes
+# the new slot the active one in the GPT, so a failed update leaves the air
+# on its old slot. It carries this slot's settings into the new one --
+# passwords, ssh keys, /etc/default and the AR8030 pairing, without which
+# the new slot would never come back over this link.
+#
+# sysupgrade runs detached from the ssh session: a link drop while it
+# flashes does not stop it halfway, and this script asks how it ended.
+#
+# The uplink is the slow direction (MCS 1-2 under lifecycled --link-policy
+# 2): the ssh copy runs at ~115 KB/s. For the copy the air goes to MCS 1-5
+# and the original frame structure, as with ascent-ota, ~280 KB/s (raw TCP
+# gets ~380, dropbear's 24 KB receive window costs the rest), so an 11 MB
+# image takes ~45 s. The air reverts on its own after OTA_BOOST_SECS should
+# this script die.
+
+AIR=${AIR_IP:-192.168.100.1}
+AIR_SSH_PASS=${AIR_SSH_PASS:-12345}
+BOOST_SECS=${OTA_BOOST_SECS:-900}
+FLASH_SECS=${OTA_FLASH_SECS:-600}
+
+BOOST_ON="ar8030-linkctl frame-change 0 && ar8030-linkctl mcs-range 1 5"
+BOOST_OFF="ar8030-linkctl mcs-range 1 2; ar8030-linkctl frame-change 1"
+BOOST_PID=/tmp/p1-ota-boost.pid
+D=/tmp/p1-ota # on the air: image, sysupgrade, its log and exit code
+CHUNK=1048576
+
+usage() {
+	cat <<EOF
+Usage: $0 [options] <image.img>
+
+Flashes the P1 air unit's inactive slot with <image.img> (an OpenIPC
+P1_SKY_*.img) over ar_net0, carries its settings and pairing over, and
+reboots it into the new slot.
+
+  -x, --no-reboot      Flash and select the new slot, don't reboot.
+  --no-boost           Leave the uplink at its normal MCS/frame setup.
+  --sysupgrade=FILE    Run FILE on the air instead of its own
+                       /usr/sbin/sysupgrade.
+
+Environment: AIR_IP ($AIR), AIR_SSH_PASS, OTA_BOOST_SECS ($BOOST_SECS),
+OTA_FLASH_SECS ($FLASH_SECS, how long sysupgrade may take).
+EOF
+}
+
+die() {
+	echo "p1-ota: $*" >&2
+	exit 1
+}
+
+air() {
+	sshpass -p "$AIR_SSH_PASS" ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+		-o LogLevel=ERROR -o ConnectTimeout=10 -o ServerAliveInterval=5 -o ServerAliveCountMax=6 \
+		"root@$AIR" "$@"
+}
+
+no_reboot=
+boost=1
+sysupgrade_file=
+img=
+for i in "$@"; do
+	case "$i" in
+		-h | --help) usage; exit 0 ;;
+		-x | --no-reboot) no_reboot=1 ;;
+		--no-boost) boost= ;;
+		--sysupgrade=*) sysupgrade_file="${i#*=}" ;;
+		-*) usage; exit 1 ;;
+		*) img=$i ;;
+	esac
+done
+[ -n "$img" ] || { usage; exit 1; }
+[ -f "$img" ] || die "$img: no such file"
+[ -z "$sysupgrade_file" ] || [ -f "$sysupgrade_file" ] || die "$sysupgrade_file: no such file"
+
+# Artosyn update image: "OTRA", byte 6 the flash type (2 = NAND; the P1
+# SKY AIO's NOR images say 0), customer version at 0x2c. The air's
+# sysupgrade checks it all, SHA-256 included; this only spares a useless
+# copy over the link.
+case "$(head -c 8 "$img" | od -An -tx1 | tr -d ' \n')" in
+	4f545241????02*) ;;
+	4f545241*) die "$img is not a P1 SKY (NAND) image" ;;
+	41535700*) die "$img is a Caddx Ascent image: that is ascent-ota's" ;;
+	*) die "$img is not a P1 update image" ;;
+esac
+customer=$(dd if="$img" bs=1 skip=44 count=20 2>/dev/null | tr -d '\000')
+[ "$customer" = OpenIPC ] ||
+	die "$img is not an OpenIPC image (customer version \"$customer\"): stock firmware would not come back over this link"
+
+# Which slot (0/1) the air runs from; empty if it isn't a P1 (arto is the
+# P1's update-image tool) or runs from RAM.
+air_slot() {
+	air '[ -x /usr/sbin/arto ] && openipc-bsel check_cmdline' 2>/dev/null |
+		sed -n 's/.*bank=\([01]\)$/\1/p'
+}
+
+boosted=
+air_rm=
+cleanup() {
+	[ -n "$boosted" ] && boost_off
+	[ -n "$air_rm" ] && air "rm -rf $D" >/dev/null 2>&1
+}
+trap cleanup EXIT
+trap 'exit 1' INT TERM HUP
+
+boost_off() {
+	air "[ -f $BOOST_PID ] && kill \$(cat $BOOST_PID) 2>/dev/null; rm -f $BOOST_PID; $BOOST_OFF" >/dev/null 2>&1 ||
+		echo "p1-ota: could not restore the uplink; the air does it itself within ${BOOST_SECS}s" >&2
+	boosted=
+}
+
+echo "Air: $AIR"
+slot=$(air_slot)
+[ -n "$slot" ] || die "no ssh to root@$AIR, or it isn't a P1 air unit running from flash (link up? AIR_SSH_PASS?)"
+air '. /etc/os-release; echo "  running slot '"$slot"': $GITHUB_VERSION $BUILD_ID"'
+
+air "rm -rf $D && mkdir $D" || die "cannot create $D on the air"
+air_rm=1
+if [ -n "$sysupgrade_file" ]; then
+	air "cat > $D/sysupgrade && chmod +x $D/sysupgrade" <"$sysupgrade_file" ||
+		die "copying $sysupgrade_file to the air failed"
+else
+	# Older air builds' sysupgrade has two bugs, fixed in builder betafpv-p1:
+	# its U-Boot env carry-over (fw_printenv | fw_setenv -s -) deadlocks on
+	# the tools' shared lock about one run in three (9affcae), and it carries
+	# lifecycled's ar8030.json over but not the power level set (ar8030.power)
+	# or the paired marker. A copy with both lines fixed runs instead; each
+	# expression only matches the old line, so with a newer build the copy is
+	# the original.
+	fixed=$(air "sed -f /dev/stdin /usr/sbin/sysupgrade > $D/sysupgrade && chmod +x $D/sysupgrade &&
+		{ cmp -s /usr/sbin/sysupgrade $D/sysupgrade && echo same || echo fixed; }" <<'EOF'
+s#| fw_setenv -c "$WORK/env.config" -s - ||#> "$WORK/env.txt" \&\& fw_setenv -c "$WORK/env.config" -s "$WORK/env.txt" ||#
+s#lib/firmware/ar8030/ar8030\.json"$#lib/firmware/ar8030"#
+EOF
+	)
+	case "$fixed" in
+		same) ;;
+		fixed) echo "  older air build: its sysupgrade runs with the env-lock and carry-over fixes" ;;
+		*) die "cannot prepare the air's sysupgrade" ;;
+	esac
+fi
+
+if [ -n "$boost" ]; then
+	air "{ $BOOST_ON; } >/dev/null 2>&1 && { setsid sh -c 'sleep $BOOST_SECS; $BOOST_OFF' </dev/null >/dev/null 2>&1 & echo \$! > $BOOST_PID; }" ||
+		echo "p1-ota: uplink boost failed, copying at the normal rate" >&2
+	boosted=1
+fi
+
+size=$(wc -c < "$img") # no stat in the VR04 image
+chunks=$(((size + CHUNK - 1) / CHUNK))
+echo "Copying $(basename "$img") ($((size / 1024)) KiB) to the air"
+t0=$(date +%s)
+i=0
+while [ $i -lt $chunks ]; do
+	dd if="$img" bs=$CHUNK skip=$i count=1 2>/dev/null || exit 1
+	i=$((i + 1))
+	printf '\r  %d/%d MiB' $i $chunks >&2
+done | air "cat > $D/image.img" || { echo >&2; die "copying the image failed"; }
+secs=$(($(date +%s) - t0))
+[ $secs -gt 0 ] || secs=1
+echo "  in ${secs}s ($((size / 1024 / secs)) KiB/s)" >&2
+[ "$(air "wc -c < $D/image.img")" -eq "$size" ] 2>/dev/null || die "the copy on the air is incomplete"
+[ -n "$boosted" ] && boost_off
+
+# sysupgrade in its own session, its output in $D/log, its exit code in $D/rc.
+air "cd $D && : > log && setsid sh -c './sysupgrade --image=$D/image.img -x >log 2>&1; echo \$? > rc' </dev/null >/dev/null 2>&1 &" ||
+	die "cannot start sysupgrade on the air"
+air_rm= # it reads the image until it is done
+air "cd $D && { tail -n +1 -f log & t=\$!; i=0
+	while [ ! -s rc ] && [ \$i -lt $FLASH_SECS ]; do sleep 1; i=\$((i + 1)); done
+	sleep 1; kill \$t; [ -s rc ] && exit \$(cat rc); exit 124; }"
+rc=$?
+if [ $rc -eq 255 ]; then
+	echo "p1-ota: lost the session; waiting for the air's sysupgrade to finish" >&2
+	i=0
+	while [ $i -lt $((FLASH_SECS / 5)) ]; do
+		r=$(air "cat $D/rc 2>/dev/null || echo running") && [ "$r" != running ] && { rc=$r; break; }
+		i=$((i + 1))
+		sleep 5
+	done
+	[ $rc -eq 255 ] || air "tail -n 3 $D/log"
+fi
+[ $rc -eq 124 ] && die "sysupgrade is still running after ${FLASH_SECS}s (hung?): its log is $D/log on the air"
+[ $rc -eq 255 ] && die "no answer from the air: whether it flashed is unknown ($D/log on the air)"
+air_rm=1
+[ $rc -eq 0 ] || die "sysupgrade failed (see above); the air stays on slot $slot"
+
+new_slot=$((1 - slot))
+if [ -n "$no_reboot" ]; then
+	echo "Slot $new_slot flashed and active from the next boot; reboot the air to start it."
+	exit 0
+fi
+
+echo "Rebooting the air into slot $new_slot"
+air_rm=
+air 'busybox reboot -d 1 -f' >/dev/null 2>&1
+sleep 15
+deadline=$(($(date +%s) + 180))
+until now=$(air_slot) && [ -n "$now" ]; do
+	[ "$(date +%s)" -lt $deadline ] ||
+		die "the air is not back after 3 minutes (stuck booting slot $new_slot?) -- check it over USB"
+	sleep 4
+done
+[ "$now" = "$new_slot" ] || die "the air came back on slot $now, not $new_slot"
+air '. /etc/os-release; echo "Air back on slot '"$now"': $GITHUB_VERSION $BUILD_ID"'
