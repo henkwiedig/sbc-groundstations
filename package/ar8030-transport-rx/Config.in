@@ -34,6 +34,10 @@ config BR2_PACKAGE_AR8030_TRANSPORT_RX
 	  air unit over the link: it serves an ASW image over HTTP on
 	  ar_net0 and runs the air's sysupgrade --asw=<url> --copy-overlay.
 
+	  And /usr/bin/p1-ota, the same for a BetaFPV P1 air unit: it copies
+	  an OpenIPC P1_SKY_*.img into the air's /tmp over ssh and runs the
+	  air's sysupgrade on it, which keeps the settings and pairing.
+
 if BR2_PACKAGE_AR8030_TRANSPORT_RX
 
 config BR2_PACKAGE_AR8030_TRANSPORT_RX_KMOD
