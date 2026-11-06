@@ -1,0 +1,27 @@
+#!/bin/sh
+#
+# air-ota: updates the air unit on the other end of the link from an update
+# image on this ground station, with the tool for that image: p1-ota for a
+# BetaFPV P1 image (Artosyn ARTO, "OTRA"), ascent-ota for a Caddx Ascent image
+# (ASW). Options go through to that tool. PixelPilot's Drone -> Actions ->
+# OTA update runs it on the image picked from the SD card.
+
+img=
+for i in "$@"; do
+	case "$i" in
+		-*) ;;
+		*) img=$i ;;
+	esac
+done
+if [ -z "$img" ]; then
+	echo "Usage: $0 [options] <image.img>  (options as for p1-ota / ascent-ota)" >&2
+	exit 1
+fi
+[ -f "$img" ] || { echo "air-ota: $img: no such file" >&2; exit 1; }
+
+case "$(head -c 4 "$img" | od -An -tx1 | tr -d ' \n')" in
+	4f545241) exec p1-ota "$@" ;;
+	41535700) exec ascent-ota "$@" ;;
+esac
+echo "air-ota: $img is neither a BetaFPV P1 (ARTO) nor a Caddx Ascent (ASW) air-unit image" >&2
+exit 1

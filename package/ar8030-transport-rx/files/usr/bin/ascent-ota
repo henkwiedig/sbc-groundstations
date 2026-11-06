@@ -12,6 +12,12 @@
 # among them -- with the image's blank usrdata the new bank would boot
 # unpaired and never come back over this link.
 #
+# Without python3 (the VR04 image has none), or with OTA_TRANSPORT=ssh, the
+# image goes into the air's /tmp over ssh instead and sysupgrade takes that
+# file. The air holds the whole image in /tmp either way: its sysupgrade
+# downloads an URL there too. dropbear's 24 KiB receive window makes the ssh
+# copy ~30 % slower than HTTP.
+#
 # The uplink is the slow direction: the air holds it at MCS 1-2 (stock's
 # link policy, lifecycled --link-policy 2) inside the frame structure
 # lifecycled exchanges in the downlink's favour, ~1.1 Mbit/s of TCP. For
@@ -31,6 +37,8 @@ BOOST_ON="ar8030-linkctl frame-change 0 && ar8030-linkctl mcs-range 1 5"
 BOOST_OFF="ar8030-linkctl mcs-range 1 2; ar8030-linkctl frame-change 1"
 BOOST_PID=/tmp/ascent-ota-boost.pid
 PROGRESS=/tmp/ascent-ota.progress
+D=/tmp/ascent-ota # on the air, for the ssh copy
+CHUNK=1048576
 
 usage() {
 	cat <<EOF
@@ -47,7 +55,8 @@ new bank.
                        --copy-overlay: pass builder's sysupgrade).
 
 Environment: AIR_IP ($AIR), GND_IP ($GND), OTA_HTTP_PORT ($PORT),
-AIR_SSH_PASS, OTA_BOOST_SECS ($BOOST_SECS).
+AIR_SSH_PASS, OTA_BOOST_SECS ($BOOST_SECS), OTA_TRANSPORT (http with
+python3 here, else ssh).
 EOF
 }
 
@@ -56,9 +65,10 @@ die() {
 	exit 1
 }
 
+connect=10 # ssh connect timeout, short while the air reboots
 air() {
 	sshpass -p "$AIR_SSH_PASS" ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
-		-o LogLevel=ERROR -o ConnectTimeout=10 -o ServerAliveInterval=5 -o ServerAliveCountMax=6 \
+		-o LogLevel=ERROR -o ConnectTimeout=$connect -o ServerAliveInterval=5 -o ServerAliveCountMax=6 \
 		"root@$AIR" "$@"
 }
 
@@ -81,12 +91,22 @@ done
 [ "$(head -c 4 "$img" | od -An -tx1 | tr -d ' \n')" = 41535700 ] || die "$img is not an ASW image"
 [ -z "$sysupgrade_file" ] || [ -f "$sysupgrade_file" ] || die "$sysupgrade_file: no such file"
 
+case "${OTA_TRANSPORT:-auto}" in
+	http) http=1 ;;
+	ssh) http= ;;
+	auto) http=; command -v python3 >/dev/null 2>&1 && http=1 ;;
+	*) die "OTA_TRANSPORT must be http or ssh" ;;
+esac
+size=$(wc -c < "$img") # no stat in the VR04 image
+
 work=$(mktemp -d /tmp/ascent-ota.XXXXXX) || die "mktemp failed"
 http_pid=
 boosted=
+air_rm=
 cleanup() {
 	[ -n "$http_pid" ] && kill "$http_pid" 2>/dev/null
 	[ -n "$boosted" ] && boost_off
+	[ -n "$air_rm" ] && air "rm -rf $D" >/dev/null 2>&1
 	rm -rf "$work"
 }
 trap cleanup EXIT
@@ -118,27 +138,55 @@ air "$sysupgrade --help" 2>/dev/null | grep -q -- --copy-overlay ||
 	die "the air's sysupgrade has no --copy-overlay, so the new bank would boot unpaired.
 Flash a newer build once by USB, or pass --sysupgrade=<builder's sysupgrade>."
 
-# Served from a directory holding nothing but the image.
-name=$(basename "$img" | tr -c 'A-Za-z0-9._\n-' _)
-ln -s "$(realpath "$img")" "$work/$name"
-python3 -m http.server "$PORT" --bind "$GND" --directory "$work" >/dev/null 2>&1 &
-http_pid=$!
-url="http://$GND:$PORT/$name"
-i=0
-until curl -sfI -m 2 "$url" >/dev/null; do
-	i=$((i + 1))
-	[ $i -lt 10 ] && kill -0 "$http_pid" 2>/dev/null || die "HTTP server on $GND:$PORT did not come up"
-	sleep 0.5
-done
+if [ -n "$http" ]; then
+	# Served from a directory holding nothing but the image.
+	name=$(basename "$img" | tr -c 'A-Za-z0-9._\n-' _)
+	ln -s "$(realpath "$img")" "$work/$name"
+	python3 -m http.server "$PORT" --bind "$GND" --directory "$work" >/dev/null 2>&1 &
+	http_pid=$!
+	url="http://$GND:$PORT/$name"
+	i=0
+	until curl -sfI -m 2 "$url" >/dev/null; do
+		i=$((i + 1))
+		[ $i -lt 10 ] && kill -0 "$http_pid" 2>/dev/null || die "HTTP server on $GND:$PORT did not come up"
+		sleep 0.5
+	done
+else
+	free=$(air "df -k /tmp | awk 'NR == 2 { print \$4 }'")
+	[ "$free" -gt $((size / 1024 + 1024)) ] 2>/dev/null ||
+		die "the image needs $((size / 1024)) KiB in the air's /tmp, it has ${free:-?} KiB free"
+	air "rm -rf $D && mkdir $D" || die "cannot create $D on the air"
+	air_rm=1
+fi
 
 if [ -n "$boost" ]; then
 	air "{ $BOOST_ON; } >/dev/null 2>&1 && { setsid sh -c 'sleep $BOOST_SECS; $BOOST_OFF' </dev/null >/dev/null 2>&1 & echo \$! > $BOOST_PID; }" ||
-		echo "ascent-ota: uplink boost failed, downloading at the normal rate" >&2
+		echo "ascent-ota: uplink boost failed, copying at the normal rate" >&2
 	boosted=1
 fi
 
-echo "Image: $url ($(($(stat -L -c %s "$img") / 1024)) KiB)"
-air "rm -f $PROGRESS; SYSUPGRADE_PROGRESS=$PROGRESS $sysupgrade --asw=$url --copy-overlay -x"
+if [ -n "$http" ]; then
+	echo "Image: $url ($((size / 1024)) KiB)"
+	asw=$url
+else
+	chunks=$(((size + CHUNK - 1) / CHUNK))
+	echo "Copying $(basename "$img") ($((size / 1024)) KiB) to the air"
+	t0=$(date +%s)
+	i=0
+	while [ $i -lt $chunks ]; do
+		dd if="$img" bs=$CHUNK skip=$i count=1 2>/dev/null || exit 1
+		i=$((i + 1))
+		printf '\r  %d/%d MiB' $i $chunks >&2
+	done | air "cat > $D/image.img" || { echo >&2; die "copying the image failed"; }
+	secs=$(($(date +%s) - t0))
+	[ $secs -gt 0 ] || secs=1
+	echo "  in ${secs}s ($((size / 1024 / secs)) KiB/s)" >&2
+	[ "$(air "wc -c < $D/image.img")" -eq "$size" ] 2>/dev/null || die "the copy on the air is incomplete"
+	[ -n "$boosted" ] && boost_off
+	asw=$D/image.img
+	air_rm= # sysupgrade reads it until it is done
+fi
+air "rm -f $PROGRESS; SYSUPGRADE_PROGRESS=$PROGRESS $sysupgrade --asw=$asw --copy-overlay -x"
 rc=$?
 
 # sysupgrade keeps going if the session drops once it is flashing; ask how it ended.
@@ -159,6 +207,7 @@ fi
 kill "$http_pid" 2>/dev/null
 http_pid=
 [ $rc -eq 0 ] || die "sysupgrade failed (see above); the air stays on bank $bank"
+[ -n "$http" ] || air_rm=1 # flashed: the copy on the air can go
 
 new_bank=$((1 - bank))
 if [ -n "$no_reboot" ]; then
@@ -166,14 +215,21 @@ if [ -n "$no_reboot" ]; then
 	exit 0
 fi
 
+# Back is when the air answers with another boot id: right after the reboot
+# command the old system may still answer for a moment.
+boot_id=$(air 'cat /proc/sys/kernel/random/boot_id' 2>/dev/null)
 echo "Rebooting the air into bank $new_bank"
+air_rm= # the reboot clears /tmp
 air 'busybox reboot -d 1 -f' >/dev/null 2>&1
-sleep 15
+sleep 3
+connect=3
 deadline=$(($(date +%s) + 180))
-until now=$(air_bank) && [ -n "$now" ]; do
+until b=$(air 'cat /proc/sys/kernel/random/boot_id' 2>/dev/null) && [ -n "$b" ] && [ "$b" != "$boot_id" ]; do
 	[ "$(date +%s)" -lt $deadline ] ||
 		die "the air is not back after 3 minutes (unpaired? stuck booting bank $new_bank?) -- check it over USB"
-	sleep 4
+	sleep 2
 done
+connect=10
+now=$(air_bank)
 [ "$now" = "$new_bank" ] || die "the air came back on bank $now, not $new_bank"
 air '. /etc/os-release; echo "Air back on bank '"$now"': $GITHUB_VERSION $BUILD_ID"'

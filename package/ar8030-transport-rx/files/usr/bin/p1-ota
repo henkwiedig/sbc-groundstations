@@ -57,9 +57,10 @@ die() {
 	exit 1
 }
 
+connect=10 # ssh connect timeout, short while the air reboots
 air() {
 	sshpass -p "$AIR_SSH_PASS" ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
-		-o LogLevel=ERROR -o ConnectTimeout=10 -o ServerAliveInterval=5 -o ServerAliveCountMax=6 \
+		-o LogLevel=ERROR -o ConnectTimeout=$connect -o ServerAliveInterval=5 -o ServerAliveCountMax=6 \
 		"root@$AIR" "$@"
 }
 
@@ -82,14 +83,20 @@ done
 [ -z "$sysupgrade_file" ] || [ -f "$sysupgrade_file" ] || die "$sysupgrade_file: no such file"
 
 # Artosyn update image: "OTRA", byte 6 the flash type (2 = NAND; the P1
-# SKY AIO's NOR images say 0), customer version at 0x2c. The air's
-# sysupgrade checks it all, SHA-256 included; this only spares a useless
-# copy over the link.
+# SKY AIO's NOR images say 0), customer version at 0x2c, product at 0x80
+# (an air unit's says HM, P1_SKY... before 2.1; BetaFPV's ground images
+# IGNORE or P1_GND_...). The air's sysupgrade checks it all, SHA-256
+# included; this only spares a useless copy over the link.
 case "$(head -c 8 "$img" | od -An -tx1 | tr -d ' \n')" in
 	4f545241????02*) ;;
 	4f545241*) die "$img is not a P1 SKY (NAND) image" ;;
 	41535700*) die "$img is a Caddx Ascent image: that is ascent-ota's" ;;
 	*) die "$img is not a P1 update image" ;;
+esac
+product=$(dd if="$img" bs=1 skip=128 count=64 2>/dev/null | tr -d '\000')
+case "$product" in
+	HM | P1_SKY*) ;;
+	*) die "$img is not an air-unit image (product \"$product\", a ground station's?)" ;;
 esac
 customer=$(dd if="$img" bs=1 skip=44 count=20 2>/dev/null | tr -d '\000')
 [ "$customer" = OpenIPC ] ||
@@ -199,15 +206,21 @@ if [ -n "$no_reboot" ]; then
 	exit 0
 fi
 
+# Back is when the air answers with another boot id: right after the reboot
+# command the old system may still answer for a moment.
+boot_id=$(air 'cat /proc/sys/kernel/random/boot_id' 2>/dev/null)
 echo "Rebooting the air into slot $new_slot"
 air_rm=
 air 'busybox reboot -d 1 -f' >/dev/null 2>&1
-sleep 15
+sleep 3
+connect=3
 deadline=$(($(date +%s) + 180))
-until now=$(air_slot) && [ -n "$now" ]; do
+until b=$(air 'cat /proc/sys/kernel/random/boot_id' 2>/dev/null) && [ -n "$b" ] && [ "$b" != "$boot_id" ]; do
 	[ "$(date +%s)" -lt $deadline ] ||
 		die "the air is not back after 3 minutes (stuck booting slot $new_slot?) -- check it over USB"
-	sleep 4
+	sleep 2
 done
+connect=10
+now=$(air_slot)
 [ "$now" = "$new_slot" ] || die "the air came back on slot $now, not $new_slot"
 air '. /etc/os-release; echo "Air back on slot '"$now"': $GITHUB_VERSION $BUILD_ID"'
