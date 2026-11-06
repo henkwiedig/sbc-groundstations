@@ -1,0 +1,50 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Henk Wiedig <henk@wiedig.de>
+Date: Fri, 6 Nov 2026 19:00:00 +0100
+Subject: [PATCH] watchdog: dw_wdt: restart with a timeout of a second
+
+The restart handler armed the reset with the shortest TOP, 2^16 cycles
+(2.7 ms at 24 MHz). On the Artosyn AR9311 the SoC then nearly never came
+back from a `reboot`: no boot until a power cycle. Armed with a TOP of
+1.4 s, it came back each time, also with every CPU stopped and IRQs off
+as here, so it is the length of the timeout and not the state the
+restart path leaves. Measured on a BetaFPV P1 air unit (the same SoC and
+kernel; OpenIPC/builder's ml-kernel patch 0006 is this one): 0 out of 9
+warm resets with TOP 0, 7 out of 7 with 1.4 s. The restart now takes the
+shortest TOP of at least a second and waits until it expires.
+
+---
+--- a/drivers/watchdog/dw_wdt.c
++++ b/drivers/watchdog/dw_wdt.c
+@@ -301,8 +301,19 @@
+ 			  unsigned long action, void *data)
+ {
+ 	struct dw_wdt *dw_wdt = to_dw_wdt(wdd);
++	unsigned int timeout;
++	u32 top_val;
+ 
+-	writel(0, dw_wdt->regs + WDOG_TIMEOUT_RANGE_REG_OFFSET);
++	/*
++	 * Reset after a TOP of at least a second, not the shortest one. On the
++	 * Artosyn AR9311 a reset armed with TOP 0 (2^16 cycles, 2.7 ms at
++	 * 24 MHz) leaves the SoC hung until a power cycle nearly every time,
++	 * while one armed with a TOP of 1.4 s comes back every time, also from
++	 * here with the other CPUs stopped.
++	 */
++	timeout = dw_wdt_find_best_top(dw_wdt, 1, &top_val);
++	writel(top_val | top_val << WDOG_TIMEOUT_RANGE_TOPINIT_SHIFT,
++	       dw_wdt->regs + WDOG_TIMEOUT_RANGE_REG_OFFSET);
+ 	dw_wdt_update_mode(dw_wdt, DW_WDT_RMOD_RESET);
+ 	if (dw_wdt_is_enabled(dw_wdt))
+ 		writel(WDOG_COUNTER_RESTART_KICK_VALUE,
+@@ -310,8 +321,8 @@
+ 	else
+ 		dw_wdt_arm_system_reset(dw_wdt);
+ 
+-	/* wait for reset to assert... */
+-	mdelay(500);
++	/* wait for reset to assert: the TOP is shorter than timeout + 1 s */
++	mdelay((timeout + 1) * 1000);
+ 
+ 	return 0;
+ }

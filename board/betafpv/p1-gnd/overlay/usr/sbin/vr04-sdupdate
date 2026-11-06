@@ -247,8 +247,8 @@ screen update-done
 beep 150
 usleep 150000
 beep 150
-# a watchdog reset, as vr04-uboot does
+# from /init, before init runs: the reboot syscall itself
 sync
-watchdog -T 1 -t 3600 /dev/watchdog
+reboot -f
 sleep 10
-log "no watchdog reset: power-cycle the unit"
+log "no reboot: power-cycle the unit"

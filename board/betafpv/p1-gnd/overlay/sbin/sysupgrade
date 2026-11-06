@@ -19,8 +19,8 @@
 # Of the slot's partitions only --parts are written (default kernel, dtb,
 # userapp): uboot and env only run on the reboot-to-U-Boot path, and the stock
 # U-Boot already in the slot serves it. -d checks everything and writes
-# nothing. It never reboots: after a warm reboot the SPL can hang, so the new
-# slot is started by a power cycle.
+# nothing. It never reboots: the next boot starts the new slot (vr04-sdupdate
+# reboots right after it).
 #
 # Slots: the stock SPL boots the env/uboot/kernel/dtb/userapp set the GPT marks
 # active (openipc-bsel); the other slot keeps the previous firmware, and
@@ -312,7 +312,7 @@ running=$(bank check_cmdline)
 active=$(bank check_flash)
 [ -n "$active" ] || die "the GPT marks no clear active slot (openipc-bsel check_flash)"
 if [ -n "$running" ] && [ "$running" != "$active" ] && [ -z "$force" ]; then
-	die "running slot $running, but slot $active is the active one: power-cycle first (-f flashes anyway)"
+	die "running slot $running, but slot $active is the active one: reboot first (-f flashes anyway)"
 fi
 target=$((1 - ${running:-$active}))
 if [ -n "$slot" ] && [ "$slot" != "$target" ]; then
@@ -386,7 +386,7 @@ fi
 if [ -n "$activate" ]; then
 	openipc-bsel set "$target" >/dev/null || die "cannot switch to slot $target"
 	[ "$(bank check_flash)" = "$target" ] || die "the GPT does not read back slot $target"
-	log "slot $target ($kind) is active from the next power cycle"
+	log "slot $target ($kind) is active from the next boot"
 else
 	log "slot $target ($kind) written; slot $active stays the active one"
 fi

@@ -1,11 +1,7 @@
 #!/bin/sh
 # Reboot into the stock U-Boot (its USB download gadget, Ctrl-C on the serial
 # console for a prompt). Stock's /etc/fb_reboot writes 0x3 to 0x0A106138
-# ("reboot to uboot and use usb upgrade") before rebooting; a watchdog reset
-# keeps the register, a kernel restart may not.
+# ("reboot to uboot and use usb upgrade") before rebooting. The kernel's
+# restart is a watchdog reset, which keeps the register.
 devmem 0x0A106138 32 0x3 || exit 1
-sync
-watchdog -T 1 -t 3600 /dev/watchdog
-sleep 10
-echo "vr04-uboot: no watchdog reset; power-cycle" >&2
-exit 1
+exec reboot

@@ -145,8 +145,9 @@ registers, the pixel clock and the vsync rate. The bridge at
 `RH1:`'s reply), `mailbox` (`echo WH1:E > mailbox; cat mailbox`), `reset`
 (`echo 1 > reset`).
 
-Knobs, as module options in `/etc/modprobe.d/p1-vrx-test.conf`, then a power
-cycle (not `reboot`: the SPL can hang after a warm reset):
+Knobs, as module options in `/etc/modprobe.d/p1-vrx-test.conf`, then a
+reboot (a power cycle on a build without `../p1-gnd/linux-patches/0003`,
+whose warm reset hangs):
 
     options lontium_lt9611ex skip_i2c=1      # never touch the chip's I2C
     options lontium_lt9611ex use_edid=0      # the table's modes, not the sink's
