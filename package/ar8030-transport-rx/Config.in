@@ -32,11 +32,15 @@ config BR2_PACKAGE_AR8030_TRANSPORT_RX
 
 	  Also installs /usr/bin/ascent-ota, which updates a Caddx Ascent
 	  air unit over the link: it serves an ASW image over HTTP on
-	  ar_net0 and runs the air's sysupgrade --asw=<url> --copy-overlay.
+	  ar_net0 (or copies it over ssh where python3 is missing) and runs
+	  the air's sysupgrade --asw=<url|file> --copy-overlay.
 
 	  And /usr/bin/p1-ota, the same for a BetaFPV P1 air unit: it copies
 	  an OpenIPC P1_SKY_*.img into the air's /tmp over ssh and runs the
 	  air's sysupgrade on it, which keeps the settings and pairing.
+
+	  /usr/bin/air-ota picks the one for an image by its header;
+	  PixelPilot's Drone -> Actions -> OTA update runs it.
 
 if BR2_PACKAGE_AR8030_TRANSPORT_RX
 
