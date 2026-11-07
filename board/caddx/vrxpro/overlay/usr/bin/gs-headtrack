@@ -3,10 +3,12 @@
 gs-headtrack -- head tracking backend for the Caddx VRX Pro.
 
 Reads the goggles' own motion sensors, fuses them into a head attitude and
-publishes it as MAVLink ATTITUDE (sysid 250 / compid 25 by default) to a UDP
-target, 127.0.0.1:14550 (PixelPilot's MAVLink input) unless --target says
-otherwise. Nothing starts it yet; it is the sensor side for a later head
-tracking output (e.g. an ELRS backpack or the FC link).
+publishes it to the outputs asked for (none by default):
+  --target HOST:PORT  MAVLink ATTITUDE + RAW_IMU (sysid 250 / compid 25 by
+                      default); PixelPilot's MAVLink input is 127.0.0.1:14550,
+                      where it shows up as mavlink.attitude.* facts
+  --gimbal HOST:PORT  gimbal head tracking frames (below)
+Nothing starts it yet.
 
 Hardware (found on the board; stock reads it the same way from user space):
   - IMU: TDK ICM-40609-D (WHO_AM_I 0x3B, ICM-426xx register map) on SPI0,
@@ -19,6 +21,18 @@ Hardware (found on the board; stock reads it the same way from user space):
 Stock never gets this to an output on the VRX Pro: its fused angles go over
 the Artosyn link on xdata sub-channel 1, which the air firmware drops.
 
+--gimbal HOST:PORT also sends the head attitude as Walksnail / Caddx GM
+gimbal head tracking frames (the format iNAV's serial gimbal and ArduPilot's
+CADDX mount driver use), one UDP datagram per frame:
+
+  A5 5A | mode:3 sens:5 | reserved:4 roll:12 tilt:12 pan:12 (LSB first) | CRC16 BE
+
+angles as 12-bit two's complement, 4096 per turn; CRC-16/CCITT (poly 0x1021,
+init 0) over the first 8 bytes. `ar8030-xdata relay` (ar8030-transport) on
+127.0.0.1:5770 takes these datagrams to the air unit's chip UART2, which on
+the Caddx Ascent Lite+ is the gimbal UART. The angles are relative to the
+attitude at start-up (after the 2 s calibration); SIGUSR1 re-centres.
+
 Keep the goggles still for the first 2 s (gyro bias calibration).
 """
 
@@ -27,6 +41,7 @@ import array
 import fcntl
 import math
 import os
+import signal
 import socket
 import struct
 import sys
@@ -210,16 +225,90 @@ class MavlinkOut:
                    struct.pack("<Q9h", t_us & 0xFFFFFFFFFFFFFFFF, *acc, *gyr, *mag))
 
 
+# --- Walksnail / Caddx GM gimbal head tracking frame ---------------------------------
+
+def crc16_ccitt(data, crc=0):
+    for b in data:
+        crc ^= b << 8
+        for _ in range(8):
+            crc = ((crc << 1) ^ 0x1021) & 0xFFFF if crc & 0x8000 else (crc << 1) & 0xFFFF
+    return crc
+
+
+def gimbal_frame(pan_deg, tilt_deg, roll_deg, mode=0, sens=0):
+    """10-byte head tracking frame; angles in degrees, clamped to +-180."""
+    def a12(deg):
+        v = int(round(max(-180.0, min(180.0, deg)) * 2048.0 / 180.0))
+        return max(-2048, min(2047, v)) & 0xFFF
+    angles = (a12(roll_deg) << 4) | (a12(tilt_deg) << 16) | (a12(pan_deg) << 28)
+    body = bytes([0xA5, 0x5A, (mode & 0x07) | ((sens & 0x1F) << 3)]) + angles.to_bytes(5, "little")
+    crc = crc16_ccitt(body)
+    return body + bytes([crc >> 8, crc & 0xFF])
+
+
+class GimbalOut:
+    AXES = ("roll", "pitch", "yaw")
+
+    def __init__(self, target, mode, sens, mapping):
+        host, port = target.rsplit(":", 1)
+        self.addr = (host, int(port))
+        self.mode, self.sens = mode, sens
+        self.map = self._parse_map(mapping)
+        self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+
+    @classmethod
+    def _parse_map(cls, spec):
+        """'pan=yaw,tilt=pitch,roll=roll': gimbal axis = [-]head axis, or 0 (centred)."""
+        out = {"pan": (None, 1), "tilt": (None, 1), "roll": (None, 1)}
+        for item in spec.split(","):
+            key, _, src = item.strip().partition("=")
+            sign = -1 if src.startswith("-") else 1
+            src = src.lstrip("+-")
+            if key not in out or (src != "0" and src not in cls.AXES):
+                sys.exit("gs-headtrack: bad --gimbal-map entry %r" % item)
+            out[key] = (None if src == "0" else cls.AXES.index(src), sign)
+        return out
+
+    def angles(self, rpy_deg):
+        def pick(axis):
+            idx, sign = self.map[axis]
+            return 0.0 if idx is None else sign * rpy_deg[idx]
+        return pick("pan"), pick("tilt"), pick("roll")
+
+    def send(self, rpy_deg):
+        pan, tilt, roll = self.angles(rpy_deg)
+        self.sock.sendto(gimbal_frame(pan, tilt, roll, self.mode, self.sens), self.addr)
+        return pan, tilt, roll
+
+
+def wrap180(deg):
+    return (deg + 180.0) % 360.0 - 180.0
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--target", default="127.0.0.1:14550", help="MAVLink UDP target host:port")
+    ap.add_argument("--target", metavar="HOST:PORT",
+                    help="send MAVLink ATTITUDE/RAW_IMU to this UDP target, e.g. 127.0.0.1:14550 "
+                         "(PixelPilot); default: no MAVLink")
     ap.add_argument("--sysid", type=int, default=250)
     ap.add_argument("--compid", type=int, default=25)
     ap.add_argument("--rate", type=float, default=50.0, help="MAVLink messages per second")
     ap.add_argument("--raw-rate", type=float, default=10.0,
                     help="RAW_IMU (raw IMU + magnetometer) messages per second, 0 = off")
+    ap.add_argument("--gimbal", metavar="HOST:PORT",
+                    help="also send gimbal head tracking frames (A5 5A ...) as UDP datagrams, "
+                         "e.g. 127.0.0.1:5770 for ar8030-xdata relay")
+    ap.add_argument("--gimbal-rate", type=float, default=50.0, help="gimbal frames per second")
+    ap.add_argument("--gimbal-mode", type=int, default=0,
+                    help="frame mode bits: 0 follow/FPV (head tracking), 1 tilt lock, 2 roll lock, 4 pan lock")
+    ap.add_argument("--gimbal-sens", type=int, default=0, help="frame stabilisation sensitivity, -16..15")
+    ap.add_argument("--gimbal-map", default="pan=yaw,tilt=pitch,roll=roll",
+                    help="gimbal axis = [-]roll|pitch|yaw of the head, or 0 to hold it centred")
     ap.add_argument("--debug", action="store_true", help="print angles and raw magnetometer")
     args = ap.parse_args()
+    if not -16 <= args.gimbal_sens <= 15:
+        sys.exit("gs-headtrack: --gimbal-sens must be -16..15")
+    gimbal = GimbalOut(args.gimbal, args.gimbal_mode, args.gimbal_sens, args.gimbal_map) if args.gimbal else None
 
     imu = Imu()
     imu.start()
@@ -228,7 +317,9 @@ def main():
     except OSError as e:
         mag = None
         print("gs-headtrack: magnetometer unavailable (%s)" % e, file=sys.stderr)
-    out = MavlinkOut(args.target, args.sysid, args.compid)
+    out = MavlinkOut(args.target, args.sysid, args.compid) if args.target else None
+    if not out and not gimbal and not args.debug:
+        sys.exit("gs-headtrack: no output; give --target, --gimbal and/or --debug")
     filt = Madgwick()
 
     # gyro bias: average 2 s at rest, seed the filter with gravity
@@ -244,15 +335,27 @@ def main():
         time.sleep(0.01)
     bias = [b / n for b in bias]
     filt.seed(*(s / n for s in acc))
-    print("gs-headtrack: gyro bias %.2f %.2f %.2f deg/s, sending to %s as %d/%d" %
-          (*(math.degrees(b) for b in bias), args.target, args.sysid, args.compid), file=sys.stderr)
+    print("gs-headtrack: gyro bias %.2f %.2f %.2f deg/s" % tuple(math.degrees(b) for b in bias), file=sys.stderr)
+    if out:
+        print("gs-headtrack: MAVLink to %s as %d/%d" % (args.target, args.sysid, args.compid), file=sys.stderr)
+
+    # gimbal angles are relative to this attitude; SIGUSR1 takes a new one
+    centre = [tuple(math.degrees(v) for v in filt.euler())]
+    recentre = [False]
+    signal.signal(signal.SIGUSR1, lambda *_: recentre.__setitem__(0, True))
+    if gimbal:
+        print("gs-headtrack: gimbal frames to %s:%d at %.0f Hz, mode %d, sens %d, map %s" %
+              (*gimbal.addr, args.gimbal_rate, args.gimbal_mode, args.gimbal_sens, args.gimbal_map),
+              file=sys.stderr)
 
     t0 = time.monotonic()
     last = t0
     next_send = t0
     next_raw = t0
+    next_gimbal = t0
     next_dbg = t0
     mag_raw = (0, 0, 0)
+    gim = (0.0, 0.0, 0.0)
     period = 0.01
     try:
         while True:
@@ -261,18 +364,31 @@ def main():
             g = tuple(x - b for x, b in zip(g, bias))
             filt.update(g, a, now - last)
             last = now
-            if now >= next_send:
+            if out and now >= next_send:
                 next_send += 1.0 / args.rate
                 out.attitude(int((now - t0) * 1000), filt.euler(), g)
             if args.raw_rate > 0 and now >= next_raw:
                 next_raw += 1.0 / args.raw_rate
                 if mag:
                     mag_raw = mag.read()
-                out.raw_imu(int((now - t0) * 1e6), imu.raw[:3], imu.raw[3:], mag_raw)
+                if out:
+                    out.raw_imu(int((now - t0) * 1e6), imu.raw[:3], imu.raw[3:], mag_raw)
+            if recentre[0]:
+                recentre[0] = False
+                centre[0] = tuple(math.degrees(v) for v in filt.euler())
+                print("gs-headtrack: re-centred", file=sys.stderr)
+            if gimbal and now >= next_gimbal:
+                next_gimbal = max(next_gimbal + 1.0 / args.gimbal_rate, now - 0.1)
+                rel = tuple(wrap180(math.degrees(v) - c) for v, c in zip(filt.euler(), centre[0]))
+                try:
+                    gim = gimbal.send(rel)
+                except OSError:
+                    pass
             if args.debug and now >= next_dbg:
                 next_dbg += 0.5
                 r, p, y = (math.degrees(v) for v in filt.euler())
-                print("roll %7.1f pitch %7.1f yaw %7.1f  mag %s" % (r, p, y, mag_raw), flush=True)
+                print("roll %7.1f pitch %7.1f yaw %7.1f  mag %s" % (r, p, y, mag_raw) +
+                      ("  gimbal pan %6.1f tilt %6.1f roll %6.1f" % gim if gimbal else ""), flush=True)
             time.sleep(max(0.0, period - (time.monotonic() - now)))
     except KeyboardInterrupt:
         pass
