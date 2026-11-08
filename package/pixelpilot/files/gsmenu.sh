@@ -1264,6 +1264,11 @@ case "$@" in
         gs-fan get pct
         emit_values "0 100"
         ;;
+    # Head tracking -- only on boards that ship /usr/bin/gs-headtrack (VRX
+    # Pro); PixelPilot hides the row elsewhere.
+    "get gs system headtrack")
+        /etc/init.d/S99headtrack enabled
+        ;;
     "get gs system gs_live_colortrans")
         . /etc/default/pixelpilot
         [ x$PIXELPILOT_LIVE_COLORTRANS = x"" ] && echo 0 || echo 1
@@ -1459,6 +1464,13 @@ EOF
         ;;
     "set gs system fan_speed"*)
         gs-fan set pct "$5"
+        ;;
+    "set gs system headtrack"*)
+        if [ "$5" = "on" ]; then
+            /etc/init.d/S99headtrack enable
+        else
+            /etc/init.d/S99headtrack disable
+        fi
         ;;
     "set gs system gs_live_colortrans"*)
         if [ "$5" = "on" ]
