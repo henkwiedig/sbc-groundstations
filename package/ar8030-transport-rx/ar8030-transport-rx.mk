@@ -14,7 +14,7 @@
 #       >> $(O)/local.mk
 #
 # or as a plain environment variable to make.
-AR8030_TRANSPORT_RX_VERSION = 0fcf25c39f483d978b4f1674c21457fcf7004c96
+AR8030_TRANSPORT_RX_VERSION = 020c1cdc5bf8de1a3f4bccd46dfcbc69f46f052f
 AR8030_TRANSPORT_RX_SITE = https://github.com/henkwiedig/ar8030-transport.git
 AR8030_TRANSPORT_RX_SITE_METHOD = git
 AR8030_TRANSPORT_RX_LICENSE = MIT
@@ -73,6 +73,12 @@ define AR8030_TRANSPORT_RX_BUILD_CMDS
 		CFLAGS="$(TARGET_CFLAGS)" \
 		AR8030_SDK_INC=$(STAGING_DIR)/usr/include/ar8030 \
 		AR8030_SDK_LIB=$(STAGING_DIR)/usr/lib
+	$(MAKE) -C $(@D)/xdata clean
+	$(MAKE) -C $(@D)/xdata \
+		CC="$(TARGET_CC)" \
+		CFLAGS="$(TARGET_CFLAGS)" \
+		AR8030_SDK_INC=$(STAGING_DIR)/usr/include/ar8030 \
+		AR8030_SDK_LIB=$(STAGING_DIR)/usr/lib
 endef
 
 define AR8030_TRANSPORT_RX_INSTALL_TARGET_CMDS
@@ -82,6 +88,8 @@ define AR8030_TRANSPORT_RX_INSTALL_TARGET_CMDS
 		$(TARGET_DIR)/usr/bin/ar8030-linkctl
 	$(INSTALL) -D -m 0755 $(@D)/lifecycled/ar8030-lifecycled \
 		$(TARGET_DIR)/usr/bin/ar8030-lifecycled
+	$(INSTALL) -D -m 0755 $(@D)/xdata/ar8030-xdata \
+		$(TARGET_DIR)/usr/bin/ar8030-xdata
 	$(INSTALL) -D -m 0755 $(AR8030_TRANSPORT_RX_PKGDIR)/files/etc/ar8030/hooks.d/connected/30-ifup.sh \
 		$(TARGET_DIR)/etc/ar8030/hooks.d/connected/30-ifup.sh
 	$(INSTALL) -D -m 0755 $(AR8030_TRANSPORT_RX_PKGDIR)/files/etc/ar8030/hooks.d/dropped/30-ifdown.sh \
