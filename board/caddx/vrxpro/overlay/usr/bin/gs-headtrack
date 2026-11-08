@@ -8,15 +8,16 @@ publishes it to the outputs asked for (none by default):
                       default); PixelPilot's MAVLink input is 127.0.0.1:14550,
                       where it shows up as mavlink.attitude.* facts
   --gimbal HOST:PORT  gimbal head tracking frames (below)
-Nothing starts it yet.
+/etc/init.d/S99headtrack runs it with --gimbal and ar8030-xdata relay when
+head tracking is enabled (off by default; PixelPilot: System -> Head tracking).
 
 Hardware (found on the board; stock reads it the same way from user space):
   - IMU: TDK ICM-40609-D (WHO_AM_I 0x3B, ICM-426xx register map) on SPI0,
     stock dts name "mpu6509"; driven through spidev (spi0.0).
   - Magnetometer: QST QMC5883P (chip id 0x80) on I2C bus 5, address 0x2c.
     Published raw in MAVLink RAW_IMU (xmag/ymag/zmag, with the raw IMU
-    counts); not fused yet -- yaw is gyro-only and slowly drifts, which is
-    fine for a relative head tracker.
+    counts); not fused yet -- yaw is gyro-only, so it can drift; the bias
+    tracking below keeps that small (0.2 deg in 200 s at rest on the bench).
 
 Stock never gets this to an output on the VRX Pro: its fused angles go over
 the Artosyn link on xdata sub-channel 1, which the air firmware drops.
@@ -31,13 +32,30 @@ angles as 12-bit two's complement, 4096 per turn; CRC-16/CCITT (poly 0x1021,
 init 0) over the first 8 bytes. `ar8030-xdata relay` (ar8030-transport) on
 127.0.0.1:5770 takes these datagrams to the air unit's chip UART2, which on
 the Caddx Ascent Lite+ is the gimbal UART. The angles are relative to the
-attitude at start-up (after the 2 s calibration); SIGUSR1 re-centres.
+attitude when the calibration ends; SIGUSR1 re-centres (S99headtrack recentre,
+PixelPilot's BACK button with the menu closed).
 
-Keep the goggles still for the first 2 s (gyro bias calibration).
+The roll/pitch/yaw names in --gimbal-map are the IMU's own angles, as --debug
+prints them. The IMU sits on its side in the VRX Pro (about 100 deg roll at
+rest), so nodding shows up as IMU roll and head roll as IMU pitch. The default
+map, pan=yaw,tilt=-roll,roll=-pitch, was confirmed on a Caddx GM gimbal
+(GimbalConfig V3.8) on 2026-11-08.
+
+The mode field picks one of the gimbal's three mode slots, M0..M2, as they are
+set up in GimbalConfig (defaults M0 FPVM-ANGL, M1 PLCK-ANGL, M2 HORI-ANGL);
+head tracking wants the FPV slot. Other values are undefined and make the GM
+jump. GimbalConfig talks to the same gimbal input: stop this stream while it
+is connected, or parameter saves fail ("Serial Port Transmit Error").
+
+Gyro bias: at start-up it waits until the goggles hold still for 1.5 s
+(a start from the menu comes with button presses) and only then sends; after
+that it keeps refining the bias whenever they rest, which also takes out the
+slow drift as the goggles warm up.
 """
 
 import argparse
 import array
+import collections
 import fcntl
 import math
 import os
@@ -285,6 +303,56 @@ def wrap180(deg):
     return (deg + 180.0) % 360.0 - 180.0
 
 
+# --- gyro bias --------------------------------------------------------------------
+
+IMU_HZ = 100
+STILL_SPREAD = math.radians(3.0)   # max-min of each gyro axis over a window = still
+                                   # (at rest, fan on: median 1.0, max 1.9 deg/s)
+CAL_WINDOW_S = 1.5                 # start-up: still this long, then bias = its mean
+CAL_TIMEOUT_S = 10.0               # never still: the quietest window seen
+TRACK_WINDOW_S = 1.0               # running: bias follows still windows...
+TRACK_TAU_S = 10.0                 # ...this slowly...
+TRACK_STEP_S = 0.5                 # (one look per this)
+TRACK_MAX = math.radians(2.0)      # ...if within this of the bias (else it's a slow turn)
+
+
+class GyroWindow:
+    """The last n (gyro, accel) samples."""
+
+    def __init__(self, seconds):
+        self.buf = collections.deque(maxlen=int(seconds * IMU_HZ))
+
+    def add(self, g, a):
+        self.buf.append((g, a))
+
+    def full(self):
+        return len(self.buf) == self.buf.maxlen
+
+    def spread(self):
+        return max(max(s[0][i] for s in self.buf) - min(s[0][i] for s in self.buf) for i in range(3))
+
+    def mean(self, k):
+        """k 0: gyro, 1: accel"""
+        return [sum(s[k][i] for s in self.buf) / len(self.buf) for i in range(3)]
+
+
+def calibrate(imu):
+    """(gyro bias, mean accel, gyro spread, still) from the first still window."""
+    win = GyroWindow(CAL_WINDOW_S)
+    best = None
+    t_end = time.monotonic() + CAL_TIMEOUT_S
+    while True:
+        a, g = imu.read()
+        win.add(g, a)
+        if win.full():
+            spread = win.spread()
+            if best is None or spread < best[2]:
+                best = (win.mean(0), win.mean(1), spread)
+            if spread <= STILL_SPREAD or time.monotonic() >= t_end:
+                return best + (spread <= STILL_SPREAD,)
+        time.sleep(1.0 / IMU_HZ)
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--target", metavar="HOST:PORT",
@@ -299,13 +367,20 @@ def main():
                     help="also send gimbal head tracking frames (A5 5A ...) as UDP datagrams, "
                          "e.g. 127.0.0.1:5770 for ar8030-xdata relay")
     ap.add_argument("--gimbal-rate", type=float, default=50.0, help="gimbal frames per second")
-    ap.add_argument("--gimbal-mode", type=int, default=0,
-                    help="frame mode bits: 0 follow/FPV (head tracking), 1 tilt lock, 2 roll lock, 4 pan lock")
+    ap.add_argument("--gimbal-mode", type=int, default=0, choices=(0, 1, 2),
+                    help="gimbal mode slot M0..M2 as set up in GimbalConfig "
+                         "(default slots: 0 FPV = head tracking, 1 pitch lock, 2 horizon)")
     ap.add_argument("--gimbal-sens", type=int, default=0, help="frame stabilisation sensitivity, -16..15")
-    ap.add_argument("--gimbal-map", default="pan=yaw,tilt=pitch,roll=roll",
-                    help="gimbal axis = [-]roll|pitch|yaw of the head, or 0 to hold it centred")
+    ap.add_argument("--gimbal-map", default="pan=yaw,tilt=-roll,roll=-pitch",
+                    help="gimbal axis = [-]roll|pitch|yaw of the IMU (as --debug prints them), "
+                         "or 0 to hold it centred; the default fits the VRX Pro's IMU mounting")
     ap.add_argument("--debug", action="store_true", help="print angles and raw magnetometer")
     args = ap.parse_args()
+    # SIGTERM (S99headtrack stop) ends it like ^C: through the finally below.
+    # SIGUSR1 re-centres; caught from the start, as its default would kill it.
+    signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
+    recentre = [False]
+    signal.signal(signal.SIGUSR1, lambda *_: recentre.__setitem__(0, True))
     if not -16 <= args.gimbal_sens <= 15:
         sys.exit("gs-headtrack: --gimbal-sens must be -16..15")
     gimbal = GimbalOut(args.gimbal, args.gimbal_mode, args.gimbal_sens, args.gimbal_map) if args.gimbal else None
@@ -321,32 +396,31 @@ def main():
     if not out and not gimbal and not args.debug:
         sys.exit("gs-headtrack: no output; give --target, --gimbal and/or --debug")
     filt = Madgwick()
+    try:
+        run(args, imu, mag, out, gimbal, filt, recentre)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        imu.stop()
 
-    # gyro bias: average 2 s at rest, seed the filter with gravity
-    bias = [0.0, 0.0, 0.0]
-    acc = [0.0, 0.0, 0.0]
-    n = 0
-    t_end = time.monotonic() + 2.0
-    while time.monotonic() < t_end:
-        a, g = imu.read()
-        bias = [b + x for b, x in zip(bias, g)]
-        acc = [s + x for s, x in zip(acc, a)]
-        n += 1
-        time.sleep(0.01)
-    bias = [b / n for b in bias]
-    filt.seed(*(s / n for s in acc))
-    print("gs-headtrack: gyro bias %.2f %.2f %.2f deg/s" % tuple(math.degrees(b) for b in bias), file=sys.stderr)
+
+def run(args, imu, mag, out, gimbal, filt, recentre):
+    # gyro bias from a still moment; seed the filter with gravity
+    bias, acc, spread, still = calibrate(imu)
+    filt.seed(*acc)
+    print("gs-headtrack: gyro bias %.2f %.2f %.2f deg/s (spread %.1f deg/s%s)" %
+          (*(math.degrees(b) for b in bias), math.degrees(spread), "" if still else ", never still"),
+          file=sys.stderr, flush=True)
     if out:
         print("gs-headtrack: MAVLink to %s as %d/%d" % (args.target, args.sysid, args.compid), file=sys.stderr)
 
     # gimbal angles are relative to this attitude; SIGUSR1 takes a new one
-    centre = [tuple(math.degrees(v) for v in filt.euler())]
-    recentre = [False]
-    signal.signal(signal.SIGUSR1, lambda *_: recentre.__setitem__(0, True))
+    centre = tuple(math.degrees(v) for v in filt.euler())
+    recentre[0] = False
     if gimbal:
         print("gs-headtrack: gimbal frames to %s:%d at %.0f Hz, mode %d, sens %d, map %s" %
               (*gimbal.addr, args.gimbal_rate, args.gimbal_mode, args.gimbal_sens, args.gimbal_map),
-              file=sys.stderr)
+              file=sys.stderr, flush=True)
 
     t0 = time.monotonic()
     last = t0
@@ -354,46 +428,54 @@ def main():
     next_raw = t0
     next_gimbal = t0
     next_dbg = t0
+    next_track = t0
+    track = GyroWindow(TRACK_WINDOW_S)
     mag_raw = (0, 0, 0)
     gim = (0.0, 0.0, 0.0)
-    period = 0.01
-    try:
-        while True:
-            now = time.monotonic()
-            a, g = imu.read()
-            g = tuple(x - b for x, b in zip(g, bias))
-            filt.update(g, a, now - last)
-            last = now
-            if out and now >= next_send:
-                next_send += 1.0 / args.rate
-                out.attitude(int((now - t0) * 1000), filt.euler(), g)
-            if args.raw_rate > 0 and now >= next_raw:
-                next_raw += 1.0 / args.raw_rate
-                if mag:
-                    mag_raw = mag.read()
-                if out:
-                    out.raw_imu(int((now - t0) * 1e6), imu.raw[:3], imu.raw[3:], mag_raw)
-            if recentre[0]:
-                recentre[0] = False
-                centre[0] = tuple(math.degrees(v) for v in filt.euler())
-                print("gs-headtrack: re-centred", file=sys.stderr)
-            if gimbal and now >= next_gimbal:
-                next_gimbal = max(next_gimbal + 1.0 / args.gimbal_rate, now - 0.1)
-                rel = tuple(wrap180(math.degrees(v) - c) for v, c in zip(filt.euler(), centre[0]))
-                try:
-                    gim = gimbal.send(rel)
-                except OSError:
-                    pass
-            if args.debug and now >= next_dbg:
-                next_dbg += 0.5
-                r, p, y = (math.degrees(v) for v in filt.euler())
-                print("roll %7.1f pitch %7.1f yaw %7.1f  mag %s" % (r, p, y, mag_raw) +
-                      ("  gimbal pan %6.1f tilt %6.1f roll %6.1f" % gim if gimbal else ""), flush=True)
-            time.sleep(max(0.0, period - (time.monotonic() - now)))
-    except KeyboardInterrupt:
-        pass
-    finally:
-        imu.stop()
+    period = 1.0 / IMU_HZ
+    while True:
+        now = time.monotonic()
+        a, g_raw = imu.read()
+        # bias tracking: a still window whose mean is near the bias is the bias
+        track.add(g_raw, a)
+        if now >= next_track and track.full():
+            next_track = now + TRACK_STEP_S
+            if track.spread() <= STILL_SPREAD:
+                m = track.mean(0)
+                if all(abs(x - b) <= TRACK_MAX for x, b in zip(m, bias)):
+                    k = TRACK_STEP_S / TRACK_TAU_S
+                    bias = [b + k * (x - b) for x, b in zip(m, bias)]
+        g = tuple(x - b for x, b in zip(g_raw, bias))
+        filt.update(g, a, now - last)
+        last = now
+        if out and now >= next_send:
+            next_send += 1.0 / args.rate
+            out.attitude(int((now - t0) * 1000), filt.euler(), g)
+        if args.raw_rate > 0 and now >= next_raw:
+            next_raw += 1.0 / args.raw_rate
+            if mag:
+                mag_raw = mag.read()
+            if out:
+                out.raw_imu(int((now - t0) * 1e6), imu.raw[:3], imu.raw[3:], mag_raw)
+        if recentre[0]:
+            recentre[0] = False
+            centre = tuple(math.degrees(v) for v in filt.euler())
+            print("gs-headtrack: re-centred (gyro bias %.2f %.2f %.2f deg/s)" %
+                  tuple(math.degrees(b) for b in bias), file=sys.stderr, flush=True)
+        if gimbal and now >= next_gimbal:
+            next_gimbal = max(next_gimbal + 1.0 / args.gimbal_rate, now - 0.1)
+            rel = tuple(wrap180(math.degrees(v) - c) for v, c in zip(filt.euler(), centre))
+            try:
+                gim = gimbal.send(rel)
+            except OSError:
+                pass
+        if args.debug and now >= next_dbg:
+            next_dbg += 0.5
+            r, p, y = (math.degrees(v) for v in filt.euler())
+            print("roll %7.1f pitch %7.1f yaw %7.1f  bias %5.2f %5.2f %5.2f  mag %s" %
+                  (r, p, y, *(math.degrees(b) for b in bias), mag_raw) +
+                  ("  gimbal pan %6.1f tilt %6.1f roll %6.1f" % gim if gimbal else ""), flush=True)
+        time.sleep(max(0.0, period - (time.monotonic() - now)))
 
 
 if __name__ == "__main__":
