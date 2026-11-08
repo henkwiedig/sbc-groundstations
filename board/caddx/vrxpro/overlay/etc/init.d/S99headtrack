@@ -1,0 +1,107 @@
+#!/bin/sh
+# Head tracking: the goggles' IMU moves the gimbal on the air unit.
+#
+#   gs-headtrack         IMU -> Walksnail/Caddx GM gimbal frames, UDP 127.0.0.1:5770
+#   ar8030-xdata relay   -> ground chip host data channel -> radio
+#                        -> air chip UART2 = the Ascent's gimbal pads, 115200
+#
+# Off by default: HEADTRACK_ENABLED in /etc/default/headtrack starts it at
+# boot, and PixelPilot's System -> Head tracking switches it (enable/disable).
+# The gyro calibrates itself at the first still moment after it starts. The
+# centre is the pilot's: put the goggles on, look ahead and press BACK (menu
+# closed), which runs "recentre".
+#
+#   start|stop|restart   start only runs when enabled
+#   enable|disable       keep the choice, then start/stop
+#   enabled              print 1 or 0
+#   recentre             take the current head attitude as the centre
+#   status
+
+CONF=/etc/default/headtrack
+XPID=/var/run/ar8030-xdata.pid
+HPID=/var/run/gs-headtrack.pid   # PixelPilot's BACK button re-centres through it
+LOG=/tmp/headtrack.log
+
+HEADTRACK_ENABLED=0
+HEADTRACK_MAP=pan=yaw,tilt=-roll,roll=-pitch
+HEADTRACK_MODE=0
+HEADTRACK_RATE=50
+[ -r "$CONF" ] && . "$CONF"
+
+conf_set() {
+	if grep -q "^$1=" "$CONF" 2>/dev/null; then
+		sed -i "s/^$1=.*/$1=$2/" "$CONF"
+	else
+		echo "$1=$2" >> "$CONF"
+	fi
+}
+
+# The pid file names a live process with $2 in its command line (a stale pid
+# file can name an unrelated process by now).
+running() {
+	[ -f "$1" ] && tr '\0' ' ' < "/proc/$(cat "$1")/cmdline" 2>/dev/null | grep -q "$2"
+}
+
+# start-stop-daemon -b sends stdout/stderr to /dev/null; the exec keeps the
+# pid it records, so the pid file names the daemon itself.
+launch() {
+	pidfile=$1
+	shift
+	start-stop-daemon -S -b -m -p "$pidfile" -x /bin/sh -- -c "exec $* >>$LOG 2>&1"
+}
+
+start() {
+	if [ "$HEADTRACK_ENABLED" != 1 ]; then
+		echo "Head tracking: disabled ($CONF)"
+		return 0
+	fi
+	printf "Starting head tracking: "
+	running "$XPID" ar8030-xdata || launch "$XPID" /usr/bin/ar8030-xdata relay
+	running "$HPID" gs-headtrack || launch "$HPID" /usr/bin/gs-headtrack \
+		--gimbal 127.0.0.1:5770 --gimbal-map "$HEADTRACK_MAP" \
+		--gimbal-mode "$HEADTRACK_MODE" --gimbal-rate "$HEADTRACK_RATE"
+	echo "OK"
+}
+
+stop() {
+	printf "Stopping head tracking: "
+	running "$HPID" gs-headtrack && kill "$(cat "$HPID")"
+	running "$XPID" ar8030-xdata && kill "$(cat "$XPID")"
+	rm -f "$HPID" "$XPID"
+	echo "OK"
+}
+
+case "$1" in
+start)   start ;;
+stop)    stop ;;
+restart) stop; start ;;
+enable)
+	conf_set HEADTRACK_ENABLED 1
+	HEADTRACK_ENABLED=1
+	start
+	;;
+disable)
+	conf_set HEADTRACK_ENABLED 0
+	stop
+	;;
+enabled)
+	[ "$HEADTRACK_ENABLED" = 1 ] && echo 1 || echo 0
+	;;
+recentre|recenter)
+	if running "$HPID" gs-headtrack; then
+		kill -USR1 "$(cat "$HPID")" && echo "Head tracking: re-centred"
+	else
+		echo "Head tracking: not running"
+		exit 1
+	fi
+	;;
+status)
+	echo "enabled: $HEADTRACK_ENABLED"
+	running "$XPID" ar8030-xdata && echo "ar8030-xdata: running" || echo "ar8030-xdata: stopped"
+	running "$HPID" gs-headtrack && echo "gs-headtrack: running" || echo "gs-headtrack: stopped"
+	;;
+*)
+	echo "Usage: $0 {start|stop|restart|enable|disable|enabled|recentre|status}"
+	exit 1
+	;;
+esac

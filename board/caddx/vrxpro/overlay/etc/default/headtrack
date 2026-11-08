@@ -1,0 +1,10 @@
+# Head tracking (/etc/init.d/S99headtrack): the VRX Pro's IMU moves the
+# gimbal on the air unit's gimbal pads. PixelPilot's System -> Head tracking
+# sets HEADTRACK_ENABLED; the rest is read when it starts.
+HEADTRACK_ENABLED=0
+# gimbal axis = [-]roll|pitch|yaw of the IMU, or 0 to hold it centred
+# (gs-headtrack --gimbal-map); this one fits the VRX Pro's IMU mounting
+HEADTRACK_MAP=pan=yaw,tilt=-roll,roll=-pitch
+# gimbal mode slot M0..M2 as set up in the gimbal's own tool; 0 = FPV
+HEADTRACK_MODE=0
+HEADTRACK_RATE=50
