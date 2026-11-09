@@ -130,6 +130,15 @@ console wires, magic "0123456" in the ~45 s after power-on, a bare-metal
 payload that rewrites gpt0), so a slot is activated only after it booted
 through U-Boot (step 5).
 
+Without a serial console (not yet tried on the goggles):
+`../p1-gnd/scripts/vr04-usbboot.py ram` RAM-boots `vr04-testboot/` from
+the chip's mask-ROM USB download (builder's `ar9311-usbboot.py` chain:
+patched stock SPL + U-Boot over USB, U-Boot boots it on its own), and
+`vr04-usbboot.py hid` puts the stock U-Boot into its USB upgrade mode for
+`vr04-usbburn.py`, also on a unit that boots no Linux. The ROM offers USB
+only after the NAND boot failed: hold the SPI-NAND CLK line to ground while
+powering on, release it once 5343:0200 shows up.
+
 `/usr/sbin/vr04-uboot` drops a running OpenIPC into U-Boot: 0x3 into
 0x0A106138 (stock's /etc/fb_reboot; bit 0 alone, as in MissingLynk's
 uboot-trigger, boots normally here), then a reboot: the kernel's restart is a
