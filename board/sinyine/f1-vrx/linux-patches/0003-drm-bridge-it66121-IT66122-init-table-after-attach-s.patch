@@ -1,0 +1,79 @@
+From 353e76ca864e075345904f95bc0b1b18dcb2ca4c Mon Sep 17 00:00:00 2001
+From: Henk Wiedig <henk@wiedig.de>
+Date: Tue, 10 Nov 2026 21:35:09 +0100
+Subject: [PATCH] drm/bridge: it66121: IT66122 init table after attach's REF
+ reset
+
+The IT66122's init table ran at probe; the bridge attach that follows
+writes the REF software reset (0x04 bit 5), and the register file came
+back at its defaults: on the SinYine F1 VRX the table's settings were
+gone (0x59 bit 6, 0x5d, 0x71 bit 4, 0xd1, the hidden 0x37, the
+interrupt masks) and the HDMI link dropped every 3-15 s, the sink
+re-syncing each time.
+
+Stock runs the table (its own REF reset, then the settings) and then
+powers the transmitter up. Do the same: the table at the start of
+attach, the IT66121 power-up after it, and no second REF reset for the
+IT66122; mode_set releases REF as before.
+---
+ drivers/gpu/drm/bridge/ite-it66121.c | 23 ++++++++++++++++++-----
+ 1 file changed, 18 insertions(+), 5 deletions(-)
+
+diff --git a/drivers/gpu/drm/bridge/ite-it66121.c b/drivers/gpu/drm/bridge/ite-it66121.c
+index 17b7fc1..6601f47 100644
+--- a/drivers/gpu/drm/bridge/ite-it66121.c
++++ b/drivers/gpu/drm/bridge/ite-it66121.c
+@@ -351,8 +351,8 @@ static void it66121_hw_reset(struct it66121_ctx *ctx)
+ /*
+  * The IT66122's init: the table the SinYine F1 VRX's stock driver runs after
+  * its reset (libpn_hdmitx_it6612x.so, ITE's reference HDMITX_Init_Table),
+- * register, mask, value; register 0x01 is a 100 ms pause. The mainline flow
+- * (attach, mode_set) follows it.
++ * register, mask, value; register 0x01 is a 100 ms pause. Run from attach,
++ * before the power-up; the mainline flow (mode_set) follows it.
+  */
+ static const u8 it66122_init_table[][3] = {
+ 	{ 0x0f, 0x40, 0x00 }, { 0x62, 0x08, 0x00 }, { 0x64, 0x04, 0x00 },
+@@ -724,6 +724,19 @@ static int it66121_bridge_attach(struct drm_bridge *bridge,
+ 	if (ret)
+ 		return ret;
+ 
++	/*
++	 * The IT66122: stock's init table (its own REF reset, then the settings) before the
++	 * power-up below, which then must not reset REF again: that reset puts the register
++	 * file back to its defaults, the table's clock, FIFO and hidden-register settings
++	 * with it (seen on the SinYine F1 VRX with the table run at probe: the HDMI link
++	 * dropped every few seconds).
++	 */
++	if (ctx->info->id == ID_IT66122) {
++		ret = it66122_init(ctx);
++		if (ret)
++			return ret;
++	}
++
+ 	if (ctx->info->id != ID_IT6610) {
+ 		ret = regmap_write_bits(ctx->regmap, IT66121_CLK_BANK_REG,
+ 					IT66121_CLK_BANK_PWROFF_RCLK, 0);
+@@ -766,6 +779,9 @@ static int it66121_bridge_attach(struct drm_bridge *bridge,
+ 	if (ret)
+ 		return ret;
+ 
++	if (ctx->info->id == ID_IT66122)
++		return 0;
++
+ 	ret = regmap_write_bits(ctx->regmap, IT66121_SW_RST_REG,
+ 				IT66121_SW_RST_REF,
+ 				IT66121_SW_RST_REF);
+@@ -1728,9 +1744,6 @@ static int it66121_probe(struct i2c_client *client)
+ 				vendor_ids[1], device_ids[0], device_ids[1]);
+ 			return -ENODEV;
+ 		}
+-		ret = it66122_init(ctx);
+-		if (ret)
+-			return dev_err_probe(dev, ret, "IT66122 init failed\n");
+ 	} else if ((vendor_ids[1] << 8 | vendor_ids[0]) != ctx->info->vid ||
+ 		   (device_ids[1] << 8 | device_ids[0]) != ctx->info->pid) {
+ 		return -ENODEV;
+-- 
+2.43.0
+
