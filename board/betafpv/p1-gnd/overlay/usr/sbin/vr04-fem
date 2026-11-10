@@ -15,8 +15,14 @@
 #
 # Pins through PRJ 0x0e (prj_rpc_set_gpio, ar8030-linkctl prj-cmd). The pad bit
 # has no host request: it goes through the chip console's memory write (m).
+#
+# The other P1 ground units: FEM_PIN_2_4 of /etc/default/p1-gnd is pin 2.4's
+# "dir func level" where their own baseband sets it otherwise (the SinYine F1
+# VRX's: function 73, as on the P1 air unit).
 
 LOCK=/tmp/vr04-fem.pid
+FEM_PIN_2_4="1 38 0"
+[ -r /etc/default/p1-gnd ] && . /etc/default/p1-gnd
 
 log() {
 	logger -t vr04-fem "$*"
@@ -50,7 +56,7 @@ while read -r port pin dir func level what; do
 		fail=1
 	fi
 done <<EOF
-2 4 1 38 0 FEM control, GPIO low as stock (Ascent: 0x9d)
+2 4 $FEM_PIN_2_4 FEM control, VR04: GPIO low as stock (Ascent: 0x9d)
 2 0 0 34 0 unused by stock: GPIO input (Ascent: RF control 75)
 2 1 0 35 0 unused by stock: GPIO input (Ascent: RF control 70)
 2 3 0 37 0 unused by stock: GPIO input (Ascent: 0x9e)

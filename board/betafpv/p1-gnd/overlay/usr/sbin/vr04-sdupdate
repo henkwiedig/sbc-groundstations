@@ -4,7 +4,9 @@
 # - the release archive <BUILD_CONFIG>.tar.gz (the update image and its
 #   md5sum, as published), or
 # - an update image as BetaFPV names theirs, P1_GND_*.img: their stock
-#   firmware (back to stock) or this build's P1_GND_*_OpenIPC_*.img
+#   firmware (back to stock) or this build's P1_GND_*_OpenIPC_*.img (the
+#   SinYine F1 VRX: SinYine's SinYine_F1_VRX_*.bin, UPDATE_GLOB of
+#   /etc/default/p1-gnd)
 # goes into the slot that is not running -- sysupgrade carries this system's
 # settings over to OpenIPC and makes that slot the active one -- and the
 # unit restarts into it. Once installed the file is deleted; one that fails
@@ -23,6 +25,9 @@
 # card comes straight from stock, the update is the one stock just installed,
 # and it is renamed .skipped instead of installed a second time into the other
 # slot. The index goes, either way, so that it cannot hold up a later update.
+# Without the index (SinYine's stock keeps none), an image whose kernel and
+# dtb the running slot holds already is the one stock installed: renamed
+# .skipped too (sysupgrade --skip-running).
 
 . /etc/os-release
 ARCHIVE=$BUILD_CONFIG.tar.gz
@@ -32,6 +37,7 @@ WORK=/tmp/sdupdate.img
 LOG=$MNT/sysupgrade.log
 STOCK_INDEX=$MNT/.media_files.json
 BACKLIGHT=/sys/class/backlight/backlight
+UPDATE_GLOB='P1_GND_*.img'
 [ -r /etc/default/p1-gnd ] && . /etc/default/p1-gnd
 BL=$BACKLIGHT
 FIFO=/tmp/sdupdate.fifo
@@ -58,7 +64,7 @@ card() {
 # what is there to install (names may have spaces: "P1_GND_... (1).img")
 updates() {
 	local f
-	for f in "$MNT/$ARCHIVE" "$MNT"/P1_GND_*.img; do
+	for f in "$MNT/$ARCHIVE" "$MNT"/$UPDATE_GLOB; do
 		[ -f "$f" ] && echo "$f"
 	done
 }
@@ -146,7 +152,7 @@ run() {
 install_archive() {
 	rm -rf $WORK && mkdir -p $WORK &&
 		gzip -dc "$1" | tar -xf - -C $WORK && (cd $WORK && md5sum -c *.md5sum) &&
-		sysupgrade --image="$(ls $WORK/*.img)"
+		sysupgrade --image="$(ls $WORK/* | grep -v '\.md5sum$' | head -n 1)"
 }
 
 failed() {
@@ -234,7 +240,19 @@ case "$file" in
 	rm -rf $WORK
 	;;
 *)
-	run sysupgrade --image="$file" || failed
+	run sysupgrade --skip-running --image="$file"
+	case "$(cat /tmp/sdupdate.rc 2>/dev/null)" in
+	0) ;;
+	3)
+		mv "$file" "$file.skipped"
+		echo "not installed: $names-- this system is that image already (installed by the stock update menu, probably); renamed .skipped (rename it back to install it into the other slot)" >> "$LOG"
+		umount $MNT
+		log "skipped (running already): $names"
+		bar_stop
+		exit 0
+		;;
+	*) failed ;;
+	esac
 	;;
 esac
 
