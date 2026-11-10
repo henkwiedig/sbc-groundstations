@@ -1,0 +1,197 @@
+// SPDX-License-Identifier: GPL-2.0
+/*
+ * SinYine F1 VRX (the StartRC VT5 VRX board: carrier TC001_MAIN V0.3, core
+ * module SUN-GND V1.1): the AR9311 ground unit of the BetaFPV P1's design,
+ * with an ITE IT66122 HDMI transmitter on the VO's parallel video port where
+ * the P1 HD VRX has its LT9611EX on DSI. ml-kernel's goggle DT
+ * (proxima-9311.dts, put next to this file by linux/linux-ext-ml-kernel.mk)
+ * with the board's own ends. From SinYine's stock firmware
+ * (SinYine_F1_VRX_20260914_V1.0.0):
+ *   - video: VO DVP, BT.1120 style YCbCr 4:2:2 on 16 lines + HSYNC/VSYNC/DE
+ *     (artosyn,dvp-bt1120, see artosyn_vo.c); the SPL muxes GPIO 45-64 to it
+ *   - IT66122 at 7-bit 0x4d on i2c0 (with the RTC and an INA226 at 0x40):
+ *     ar_lowdelay's "hdmi" device init puts the panel library on bus 0;
+ *     no interrupt line, stock polls the chip
+ *   - its reset: SinYine's own helper pulses GPIO 107, stock's boot script
+ *     drives it high; the panel library pulses GPIO 43 (hogged high here).
+ *     GPIO 42 high as stock's run.sh does ("LT9711_EN", the unused LT9711)
+ *   - keys: two resistor ladders, ADC channel 0 right/up/enter, channel 1
+ *     bind/down/left (stock's adc0-keys/adc1-keys)
+ *   - power: button GPIO 105 (low while pressed); GPIO 68 low cuts the
+ *     power (stock's button_proxy after a 2 s press), nothing drives it high
+ *   - fan: GPIO 106, stock's fan_proxy runs it as a 200 Hz software PWM
+ *   - buzzer: PWM 0x1000000 channel 3 (stock pwmchip0/pwm3)
+ *   - UART2 (ttyS2), stock's FC link (uart_trans)
+ * GPIO 100 is the SD card's I/O rail as on the BetaFPV units.
+ */
+#include "proxima-9311.dts"
+
+/ {
+	model = "Artosyn Proxima-9311 (SinYine F1 VRX)";
+
+	aliases {
+		serial2 = &uart2;
+	};
+
+	hdmi-connector {
+		compatible = "hdmi-connector";
+		type = "c";
+		label = "hdmi";
+
+		port {
+			hdmi_con_in: endpoint {
+				remote-endpoint = <&it66122_out>;
+			};
+		};
+	};
+
+	/* "power" (KEY_POWER): /usr/sbin/sinyine-power, short press and hold */
+	power-button {
+		compatible = "gpio-keys";
+
+		power {
+			label = "power";
+			gpios = <&gpio 105 GPIO_ACTIVE_LOW>;
+			linux,code = <116>;
+			debounce-interval = <20>;
+		};
+	};
+
+	/* poweroff drives GPIO 68 low; until then it stays an input, as on stock */
+	gpio-poweroff {
+		compatible = "gpio-poweroff";
+		gpios = <&gpio 68 GPIO_ACTIVE_LOW>;
+		input;
+		timeout-ms = <3000>;
+	};
+
+	/* the fan's software PWM (S03sinyine-fan sets 200 Hz, 60 percent) */
+	fan_pwm: fan-pwm {
+		compatible = "pwm-gpio";
+		gpios = <&gpio 106 GPIO_ACTIVE_HIGH>;
+		#pwm-cells = <3>;
+	};
+
+	adc0-keys {
+		compatible = "adc-keys";
+		io-channels = <&adc 0>;
+		io-channel-names = "buttons";
+		poll-interval = <10>;
+		keyup-threshold-microvolt = <11>;
+
+		right-key {
+			linux,code = <0x44>;
+			label = "right";
+			press-threshold-microvolt = <469000>;
+		};
+		enter-key {
+			linux,code = <0x45>;
+			label = "enter";
+			press-threshold-microvolt = <946000>;
+		};
+		up-key {
+			linux,code = <0x57>;
+			label = "up";
+			press-threshold-microvolt = <1378000>;
+		};
+	};
+
+	adc1-keys {
+		compatible = "adc-keys";
+		io-channels = <&adc 1>;
+		io-channel-names = "buttons";
+		poll-interval = <10>;
+		keyup-threshold-microvolt = <11>;
+
+		down-key {
+			linux,code = <0x53>;
+			label = "down";
+			press-threshold-microvolt = <465000>;
+		};
+		left-key {
+			linux,code = <0x41>;
+			label = "left";
+			press-threshold-microvolt = <952000>;
+		};
+		bind-key {
+			linux,code = <0x49>;
+			label = "bind";
+			press-threshold-microvolt = <1374000>;
+		};
+	};
+};
+
+/* no panel, no DSI, no backlight, the VR04's single ladder */
+/delete-node/ &backlight;
+/delete-node/ &dsi;
+/delete-node/ &{/adc-keys};
+/delete-node/ &panel_scan_v_hog;
+
+&panel_scan_h_hog {
+	output-high;
+	/delete-property/ output-low;
+	line-name = "lt9711-en";
+};
+
+&panel_power_hog {
+	line-name = "sd-vqmmc";
+};
+
+&gpio {
+	hdmi_reset2_hog: hdmi-reset2-hog {
+		gpio-hog;
+		gpios = <43 GPIO_ACTIVE_HIGH>;
+		output-high;
+		line-name = "hdmi-reset2";
+	};
+};
+
+&vo {
+	artosyn,timing-from-mode;
+	artosyn,dvp-bt1120;
+};
+
+&vo_out {
+	remote-endpoint = <&it66122_in>;
+};
+
+&i2c0 {
+	hdmi-tx@4d {
+		compatible = "ite,it66122";
+		reg = <0x4d>;
+		reset-gpios = <&gpio 107 GPIO_ACTIVE_LOW>;
+		ite,force-hpd;
+
+		ports {
+			#address-cells = <1>;
+			#size-cells = <0>;
+
+			port@0 {
+				reg = <0>;
+				it66122_in: endpoint {
+					bus-width = <16>;
+					remote-endpoint = <&vo_out>;
+				};
+			};
+
+			port@1 {
+				reg = <1>;
+				it66122_out: endpoint {
+					remote-endpoint = <&hdmi_con_in>;
+				};
+			};
+		};
+	};
+};
+
+&{/soc} {
+	uart2: serial@1504000 {
+		compatible = "snps,dw-apb-uart";
+		reg = <0 0x1504000 0 0x400>;
+		interrupts = <GIC_SPI 13 IRQ_TYPE_LEVEL_HIGH>;
+		clocks = <&clk150m>;
+		reg-shift = <2>;
+		reg-io-width = <4>;
+		status = "okay";
+	};
+};

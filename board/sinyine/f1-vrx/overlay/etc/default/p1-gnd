@@ -1,0 +1,22 @@
+# The P1 ground unit this system runs on, for the scripts the P1 ground units
+# share (board/betafpv/p1-gnd): gadget, vr04-splash, vr04-sdupdate, vr04-fem,
+# sysupgrade.
+
+# USB product string of the RNDIS gadget
+DEVICE_NAME="SinYine F1 VRX"
+# SinYine's stock images say "0.17.11-00" (the Artosyn SDK release), the TX's
+# and the VRX's alike: a stock image is this unit's when its device tree has
+# the VRX's second key ladder.
+STOCK_PRODUCT='[0-9]+\.[0-9]+\.[0-9]+-[0-9]+'
+STOCK_DTB_NODE=adc1-keys
+# the update images vr04-sdupdate installs from the card's root
+UPDATE_GLOB='SinYine_F1_VRX_*.bin'
+# The display drivers, in load order: artosyn_gpio's hogs first (the SD
+# card's I/O rail, the HDMI chip's second reset line), the HDMI connector,
+# the IT66122 (it waits for the connector), then the VO.
+DISPLAY_MODULES="artosyn_gpio artosyn_pwm display-connector ite-it66121 artosyn_vo"
+# HDMI: no backlight, the framebuffer alone says the display is up
+BACKLIGHT=
+# vr04-fem: the FEM control pin 2.4 as SinYine's own VRX baseband sets it,
+# its function 73 (dir 2: function only), not the VR04's GPIO low
+FEM_PIN_2_4="2 73 0"

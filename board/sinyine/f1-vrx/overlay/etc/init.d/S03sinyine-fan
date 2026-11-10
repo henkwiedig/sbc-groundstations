@@ -1,0 +1,35 @@
+#!/bin/sh
+#
+# The SinYine F1 VRX's fan (GPIO 106): stock's fan_proxy runs it as a 200 Hz
+# software PWM at 60 percent duty from boot on. Here the kernel's pwm-gpio
+# (the DT's fan-pwm node) does the same. FAN_DUTY in /etc/default/sinyine-fan
+# (percent, 0-100) changes it.
+
+FAN_DUTY=60
+PERIOD_NS=5000000
+[ -r /etc/default/sinyine-fan ] && . /etc/default/sinyine-fan
+
+chip() {
+	ls -d /sys/devices/platform/fan-pwm/pwm/pwmchip* 2>/dev/null | head -n 1
+}
+
+case "$1" in
+start)
+	c=$(chip)
+	[ -n "$c" ] || { echo "S03sinyine-fan: no fan-pwm PWM, the fan stays as it is"; exit 0; }
+	[ -e "$c/pwm0" ] || echo 0 > "$c/export"
+	[ "$FAN_DUTY" -ge 0 ] 2>/dev/null && [ "$FAN_DUTY" -le 100 ] || FAN_DUTY=60
+	echo 0 > "$c/pwm0/enable" 2>/dev/null
+	echo $PERIOD_NS > "$c/pwm0/period"
+	echo $((PERIOD_NS / 100 * FAN_DUTY)) > "$c/pwm0/duty_cycle"
+	echo 1 > "$c/pwm0/enable"
+	echo "S03sinyine-fan: fan at $FAN_DUTY percent"
+	;;
+stop)
+	# the fan keeps running into a reboot; poweroff cuts it anyway
+	;;
+*)
+	echo "Usage: $0 {start|stop}"
+	exit 1
+	;;
+esac

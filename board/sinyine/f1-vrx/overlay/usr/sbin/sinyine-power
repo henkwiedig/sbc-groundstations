@@ -1,0 +1,69 @@
+#!/bin/sh
+#
+# The SinYine F1 VRX's power button (GPIO 105, the DT's gpio-keys
+# "power-button", KEY_POWER), as stock's button_proxy handles it:
+# - a short press: one beep, the DVR recording on or off (PixelPilot's
+#   SIGUSR1)
+# - held 2 s: three beeps, sync, poweroff; the kernel's gpio-poweroff then
+#   drives GPIO 68 low, which cuts the power
+#
+# It sleeps in a read of the key's event device until something happens
+# there, then follows the key's state (evtest --query: exit status 10 while
+# pressed) in 100 ms steps.
+
+KEY=KEY_POWER
+LONG_STEPS=20
+
+log() {
+	logger -t sinyine-power "$*"
+}
+
+# the event device of the input called "power-button"
+device() {
+	local d
+	for d in /sys/class/input/event*; do
+		[ "$(cat "$d/device/name" 2>/dev/null)" = power-button ] && { echo "/dev/input/${d##*/}"; return 0; }
+	done
+	return 1
+}
+
+pressed() {
+	evtest --query "$dev" EV_KEY $KEY >/dev/null 2>&1
+	[ $? = 10 ]
+}
+
+i=0
+until dev=$(device); do
+	i=$((i + 1))
+	[ $i -ge 30 ] && { log "no power-button input device"; exit 1; }
+	sleep 1
+done
+log "watching $dev"
+
+while :; do
+	# blocks until the device has an event (24 bytes: one struct input_event)
+	dd if="$dev" of=/dev/null bs=24 count=1 2>/dev/null || sleep 1
+	pressed || continue
+	n=0
+	while pressed && [ $n -lt $LONG_STEPS ]; do
+		usleep 100000
+		n=$((n + 1))
+	done
+	if [ $n -ge $LONG_STEPS ]; then
+		log "held: power off"
+		for b in 1 2 3; do beep.sh 100; usleep 100000; done
+		sync
+		poweroff
+		exit 0
+	fi
+	beep.sh 100 &
+	pid=$(pidof pixelpilot)
+	if [ -n "$pid" ]; then
+		log "pressed: DVR on/off"
+		kill -USR1 $pid
+	else
+		log "pressed: no PixelPilot to toggle the DVR of"
+	fi
+	# the events of this press are in the device still; let them pass
+	while pressed; do usleep 100000; done
+done
