@@ -15,12 +15,14 @@ Everything but the display, buttons, power and fan is the BetaFPV units' and
 lives in `board/betafpv/p1-gnd/` (flash layout, slots, SD-card update,
 sysupgrade, RAM boot; see the VR04's README).
 
-**State: built, never run on an F1 VRX.** Every board fact below comes from
+**State: runs on a user's F1 VRX (2026-11-10): HDMI picture, video from the
+paired TX and the buttons work.** Every board fact below comes from
 SinYine's stock image `SinYine_F1_VRX_20260914_V1.0.0.bin`: static analysis
 of its SPL, kernel DT, `ar_lowdelay`, `libmpp_service.so` and
 `libpn_hdmitx_it6612x.so`, and those libraries' own code run under qemu (the
-VO's DVP register words, the IT66122's register sequence). The first unit to
-run it decides the rest. Try a RAM boot first (below): it writes nothing.
+VO's DVP register words, the IT66122's register sequence). Not tried yet:
+the RAM boot, the power button, the fan, the DVR; open: whether the SD card
+mounts (the support package did not show up on it).
 
 ## The hardware, from stock
 
@@ -69,6 +71,10 @@ run it decides the rest. Try a RAM boot first (below): it writes nothing.
   - 0002 ite-it66121: the IT66122 with a YCbCr 4:2:2 16-bit input, stock's
     init table, AFE extras and CSC; `ite,force-hpd`: always connected, and
     1080p60/720p60/1080p50/720p50 when the sink gives no EDID
+  - 0003 ite-it66121: the IT66122's init table at attach, before the
+    power-up and without mainline's second REF reset, which put the
+    registers back to their defaults (the HDMI link dropped every few
+    seconds)
 - `overlay/`: `/etc/default/p1-gnd` (USB name "SinYine F1 VRX", stock image
   check, update file name, display modules, FEM pin), `/etc/default/beeper`,
   `/etc/pixelpilot.yaml` (two ladders: PixelPilot's `vrx_adc` with a
