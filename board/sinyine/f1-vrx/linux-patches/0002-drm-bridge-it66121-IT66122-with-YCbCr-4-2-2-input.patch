@@ -1,0 +1,365 @@
+From 892f204dfc2900b874d01cdd842a3bfef1d6c9b5 Mon Sep 17 00:00:00 2001
+From: Henk Wiedig <henk@wiedig.de>
+Date: Tue, 10 Nov 2026 12:26:30 +0100
+Subject: [PATCH 2/2] drm/bridge: it66121: IT66122 with YCbCr 4:2:2 input
+
+The SinYine F1 VRX's HDMI transmitter is an IT66122 (vendor 0x4954,
+device byte 0x22) on a 16-bit YCbCr 4:2:2 bus with separate syncs. From
+its stock driver (libpn_hdmitx_it6612x.so, ITE's reference code, run
+under qemu against a modelled chip):
+
+- "ite,it66122": after the reset, 30 ms, then ITE's init table as that
+  driver has it (register, mask, value); the IT66121 paths otherwise
+  (clock bank, AFE)
+- bus-width 16: input mode YUV422 with input clock delay 1 (reg 0x70
+  0x41), YUV->RGB CSC with its ITU601 matrix, which keeps the VO's full
+  range, and a full-range AVI infoframe as stock sends; input bus
+  format UYVY8_1X16
+- the IT66122's AFE extras above 20 MHz (0x61 bit 1, 0x63, 0x66) and
+  the CSC register's bit 5, as stock writes them
+- ite,force-hpd: the connector is always connected (PixelPilot wants a
+  connected one) and without a sink's EDID the modes are 1080p60,
+  720p60, 1080p50 and 720p50 from a built-in EDID; no IRQ line is wired,
+  the chip is polled
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ drivers/gpu/drm/bridge/ite-it66121.c | 182 +++++++++++++++++++++++++--
+ 1 file changed, 172 insertions(+), 10 deletions(-)
+
+diff --git a/drivers/gpu/drm/bridge/ite-it66121.c b/drivers/gpu/drm/bridge/ite-it66121.c
+index f9aff56..17b7fc1 100644
+--- a/drivers/gpu/drm/bridge/ite-it66121.c
++++ b/drivers/gpu/drm/bridge/ite-it66121.c
+@@ -287,6 +287,7 @@
+ enum chip_id {
+ 	ID_IT6610,
+ 	ID_IT66121,
++	ID_IT66122,
+ };
+ 
+ struct it66121_chip_info {
+@@ -303,6 +304,10 @@ struct it66121_ctx {
+ 	struct gpio_desc *gpio_reset;
+ 	struct i2c_client *client;
+ 	u32 bus_width;
++	/* DT ite,force-hpd: always "connected"; without a sink's EDID the modes
++	 * of it66122_fallback_edid
++	 */
++	bool force_hpd;
+ 	struct mutex lock; /* Protects fields below and device registers */
+ 	struct hdmi_avi_infoframe hdmi_avi_infoframe;
+ 	struct {
+@@ -343,6 +348,78 @@ static void it66121_hw_reset(struct it66121_ctx *ctx)
+ 	gpiod_set_value(ctx->gpio_reset, 0);
+ }
+ 
++/*
++ * The IT66122's init: the table the SinYine F1 VRX's stock driver runs after
++ * its reset (libpn_hdmitx_it6612x.so, ITE's reference HDMITX_Init_Table),
++ * register, mask, value; register 0x01 is a 100 ms pause. The mainline flow
++ * (attach, mode_set) follows it.
++ */
++static const u8 it66122_init_table[][3] = {
++	{ 0x0f, 0x40, 0x00 }, { 0x62, 0x08, 0x00 }, { 0x64, 0x04, 0x00 },
++	{ 0x01, 0x00, 0x00 },
++	{ 0x04, 0x20, 0x20 }, { 0x04, 0x1d, 0x1d },
++	{ 0x01, 0x00, 0x00 },
++	{ 0x0f, 0x01, 0x00 }, { 0xd1, 0x0e, 0x0c }, { 0x65, 0x03, 0x00 },
++	{ 0x71, 0xfc, 0x18 }, { 0x8d, 0xff, 0x9c }, { 0x0f, 0x08, 0x08 },
++	{ 0xf8, 0xff, 0xc3 }, { 0xf8, 0xff, 0xa5 }, { 0x20, 0x80, 0x80 },
++	{ 0x37, 0x01, 0x00 }, { 0x20, 0x80, 0x00 }, { 0xf8, 0xff, 0xff },
++	{ 0x5d, 0x03, 0x01 }, { 0x59, 0xd8, 0x40 }, { 0xe1, 0x20, 0x00 },
++	{ 0x05, 0xc0, 0x40 }, { 0x09, 0xff, 0xfc }, { 0x0a, 0xff, 0xf8 },
++	{ 0x0b, 0xff, 0xf7 }, { 0x0c, 0xff, 0xff }, { 0x0d, 0xff, 0xff },
++	{ 0x0e, 0x03, 0x03 }, { 0x0c, 0xff, 0x00 }, { 0x0d, 0xff, 0x00 },
++	{ 0x0e, 0x02, 0x00 }, { 0x09, 0x03, 0x00 }, { 0x20, 0x01, 0x00 },
++};
++
++static int it66122_init(struct it66121_ctx *ctx)
++{
++	unsigned int i;
++	int ret;
++
++	/* stock waits 30 ms after the reset */
++	msleep(30);
++	for (i = 0; i < ARRAY_SIZE(it66122_init_table); i++) {
++		const u8 *e = it66122_init_table[i];
++
++		if (e[0] == 0x01) {
++			msleep(100);
++			continue;
++		}
++		ret = regmap_update_bits(ctx->regmap, e[0], e[1], e[2]);
++		if (ret)
++			return ret;
++	}
++	return 0;
++}
++
++/*
++ * ite,force-hpd without a sink's EDID: 1080p60 (preferred), 720p60, 1080p50,
++ * 720p50, an HDMI sink with selectable RGB quantization range.
++ */
++static const u8 it66122_fallback_edid[256] = {
++	0x00, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x00, 0x3d, 0x30, 0x12, 0x66,
++	0x00, 0x00, 0x00, 0x00, 0x01, 0x24, 0x01, 0x03, 0x80, 0x10, 0x09, 0x78,
++	0x0a, 0xee, 0x91, 0xa3, 0x54, 0x4c, 0x99, 0x26, 0x0f, 0x50, 0x54, 0x00,
++	0x00, 0x00, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01,
++	0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x02, 0x3a, 0x80, 0x18, 0x71, 0x38,
++	0x2d, 0x40, 0x58, 0x2c, 0x45, 0x00, 0xa0, 0x5a, 0x00, 0x00, 0x00, 0x1e,
++	0x01, 0x1d, 0x00, 0x72, 0x51, 0xd0, 0x1e, 0x20, 0x6e, 0x28, 0x55, 0x00,
++	0xa0, 0x5a, 0x00, 0x00, 0x00, 0x1e, 0x00, 0x00, 0x00, 0xfc, 0x00, 0x4f,
++	0x70, 0x65, 0x6e, 0x49, 0x50, 0x43, 0x20, 0x56, 0x52, 0x58, 0x0a, 0x20,
++	0x00, 0x00, 0x00, 0xfd, 0x00, 0x17, 0x3d, 0x0f, 0x44, 0x0f, 0x00, 0x0a,
++	0x20, 0x20, 0x20, 0x20, 0x20, 0x20, 0x01, 0xaa, 0x02, 0x03, 0x12, 0x00,
++	0x44, 0x90, 0x04, 0x1f, 0x13, 0x65, 0x03, 0x0c, 0x00, 0x10, 0x00, 0xe2,
++	0x00, 0x40, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
++	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
++	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
++	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
++	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
++	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
++	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
++	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
++	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
++	0x00, 0x00, 0x00, 0x39
++};
++
+ static inline int it66121_preamble_ddc(struct it66121_ctx *ctx)
+ {
+ 	return regmap_write(ctx->regmap, IT66121_MASTER_SEL_REG, IT66121_MASTER_SEL_HOST);
+@@ -353,12 +430,44 @@ static inline int it66121_fire_afe(struct it66121_ctx *ctx)
+ 	return regmap_write(ctx->regmap, IT66121_AFE_DRV_REG, 0);
+ }
+ 
+-/* TOFIX: Handle YCbCr Input & Output */
++/*
++ * YCbCr 4:2:2 input on a 16-bit bus with separate syncs (bus-width 16), the
++ * SinYine F1 VRX's: its stock driver (ITE's reference code in
++ * libpn_hdmitx_it6612x.so) sets reg 0x70 to YUV422 with input clock delay 1
++ * ("for 1080P", bits 1:0), converts to RGB with the YUV2RGB ITU601 16-235
++ * matrix below, which on the VO's full-range YCbCr keeps the full range, and
++ * says so in the AVI infoframe. The coefficients are what that driver writes
++ * to 0x73..0x87 (it differs from ITE's published table in two bytes, both of
++ * them near zero).
++ */
++#define IT66121_INPUT_MODE_CLKDLY1		0x01
++#define IT66121_CSC_MATRIX_REG			0x73
++static const u8 it66122_csc_yuv2rgb_601[] = {
++	0x00, 0x00, 0x00,
++	0x00, 0x08, 0x6b, 0x3a, 0x50, 0x3d,
++	0x00, 0x08, 0xf5, 0x0a, 0x02, 0x00,
++	0x00, 0x08, 0x00, 0x00, 0xda, 0x0d,
++};
++
+ static int it66121_configure_input(struct it66121_ctx *ctx)
+ {
+ 	int ret;
+ 	u8 mode = IT66121_INPUT_MODE_RGB;
+ 
++	if (ctx->bus_width == 16) {
++		ret = regmap_update_bits(ctx->regmap, IT66121_INPUT_MODE_REG, 0xfd,
++					 IT66121_INPUT_MODE_YUV422 | IT66121_INPUT_MODE_CLKDLY1);
++		if (ret)
++			return ret;
++		ret = regmap_bulk_write(ctx->regmap, IT66121_CSC_MATRIX_REG,
++					it66122_csc_yuv2rgb_601,
++					sizeof(it66122_csc_yuv2rgb_601));
++		if (ret)
++			return ret;
++		return regmap_write(ctx->regmap, IT66121_INPUT_CSC_REG,
++				    IT66121_INPUT_CSC_YUV_TO_RGB);
++	}
++
+ 	if (ctx->bus_width == 12)
+ 		mode |= IT66121_INPUT_MODE_DDR;
+ 
+@@ -402,7 +511,7 @@ static int it66121_configure_afe(struct it66121_ctx *ctx,
+ 		if (ret)
+ 			return ret;
+ 
+-		if (ctx->info->id == ID_IT66121) {
++		if (ctx->info->id != ID_IT6610) {
+ 			ret = regmap_write_bits(ctx->regmap, IT66121_AFE_IP_REG,
+ 						IT66121_AFE_IP_EC1, 0);
+ 			if (ret)
+@@ -428,7 +537,7 @@ static int it66121_configure_afe(struct it66121_ctx *ctx,
+ 		if (ret)
+ 			return ret;
+ 
+-		if (ctx->info->id == ID_IT66121) {
++		if (ctx->info->id != ID_IT6610) {
+ 			ret = regmap_write_bits(ctx->regmap, IT66121_AFE_IP_REG,
+ 						IT66121_AFE_IP_EC1,
+ 						IT66121_AFE_IP_EC1);
+@@ -443,6 +552,22 @@ static int it66121_configure_afe(struct it66121_ctx *ctx,
+ 		}
+ 	}
+ 
++	if (ctx->info->id == ID_IT66122) {
++		bool fast = mode->clock > 20000;
++
++		ret = regmap_update_bits(ctx->regmap, IT66121_AFE_DRV_REG, 0x02, fast ? 0x02 : 0);
++		if (!ret)
++			ret = regmap_update_bits(ctx->regmap, 0x63, 0x3c, fast ? 0x20 : 0x04);
++		if (!ret)
++			ret = regmap_update_bits(ctx->regmap, 0x66, 0x9f, fast ? 0x97 : 0x00);
++		/* the CSC's bit 5 (mainline: DNFREE_GO), bits 7:6 off: stock's 0x23 */
++		if (!ret && ctx->bus_width == 16)
++			ret = regmap_update_bits(ctx->regmap, IT66121_INPUT_CSC_REG, 0xe0,
++						 IT66121_INPUT_CSC_DNFREE_GO);
++		if (ret)
++			return ret;
++	}
++
+ 	/* Clear reset flags */
+ 	ret = regmap_write_bits(ctx->regmap, IT66121_SW_RST_REG,
+ 				IT66121_SW_RST_REF | IT66121_SW_RST_VID, 0);
+@@ -599,7 +724,7 @@ static int it66121_bridge_attach(struct drm_bridge *bridge,
+ 	if (ret)
+ 		return ret;
+ 
+-	if (ctx->info->id == ID_IT66121) {
++	if (ctx->info->id != ID_IT6610) {
+ 		ret = regmap_write_bits(ctx->regmap, IT66121_CLK_BANK_REG,
+ 					IT66121_CLK_BANK_PWROFF_RCLK, 0);
+ 		if (ret)
+@@ -713,6 +838,8 @@ static u32 *it66121_bridge_atomic_get_input_bus_fmts(struct drm_bridge *bridge,
+ 	if (ctx->bus_width == 12)
+ 		/* IT66121FN Datasheet specifies Little-Endian ordering */
+ 		input_fmts[0] = MEDIA_BUS_FMT_RGB888_2X12_LE;
++	else if (ctx->bus_width == 16)
++		input_fmts[0] = MEDIA_BUS_FMT_UYVY8_1X16;
+ 	else
+ 		/* TOFIX support more input bus formats in 24bit width */
+ 		input_fmts[0] = MEDIA_BUS_FMT_RGB888_1X24;
+@@ -777,6 +904,9 @@ void it66121_bridge_mode_set(struct drm_bridge *bridge,
+ 		goto unlock;
+ 	}
+ 
++	if (ctx->bus_width == 16)
++		ctx->hdmi_avi_infoframe.quantization_range = HDMI_QUANTIZATION_RANGE_FULL;
++
+ 	ret = hdmi_avi_infoframe_pack(&ctx->hdmi_avi_infoframe, buf, sizeof(buf));
+ 	if (ret < 0) {
+ 		DRM_ERROR("Failed to pack infoframe: %d\n", ret);
+@@ -802,7 +932,7 @@ void it66121_bridge_mode_set(struct drm_bridge *bridge,
+ 	if (regmap_write(ctx->regmap, IT66121_HDMI_MODE_REG, IT66121_HDMI_MODE_HDMI))
+ 		goto unlock;
+ 
+-	if (ctx->info->id == ID_IT66121 &&
++	if (ctx->info->id != ID_IT6610 &&
+ 	    regmap_write_bits(ctx->regmap, IT66121_CLK_BANK_REG,
+ 			      IT66121_CLK_BANK_PWROFF_TXCLK,
+ 			      IT66121_CLK_BANK_PWROFF_TXCLK)) {
+@@ -815,7 +945,7 @@ void it66121_bridge_mode_set(struct drm_bridge *bridge,
+ 	if (it66121_configure_afe(ctx, adjusted_mode))
+ 		goto unlock;
+ 
+-	if (ctx->info->id == ID_IT66121 &&
++	if (ctx->info->id != ID_IT6610 &&
+ 	    regmap_write_bits(ctx->regmap, IT66121_CLK_BANK_REG,
+ 			      IT66121_CLK_BANK_PWROFF_TXCLK, 0)) {
+ 		goto unlock;
+@@ -848,6 +978,9 @@ it66121_bridge_detect(struct drm_bridge *bridge, struct drm_connector *connector
+ {
+ 	struct it66121_ctx *ctx = container_of(bridge, struct it66121_ctx, bridge);
+ 
++	if (ctx->force_hpd)
++		return connector_status_connected;
++
+ 	return it66121_is_hpd_detect(ctx) ? connector_status_connected
+ 					  : connector_status_disconnected;
+ }
+@@ -899,6 +1032,11 @@ static const struct drm_edid *it66121_bridge_edid_read(struct drm_bridge *bridge
+ out_unlock:
+ 	mutex_unlock(&ctx->lock);
+ 
++	if (!drm_edid && ctx->force_hpd) {
++		dev_dbg(ctx->dev, "no EDID from the sink, using the fallback modes\n");
++		drm_edid = drm_edid_alloc(it66122_fallback_edid, sizeof(it66122_fallback_edid));
++	}
++
+ 	return drm_edid;
+ }
+ 
+@@ -1533,9 +1671,12 @@ static int it66121_probe(struct i2c_client *client)
+ 	of_property_read_u32(ep, "bus-width", &ctx->bus_width);
+ 	of_node_put(ep);
+ 
+-	if (ctx->bus_width != 12 && ctx->bus_width != 24)
++	if (ctx->bus_width != 12 && ctx->bus_width != 24 &&
++	    !(ctx->bus_width == 16 && ctx->info->id == ID_IT66122))
+ 		return -EINVAL;
+ 
++	ctx->force_hpd = of_property_read_bool(dev->of_node, "ite,force-hpd");
++
+ 	ep = of_graph_get_remote_node(dev->of_node, 1, -1);
+ 	if (!ep) {
+ 		dev_err(ctx->dev, "The endpoint is unconnected\n");
+@@ -1579,8 +1720,19 @@ static int it66121_probe(struct i2c_client *client)
+ 	revision_id = FIELD_GET(IT66121_REVISION_MASK, device_ids[1]);
+ 	device_ids[1] &= IT66121_DEVICE_ID1_MASK;
+ 
+-	if ((vendor_ids[1] << 8 | vendor_ids[0]) != ctx->info->vid ||
+-	    (device_ids[1] << 8 | device_ids[0]) != ctx->info->pid) {
++	if (ctx->info->id == ID_IT66122) {
++		/* stock checks the vendor and the first device byte only */
++		if ((vendor_ids[1] << 8 | vendor_ids[0]) != ctx->info->vid ||
++		    device_ids[0] != (ctx->info->pid & 0xff)) {
++			dev_err(dev, "no IT66122: ids %02x %02x %02x %02x\n", vendor_ids[0],
++				vendor_ids[1], device_ids[0], device_ids[1]);
++			return -ENODEV;
++		}
++		ret = it66122_init(ctx);
++		if (ret)
++			return dev_err_probe(dev, ret, "IT66122 init failed\n");
++	} else if ((vendor_ids[1] << 8 | vendor_ids[0]) != ctx->info->vid ||
++		   (device_ids[1] << 8 | device_ids[0]) != ctx->info->pid) {
+ 		return -ENODEV;
+ 	}
+ 
+@@ -1604,7 +1756,9 @@ static int it66121_probe(struct i2c_client *client)
+ 
+ 	drm_bridge_add(&ctx->bridge);
+ 
+-	dev_info(ctx->dev, "IT66121 revision %d probed\n", revision_id);
++	dev_info(ctx->dev, "IT6612%c revision %d probed%s\n",
++		 ctx->info->id == ID_IT66122 ? '2' : '1', revision_id,
++		 ctx->force_hpd ? ", always connected" : "");
+ 
+ 	return 0;
+ }
+@@ -1623,6 +1777,12 @@ static const struct it66121_chip_info it66121_chip_info = {
+ 	.pid = 0x0612,
+ };
+ 
++static const struct it66121_chip_info it66122_chip_info = {
++	.id = ID_IT66122,
++	.vid = 0x4954,
++	.pid = 0x0622,
++};
++
+ static const struct it66121_chip_info it6610_chip_info = {
+ 	.id = ID_IT6610,
+ 	.vid = 0xca00,
+@@ -1631,6 +1791,7 @@ static const struct it66121_chip_info it6610_chip_info = {
+ 
+ static const struct of_device_id it66121_dt_match[] = {
+ 	{ .compatible = "ite,it66121", &it66121_chip_info },
++	{ .compatible = "ite,it66122", &it66122_chip_info },
+ 	{ .compatible = "ite,it6610", &it6610_chip_info },
+ 	{ }
+ };
+@@ -1638,6 +1799,7 @@ MODULE_DEVICE_TABLE(of, it66121_dt_match);
+ 
+ static const struct i2c_device_id it66121_id[] = {
+ 	{ "it66121", (kernel_ulong_t) &it66121_chip_info },
++	{ "it66122", (kernel_ulong_t) &it66122_chip_info },
+ 	{ "it6610", (kernel_ulong_t) &it6610_chip_info },
+ 	{ }
+ };
+-- 
+2.43.0
+

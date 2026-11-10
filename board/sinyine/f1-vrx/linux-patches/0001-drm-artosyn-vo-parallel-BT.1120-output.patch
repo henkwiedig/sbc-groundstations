@@ -1,0 +1,259 @@
+From cd69614c80ce19e251e14955235d4dcf90a95d25 Mon Sep 17 00:00:00 2001
+From: Henk Wiedig <henk@wiedig.de>
+Date: Tue, 10 Nov 2026 12:26:30 +0100
+Subject: [PATCH 1/2] drm/artosyn: vo: parallel BT.1120 output
+ (artosyn,dvp-bt1120)
+
+The SinYine F1 VRX (StartRC VT5 board) has no DSI bridge: its IT66122
+HDMI transmitter takes the VO's parallel video port (DVP), YCbCr 4:2:2
+on 16 data lines with separate HSYNC/VSYNC/DE, one pixel per clock.
+With artosyn,dvp-bt1120 the VO drives that port with the words the
+SinYine stock firmware (libmpp_service.so) uses for it, intf DVP /
+sub-intf BT1120 / colour mode YUV / external sync / pin mode 0:
+
+- 0x1f70 (DVP port) 0x000c0101 then 0x001c0101 (init_dvp_port, run
+  under qemu with these settings), after the DC soft reset
+- 0x1418 0x111 (reg_panel_set's user-timing word, no clock inversion)
+- 0x1f40 0x00110211 (reg_dpi_set: DVP, YUV output, BT1120)
+- the timing words from the mode (with artosyn,timing-from-mode) and
+  the mode's pixel clock; mode_valid wants the clock within 0.5 percent
+
+The next bridge (it66121) makes no connector: the VO attaches it with
+DRM_BRIDGE_ATTACH_NO_CONNECTOR and puts a bridge connector on the
+encoder, polled. GPIO 45-64, the port's pins, get the video function
+when the SPL left them as GPIOs (SinYine's sets them).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ drivers/gpu/drm/artosyn/Kconfig      |   3 +
+ drivers/gpu/drm/artosyn/artosyn_vo.c | 125 +++++++++++++++++++++++++--
+ 2 files changed, 121 insertions(+), 7 deletions(-)
+
+diff --git a/drivers/gpu/drm/artosyn/Kconfig b/drivers/gpu/drm/artosyn/Kconfig
+index d5f425a..7f74d2c 100644
+--- a/drivers/gpu/drm/artosyn/Kconfig
++++ b/drivers/gpu/drm/artosyn/Kconfig
+@@ -15,6 +15,9 @@ config DRM_ARTOSYN
+ 	# vmlinux link fails: "undefined reference to drm_client_setup"). Mainline drivers (e.g.
+ 	# drivers/gpu/drm/tiny) do the same.
+ 	select DRM_CLIENT_SELECTION
++	# the DVP output's bridge connector (artosyn,dvp-bt1120)
++	select DRM_DISPLAY_HELPER
++	select DRM_BRIDGE_CONNECTOR
+ 	help
+ 	  DRM/KMS driver for the Artosyn Proxima goggle display: the custom VO
+ 	  display controller (CRTC), the DesignWare MIPI-DSI host (via the mainline
+diff --git a/drivers/gpu/drm/artosyn/artosyn_vo.c b/drivers/gpu/drm/artosyn/artosyn_vo.c
+index 410f4a4..bc0c06a 100644
+--- a/drivers/gpu/drm/artosyn/artosyn_vo.c
++++ b/drivers/gpu/drm/artosyn/artosyn_vo.c
+@@ -38,6 +38,7 @@
+ #include <drm/drm_blend.h>
+ #include <drm/drm_plane_helper.h>
+ #include <drm/drm_bridge.h>
++#include <drm/drm_bridge_connector.h>
+ #include <drm/drm_drv.h>
+ #include <drm/drm_fbdev_dma.h>
+ #include <drm/drm_fb_dma_helper.h>
+@@ -100,6 +101,7 @@
+ #define VO_LAYER_CSC	0x1e40	/* primary-layer YUV->RGB CSC: 16 regs, step 8 (0x1e40..0x1eb8) */
+ #define VO_QOS		0xff00	/* AXI read QoS */
+ #define VO_DPI_CTRL	0x1f40	/* DPI polarity/enable (bit20 = DPI master en) */
++#define VO_DVP_CTRL	0x1f70	/* the parallel (DVP) output port: pin mode, sync, clock edge */
+ 
+ /* Overlay register banks - each overlay layer is one bank of registers, composited over the
+  * primary. The offsets below are BANK 0; bank N adds 4*N to every offset (reg_overlay1_set
+@@ -191,6 +193,8 @@ struct ar_vo {
+ 	 * the P1 HD VRX's LT9611EX), not the panel's hardcoded 1080p60 words
+ 	 */
+ 	bool				timing_from_mode;
++	/* DT artosyn,dvp-bt1120: the parallel output instead of the DSI (see VO_DVP_*) */
++	bool				dvp;
+ 	/* timing-from-mode: the clock of the mode userspace set and of the one scanned (a bridge
+ 	 * may adjust it, e.g. the LT9611EX's DSI-side timing for an HDMI mode), for pclk_hz
+ 	 */
+@@ -293,6 +297,44 @@ static void ar_vo_set_fb_addr(struct ar_vo *vo, struct drm_plane_state *state)
+ #define VO_1080P60_SCALE_CFG	0x00000000
+ #define VO_1080P60_PANEL_CTRL	0x00000311
+ #define VO_1080P60_DPI_CTRL	0x00120000
++
++/*
++ * artosyn,dvp-bt1120: the output is the parallel video port (DVP), BT.1120
++ * style YCbCr 4:2:2 on 16 data lines with separate HSYNC/VSYNC/DE, one pixel
++ * per clock (the SinYine F1 VRX's IT66122 HDMI transmitter). The words are
++ * the SinYine stock firmware's (libmpp_service.so) for its VO setup,
++ * intf DVP / sub-intf BT1120, color mode 3 (YUV), external sync, pin mode 0,
++ * all polarities normal:
++ *   0x1418 = 0x111       reg_panel_set: as the DSI's 0x311 without bit 9
++ *                        (clock polarity), user-timing template
++ *   0x1f40 = 0x00110211  reg_dpi_set: DVP enable (bit16), not MIPI (bit17),
++ *                        YUV output (bits 5:4 = 1), BT1120 (bit9), bits 0/20
++ *   0x1f70 = 0x000c0101, then 0x001c0101
++ *                        init_dvp_port (run under qemu with these settings):
++ *                        the port config, then the clock edge (bits 21:20)
++ * The timing words come from the mode (CEA, no DSI-side stretch) and the
++ * pixel clock is the mode's.
++ */
++#define VO_DVP_PANEL_CTRL	0x00000111
++#define VO_DVP_DPI_CTRL		0x00110211
++#define VO_DVP_PORT_CFG		0x000c0101
++#define VO_DVP_PORT_CLK		0x001c0101
++
++/*
++ * The DVP's 20 pins are GPIO 45-64 (port 2, pins 0-19) in the SoC pin mux at
++ * 0x0a10a000, function 1 with pad byte 0x02, which the SinYine SPL sets
++ * (ar9311-pinctrl's cfg words 0x2d0011..0x400011). An SPL that leaves them
++ * as GPIOs gets them set here: per pin a 4-bit function field from +0x94
++ * (8 pins a word, function in bits 2:0) and a pad byte from +0x34 (4 pins
++ * a word).
++ */
++#define PINMUX_BASE		0x0a10a000
++#define PINMUX_SIZE		0x100
++#define PINMUX_P2_FUNC		0x94
++#define PINMUX_P2_PAD		0x34
++#define DVP_PINS		20
++#define DVP_PIN_FUNC		1
++#define DVP_PIN_PAD		0x02
+ #define VO_1080P60_GLOBAL	0x00000100
+ 
+ /*
+@@ -634,6 +676,12 @@ static void ar_vo_pipe_enable(struct drm_simple_display_pipe *pipe,
+ 	writel(0, vo->regs + VO_MAIN_CTRL);
+ 	writel(readl(vo->regs + VO_GLOBAL) & ~VO_GLOBAL_AXI_EN, vo->regs + VO_GLOBAL);
+ 
++	/* The DVP port first, as stock's init_display_interface precedes its timing words. */
++	if (vo->dvp) {
++		writel(VO_DVP_PORT_CFG, vo->regs + VO_DVP_CTRL);
++		writel(VO_DVP_PORT_CLK, vo->regs + VO_DVP_CTRL);
++	}
++
+ 	/* Timing words and FB_SIZE: hardcoded 1080p60 panel words, or from the mode. */
+ 	ar_vo_program_timing(vo, mode);
+ 
+@@ -651,8 +699,8 @@ static void ar_vo_pipe_enable(struct drm_simple_display_pipe *pipe,
+ 	writel(VO_1080P60_SCALE_CFG, vo->regs + VO_FB_SCALE_CFG);	/* unscaled */
+ 	vo->fb_scaled = false;		/* ar_vo_pipe_update puts a scaled video0 back on */
+ 	writel(VO_1080P60_DPI_FORMAT, vo->regs + VO_DPI_FORMAT);
+-	writel(VO_1080P60_PANEL_CTRL, vo->regs + VO_PANEL_CTRL);
+-	writel(VO_1080P60_DPI_CTRL, vo->regs + VO_DPI_CTRL);
++	writel(vo->dvp ? VO_DVP_PANEL_CTRL : VO_1080P60_PANEL_CTRL, vo->regs + VO_PANEL_CTRL);
++	writel(vo->dvp ? VO_DVP_DPI_CTRL : VO_1080P60_DPI_CTRL, vo->regs + VO_DPI_CTRL);
+ 	writel(0xff, vo->regs + VO_QOS);
+ 
+ 	/*
+@@ -768,9 +816,44 @@ static enum drm_mode_status ar_vo_mode_valid(struct drm_simple_display_pipe *pip
+ 		return MODE_BAD;
+ 	if (mode->flags & DRM_MODE_FLAG_INTERLACE)
+ 		return MODE_NO_INTERLACE;
++	if (vo->dvp && vo->pclk) {
++		unsigned long want = (unsigned long)mode->clock * 1000;
++		long r = clk_round_rate(vo->pclk, ar_vo_model_hz(vo, want));
++		unsigned long got = r > 0 ? ar_vo_true_hz(vo, r) : 0;
++
++		/* 0.5 %: the CEA rates are reachable, a sink's odd ones may not be */
++		if (!got || abs_diff(got, want) > want / 200)
++			return MODE_CLOCK_RANGE;
++	}
+ 	return MODE_OK;
+ }
+ 
++/* The DVP pins to their video function, unless the SPL did that already. */
++static void ar_vo_dvp_pinmux(struct device *dev)
++{
++	void __iomem *mux = devm_ioremap(dev, PINMUX_BASE, PINMUX_SIZE);
++	unsigned int i, fixed = 0;
++
++	if (!mux) {
++		dev_warn(dev, "DVP: pin mux not mapped, left as it is\n");
++		return;
++	}
++	for (i = 0; i < DVP_PINS; i++) {
++		void __iomem *f = mux + PINMUX_P2_FUNC + (i / 8) * 4;
++		void __iomem *pad = mux + PINMUX_P2_PAD + (i & ~3u);
++		unsigned int fs = (i % 8) * 4, ps = (i % 4) * 8;
++		u32 v = readl(f);
++
++		if (((v >> fs) & 7) == DVP_PIN_FUNC)
++			continue;
++		writel((v & ~(7u << fs)) | DVP_PIN_FUNC << fs, f);
++		writel((readl(pad) & ~(0xffu << ps)) | DVP_PIN_PAD << ps, pad);
++		fixed++;
++	}
++	if (fixed)
++		dev_info(dev, "DVP: %u of GPIO 45-64 set to the video function\n", fixed);
++}
++
+ static const struct drm_simple_display_pipe_funcs ar_vo_pipe_funcs = {
+ 	.mode_valid	= ar_vo_mode_valid,
+ 	.enable		= ar_vo_pipe_enable,
+@@ -1135,6 +1218,11 @@ static int ar_vo_probe(struct platform_device *pdev)
+ 		return PTR_ERR(vo->pclk);
+ 
+ 	vo->timing_from_mode = of_property_read_bool(dev->of_node, "artosyn,timing-from-mode");
++	vo->dvp = of_property_read_bool(dev->of_node, "artosyn,dvp-bt1120");
++	if (vo->dvp) {
++		dev_info(dev, "parallel output (DVP, BT.1120 YCbCr 4:2:2)\n");
++		ar_vo_dvp_pinmux(dev);
++	}
+ 	if (vo->timing_from_mode)
+ 		dev_info(dev, "timing from the mode, pixel clock model x%u ppm\n", pclk_scale_ppm);
+ 
+@@ -1146,10 +1234,13 @@ static int ar_vo_probe(struct platform_device *pdev)
+ 	if (ret)
+ 		return ret;
+ 
+-	/* The DSI bridge (dw-mipi-dsi glue) is the of_graph remote endpoint on port 0. */
++	/* The DSI bridge (dw-mipi-dsi glue), or on the DVP the HDMI transmitter, is the
++	 * of_graph remote endpoint on port 0.
++	 */
+ 	bridge = devm_drm_of_get_bridge(dev, dev->of_node, 0, 0);
+ 	if (IS_ERR(bridge))
+-		return dev_err_probe(dev, PTR_ERR(bridge), "no DSI bridge\n");
++		return dev_err_probe(dev, PTR_ERR(bridge), vo->dvp ? "no DVP bridge\n" :
++				     "no DSI bridge\n");
+ 
+ 	ret = drmm_mode_config_init(&vo->drm);
+ 	if (ret)
+@@ -1172,9 +1263,27 @@ static int ar_vo_probe(struct platform_device *pdev)
+ 	if (ret)
+ 		return ret;
+ 
+-	ret = drm_simple_display_pipe_attach_bridge(&vo->pipe, bridge);
+-	if (ret)
+-		return ret;
++	if (vo->dvp) {
++		/* A bridge that makes no connector itself (it66121): the chain's
++		 * connector, polled where nothing reports the hot plug.
++		 */
++		struct drm_connector *connector;
++
++		ret = drm_bridge_attach(&vo->pipe.encoder, bridge, NULL,
++					DRM_BRIDGE_ATTACH_NO_CONNECTOR);
++		if (ret)
++			return ret;
++		connector = drm_bridge_connector_init(&vo->drm, &vo->pipe.encoder);
++		if (IS_ERR(connector))
++			return dev_err_probe(dev, PTR_ERR(connector), "no connector\n");
++		ret = drm_connector_attach_encoder(connector, &vo->pipe.encoder);
++		if (ret)
++			return ret;
++	} else {
++		ret = drm_simple_display_pipe_attach_bridge(&vo->pipe, bridge);
++		if (ret)
++			return ret;
++	}
+ 
+ 	/*
+ 	 * Overlay planes on the same CRTC. Creation order keeps the HUD's DRM plane id stable
+@@ -1210,6 +1319,8 @@ static int ar_vo_probe(struct platform_device *pdev)
+ 	drm_plane_create_zpos_immutable_property(&vo->hud.base, 1 + vo->hud.bank);
+ 
+ 	drm_mode_config_reset(&vo->drm);
++	if (vo->dvp)
++		drmm_kms_helper_poll_init(&vo->drm);
+ 
+ 	ret = devm_request_irq(dev, irq, ar_vo_irq, 0, "artosyn-vo", vo);
+ 	if (ret)
+-- 
+2.43.0
+

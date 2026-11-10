@@ -1,0 +1,36 @@
+gsmenu:
+  enabled: true
+  # SinYine F1 VRX: six buttons on two resistor ladders on the AR9311's ADC,
+  # channel 0 right/enter/up, channel 1 down/left/bind (the kernel's
+  # adc0-keys/adc1-keys read the same channels). The millivolts are the
+  # stock device tree's adc-keys thresholds (not measured on a unit yet);
+  # released, a channel reads near 0. No back button: left steps back. Bind
+  # opens the bind dialog (/usr/bin/bind). The power button (a short press:
+  # DVR on/off) is /usr/sbin/sinyine-power's.
+  vrx_adc:
+    enabled: true
+    device: /sys/bus/iio/devices/iio:device0/in_voltage0_raw
+    scale_mv: auto
+    bind_device: ""
+    keys:
+      - { name: right, mv: 469 }
+      - { name: enter, mv: 946 }
+      - { name: up,    mv: 1378 }
+      - { name: down,  mv: 465,  device: /sys/bus/iio/devices/iio:device0/in_voltage1_raw }
+      - { name: left,  mv: 952,  device: /sys/bus/iio/devices/iio:device0/in_voltage1_raw }
+      - { name: bind,  mv: 1374, device: /sys/bus/iio/devices/iio:device0/in_voltage1_raw }
+  # The archive goes to /media/dvr, the SD card.
+  actions:
+    ground:
+      - label: Generate support package
+        action: /usr/bin/collect_support_data.sh
+# enables collection of `os_mon.*` OSD facts (board/common/artosyn-osd). ADC
+# channel 1 is a key ladder here, not the battery as on the VR04.
+os_sensors:
+  # The SoC temperature (artosyn_protemp: whole degrees C in in_temp_scale),
+  # os_mon.temperature{name=soc}.
+  temperature:
+    - type: iio
+      path: /sys/bus/iio/devices/iio:device1/in_temp_scale
+      multiplier: 1000
+      name: soc

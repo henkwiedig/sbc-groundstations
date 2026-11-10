@@ -1,0 +1,7 @@
+# The buzzer for beep.sh / playsong.sh (board/common/beeper): PWM controller
+# 0 (pwm@1000000), channel 3, as SinYine's stock firmware drives it
+# (customerRboxBuzzerInit: pwmchip0/pwm3). Found by its device, as the fan's
+# pwm-gpio may register first.
+BEEPER_PWMCHIP=$(ls -d /sys/devices/platform/soc/1000000.pwm/pwm/pwmchip* 2>/dev/null | head -n 1)
+BEEPER_CHANNEL=3
+BEEPER_PERIOD_NS=250000

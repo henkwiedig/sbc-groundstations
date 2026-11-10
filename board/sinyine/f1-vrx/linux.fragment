@@ -1,0 +1,9 @@
+# sinyine_f1_vrx on top of board/betafpv/p1-gnd/linux.fragment: the HDMI
+# transmitter (ite-it66121 with linux-patches/0002) and its connector node,
+# the power button (gpio-keys) and power-off line (gpio-poweroff), the fan's
+# software PWM (pwm-gpio).
+CONFIG_DRM_ITE_IT66121=m
+CONFIG_DRM_DISPLAY_CONNECTOR=m
+CONFIG_KEYBOARD_GPIO=y
+CONFIG_POWER_RESET_GPIO=y
+CONFIG_PWM_GPIO=y

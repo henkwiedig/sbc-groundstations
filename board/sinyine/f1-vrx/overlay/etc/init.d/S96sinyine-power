@@ -1,0 +1,24 @@
+#!/bin/sh
+#
+# The SinYine F1 VRX's power button, as on stock: a short press toggles the
+# DVR recording, a 2 s press switches the unit off (/usr/sbin/sinyine-power).
+
+PIDFILE=/run/sinyine-power.pid
+
+case "$1" in
+start)
+	start-stop-daemon -S -b -m -p $PIDFILE -x /usr/sbin/sinyine-power
+	;;
+stop)
+	start-stop-daemon -K -p $PIDFILE 2>/dev/null
+	rm -f $PIDFILE
+	;;
+restart)
+	"$0" stop
+	"$0" start
+	;;
+*)
+	echo "Usage: $0 {start|stop|restart}"
+	exit 1
+	;;
+esac
