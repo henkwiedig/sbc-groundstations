@@ -27,6 +27,13 @@ OTA image (P1_GND_*.img, Artosyn "ARTO" container) into OUT_DIR
   vr04_gnd.json         the goggles' baseband config, see make_gnd_config()
   stock-image           the stock image's path and release name, one per line
 
+With a base image ($ARTLYNK_VR04_BASE_IMG, else $ARTLYNK_VR04_BASE_NAME in
+CACHE_DIR: another maker's unit of the same design, the SinYine F1 VRX's
+SinYine_F1_VRX_*.bin), loader.bin, vendor.img, env0.img, uboot0.img,
+kernel0.img, gnd.dtb and bb_config_gnd.json come from it instead, and
+stock-image names it: the update image is packed on it and the baseband gets
+its power setup. The codec firmware stays BetaFPV's.
+
 The image is GND's if its header product is "P1_GND_VR04" (2.0.x) or "IGNORE"
 (2.1.x); the VR04 PRO and SKY/AIO images are refused. Lookup order:
 $ARTLYNK_VR04_VENDOR_IMG, CACHE_DIR/RELEASE.img, fetched to that name from
@@ -186,6 +193,68 @@ def extract_rootfs_files(userapp_img, out, tmp, host_dir):
         gz.unlink()
 
 
+def find_base(cache):
+    env = os.environ.get("ARTLYNK_VR04_BASE_IMG")
+    if env:
+        return Path(env) if Path(env).is_file() else None
+    name = os.environ.get("ARTLYNK_VR04_BASE_NAME")
+    if not name:
+        return None
+    p = Path(cache, name)
+    return p if p.is_file() else None
+
+
+def use_base(base, out, host_dir):
+    """The base image's SPL/vendor/env/U-Boot/kernel/DT and ground baseband
+    config replace the P1 GND ones (see the module doc)."""
+    with open(base, "rb") as f:
+        hdr = f.read(8)
+    if hdr[:4] != ARTO_MAGIC or hdr[6] != 2:
+        warn(f"{base}: not a NAND ARTO image - not used as the base")
+        return False
+    with tempfile.TemporaryDirectory() as t:
+        tmp = Path(t)
+        parts = tmp / "parts"
+        r = subprocess.run([sys.executable, str(HERE / "p1_ota_extract.py"), str(base), str(parts)],
+                           stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
+        if r.returncode != 0 or not parts.is_dir():
+            warn(f"base image extraction failed: {r.stderr.strip()[-300:]}")
+            return False
+        names = ("loader.bin", "vendor.img", "env0.img", "uboot0.img", "kernel0.img")
+        for name in names:
+            if not (parts / name).is_file():
+                warn(f"base image has no {name} - not used as the base")
+                return False
+        for name in names:
+            shutil.copy(parts / name, out / name)
+        d = (parts / "dtb0.img").read_bytes() if (parts / "dtb0.img").is_file() else b""
+        i = d.find(FDT_MAGIC)
+        if i >= 0:
+            (out / "gnd.dtb").write_bytes(d[i:i + struct.unpack_from(">I", d, i + 4)[0]])
+        # the base's ground baseband config replaces the P1 GND one
+        cfg = "usr/usrdata/ar813x/bb_config_gnd.json"
+        if (out / "bb_config_gnd.json").is_file():
+            (out / "bb_config_gnd.json").unlink()
+        if (parts / "userapp0.img").is_file():
+            sub = tmp / "rootfs"
+            sub.mkdir()
+            saved = dict(ROOTFS_FILES)
+            ROOTFS_FILES.clear()
+            ROOTFS_FILES[cfg] = "bb_config_gnd.json"
+            try:
+                extract_rootfs_files(parts / "userapp0.img", out, sub, host_dir)
+            except subprocess.CalledProcessError as e:
+                warn(f"base rootfs extraction failed: {e}")
+            finally:
+                ROOTFS_FILES.clear()
+                ROOTFS_FILES.update(saved)
+        if not (out / "bb_config_gnd.json").is_file():
+            warn(f"base image has no {cfg} - no vr04_gnd.json")
+    (out / "stock-image").write_text(f"{Path(base).resolve()}\n{Path(base).stem}\n")
+    print(f"artlynk-vr04-vendor-firmware: update image base {base}")
+    return True
+
+
 def make_gnd_config(out, ascent_cfg):
     """vr04_gnd.json: the Ascent ground config with the goggles' own power setup.
 
@@ -254,6 +323,17 @@ def main():
                 extract_rootfs_files(parts / "userapp0.img", out, tmp, host_dir)
             except subprocess.CalledProcessError as e:
                 warn(f"stock rootfs extraction failed: {e}")
+
+    # Another maker's unit: its own stock image as the update image's base.
+    # Without it no update image (stock-image goes): one packed on BetaFPV's
+    # SPL and vendor would not be this unit's.
+    base = find_base(cache)
+    base_name = os.environ.get("ARTLYNK_VR04_BASE_NAME")
+    if (base_name and base is None) or (base is not None and not use_base(base, out, host_dir)):
+        if base is None:
+            warn(f"base image {base_name} not in {cache}/ (or ARTLYNK_VR04_BASE_IMG) - no update image")
+        if (out / "stock-image").is_file():
+            (out / "stock-image").unlink()
 
     gnd = find_ascent_gnd(cache, ascent_release, ascent_file_id)
     if gnd is None:

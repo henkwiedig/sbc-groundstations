@@ -46,7 +46,12 @@ def parse(data):
     rom, loader = struct.unpack_from("<II", data, 0x18)
     nparts, nsegs = struct.unpack_from("<HH", data, 0x20)
     body = BASE_HDR + hext + 0x120
-    if hashlib.sha256(data[body:]).digest() != data[BASE_HDR + hext:BASE_HDR + hext + 32]:
+    # The header's size ends the hashed data. SinYine's images carry an
+    # unhashed 80-byte footer after it, which is left out here.
+    end = body + struct.unpack_from("<Q", data, 0x10)[0]
+    if end > len(data):
+        sys.exit("base: shorter than its header says (truncated?)")
+    if hashlib.sha256(data[body:end]).digest() != data[BASE_HDR + hext:BASE_HDR + hext + 32]:
         sys.exit("base: SHA-256 mismatch")
     ptab = body + rom + loader
     parts = {}
@@ -126,7 +131,7 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
     p = sub.add_parser("pack", help="build an OpenIPC image on a stock one")
-    p.add_argument("--base", required=True, help="stock P1_SKY_*.img / P1_GND_*.img")
+    p.add_argument("--base", required=True, help="stock P1_SKY_*.img / P1_GND_*.img / SinYine_F1_*.bin")
     p.add_argument("--kernel", required=True, help="uImage.ar9311 (OTRA)")
     p.add_argument("--dtb", required=True, help="the flash dtb")
     p.add_argument("--userapp", required=True, help="rootfs.ubi")

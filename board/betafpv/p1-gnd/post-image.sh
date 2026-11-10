@@ -38,7 +38,8 @@
 # (scripts/vr04-uboot-boot.py: SD card or YMODEM); and on the stock image
 # package/artlynk-vr04-vendor-firmware used, the update image
 # <stock release>_OpenIPC${IMG_TAG}_<sha>.img that /sbin/sysupgrade and
-# scripts/vr04-install.py flash into a slot.
+# scripts/vr04-install.py flash into a slot (with IMG_NAME in device.env:
+# ${IMG_NAME}_<sha>.${IMG_EXT}, the SinYine F1 VRX's naming).
 
 set -e
 LOAD=0x200a0000
@@ -173,10 +174,12 @@ tar -C ${TB} -cf "${PLATFORM}_testboot.tar" .
 # release name in artlynk-vr04/stock-image). Best-effort like those blobs:
 # without the stock image or python-lzo there is no update image.
 rm -f P1_GND_*_OpenIPC*_*.img P1_GND_*_OpenIPC*_*.img.md5sum
+[ -z "${IMG_NAME}" ] || rm -f "${IMG_NAME}"_*.${IMG_EXT:-img} "${IMG_NAME}"_*.${IMG_EXT:-img}.md5sum
 sha=$(git -C "${BR2_EXTERNAL_OPENIPC_SBC_GS_PATH}" rev-parse --short HEAD 2>/dev/null || echo unknown)
 git -C "${BR2_EXTERNAL_OPENIPC_SBC_GS_PATH}" diff --quiet HEAD 2>/dev/null || sha=${sha}-dirty
 if [ -f artlynk-vr04/stock-image ]; then
 	img="$(sed -n 2p artlynk-vr04/stock-image)_OpenIPC${IMG_TAG}_${sha}.img"
+	[ -z "${IMG_NAME}" ] || img="${IMG_NAME}_${sha}.${IMG_EXT:-img}"
 	if "${SYSPY}" "${BOARD_DIR}/scripts/ar9311-image.py" pack \
 		--base "$(sed -n 1p artlynk-vr04/stock-image)" --kernel uImage.ar9311 \
 		--dtb ${DEVICE}-flash.dtb --userapp rootfs.ubi --out "${img}"; then
@@ -186,5 +189,5 @@ if [ -f artlynk-vr04/stock-image ]; then
 		echo "post-image: WARNING: no OpenIPC update image (python-lzo installed?)"
 	fi
 else
-	echo "post-image: WARNING: no stock P1_GND image to build the OpenIPC update image on"
+	echo "post-image: WARNING: no stock image to build the OpenIPC update image on"
 fi

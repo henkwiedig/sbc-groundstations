@@ -20,13 +20,16 @@
  *   0x008 u16 header extension size 0x00a u16 hash size (0x20, SHA-256)
  *   0x00c u16 signature size (0x100, RSA-2048)
  *   0x00e u16 signature's real size
- *   0x010 u64 size of everything after the signature
+ *   0x010 u64 size of everything after the signature, to the last
+ *         segment's end. Stock images from BetaFPV (and OpenIPC's) end there;
+ *         SinYine's (Artosyn's reference firmware) append an 80-byte footer
+ *         (another "OTRA" record and two SHA-256s) that nothing here reads.
  *   0x018 u32 rom size              0x01c u32 loader size
  *   0x020 u16 partitions            0x022 u16 segments
  *   0x024 u32 object version        0x028 u32 dependency version
  *   0x02c     customer version (to 0x040), 0x080 SDK version (product)
- *   0x100 + header extension: SHA-256 of everything after the signature,
- *         then the signature
+ *   0x100 + header extension: SHA-256 of everything after the signature
+ *         (to the size above, footer excluded), then the signature
  *   then the rom, the loader, the partition table (0x34 bytes each: name[32],
  *   u64 flash offset, u64 size, u32 flags), the segment table (0x20 bytes
  *   each: u64 file offset, u64 flash offset, u64 stored size, u64 size) and
@@ -64,7 +67,7 @@ struct seg {
 
 struct image {
 	int fd;
-	uint64_t file_size;
+	uint64_t file_size, end;	/* end: where the image's data ends (header size) */
 	unsigned char hdr[BASE_HDR];
 	int compressed, flash_type;
 	unsigned hext, hash_size, sig_size, nparts, nsegs;
@@ -215,13 +218,14 @@ static int image_open(struct image *im, const char *path)
 	if (im->hash_size != 32 || im->nparts == 0 || im->nparts > 64 || im->nsegs > 256)
 		return fail("implausible header");
 	im->body_off = BASE_HDR + im->hext + im->hash_size + im->sig_size;
-	if (le64(im->hdr + 0x10) != im->file_size - im->body_off)
-		return fail("size in the header does not match the file (truncated?)");
+	im->end = im->body_off + le64(im->hdr + 0x10);
+	if (im->end > im->file_size || im->end < im->body_off)
+		return fail("the file is shorter than the header says (truncated?)");
 	im->loader_off = im->body_off + im->rom_size;
 	ptab = im->loader_off + im->loader_size;
 	stab = ptab + (uint64_t)im->nparts * PART_ENTRY;
-	if (stab + (uint64_t)im->nsegs * SEG_ENTRY > im->file_size)
-		return fail("tables run past the end of the file");
+	if (stab + (uint64_t)im->nsegs * SEG_ENTRY > im->end)
+		return fail("tables run past the end of the image");
 
 	im->parts = calloc(im->nparts, sizeof(*im->parts));
 	im->segs = calloc(im->nsegs ? im->nsegs : 1, sizeof(*im->segs));
@@ -247,7 +251,7 @@ static int image_open(struct image *im, const char *path)
 		s->stored = le64(e + 0x10);
 		s->size = le64(e + 0x18);
 		if (s->file_off < stab + (uint64_t)im->nsegs * SEG_ENTRY ||
-		    s->file_off + s->stored > im->file_size || s->size > MAX_SEG_SIZE ||
+		    s->file_off + s->stored > im->end || s->size > MAX_SEG_SIZE ||
 		    (!im->compressed && s->stored != s->size)) {
 			free(tab);
 			return fail("a segment lies outside the file or is implausible");
@@ -282,8 +286,8 @@ static int hash_ok(const struct image *im)
 		return 0;
 	}
 	sha256_init(&s);
-	for (off = im->body_off; off < im->file_size;) {
-		size_t n = im->file_size - off < (1 << 20) ? im->file_size - off : (1 << 20);
+	for (off = im->body_off; off < im->end;) {
+		size_t n = im->end - off < (1 << 20) ? im->end - off : (1 << 20);
 
 		if (read_at(im->fd, buf, n, off) < 0) {
 			free(buf);
@@ -332,6 +336,9 @@ static int cmd_info(struct image *im)
 	       im->compressed ? "LZO1X" : "raw", (unsigned long long)im->loader_size,
 	       (unsigned long long)im->rom_size);
 	printf("hash %s, %s\n", hash_ok(im) ? "ok" : "MISMATCH", signed_image(im) ? "signed" : "unsigned");
+	if (im->file_size > im->end)
+		printf("trailer %llu bytes after the image (not hashed, not read)\n",
+		       (unsigned long long)(im->file_size - im->end));
 	for (i = 0; i < im->nparts; i++)
 		printf("  part %-10s %#010llx %#09llx flags %#x\n", im->parts[i].name,
 		       (unsigned long long)im->parts[i].off, (unsigned long long)im->parts[i].size,

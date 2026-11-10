@@ -8,7 +8,9 @@
 #
 # The image decides what is installed: BetaFPV's own P1_GND_*.img brings stock
 # back, an OpenIPC one (P1_GND_*_OpenIPC*.img, customer version "OpenIPC")
-# installs OpenIPC. The units share stock's image (2.1.x); an OpenIPC image is
+# installs OpenIPC. On the SinYine F1 VRX the same with SinYine's
+# SinYine_F1_VRX_*.bin (STOCK_PRODUCT, STOCK_DTB_NODE: /etc/default/p1-gnd).
+# The units share stock's image (2.1.x); an OpenIPC image is
 # built for one of them, so its dtb must name this unit's device tree model
 # (--any-device flashes another's). Each carries one slot's uboot, env, kernel, dtb and userapp,
 # plus the SPL and the vendor partition that both slots share; those two are
@@ -43,7 +45,7 @@ WORK=/tmp/sysupgrade
 UBI_DEV=7
 UBI_USRDATA=8
 
-image= url= password= force= carry=1 insecure= dry= activate=1 slot= any_device=
+image= url= password= force= carry=1 insecure= dry= activate=1 slot= any_device= skip_running=
 parts_wanted="kernel dtb userapp"
 
 log() {
@@ -92,6 +94,8 @@ nothing reboots.
   -f, --force           Even if the running slot is not the active one.
       --any-device      An OpenIPC image built for another P1 ground unit
                         (its device tree model differs from this one's).
+      --skip-running    Exit 3 without writing when the running slot holds
+                        the image's kernel and dtb already.
       --insecure        Skip TLS verification for an https --url.
   -h, --help            Display this help and exit.
 "
@@ -268,6 +272,7 @@ while [ $# -gt 0 ]; do
 	-x | --no_reboot) ;;
 	-f | --force | --force_all) force=1 ;;
 	--any-device) any_device=1 ;;
+	--skip-running) skip_running=1 ;;
 	--insecure) insecure=-k ;;
 	-h | --help) print_usage; exit 0 ;;
 	*) print_usage; exit 1 ;;
@@ -297,6 +302,12 @@ case "$info" in
 *"customer version OpenIPC,"*) kind=openipc ;;
 *) kind=stock ;;
 esac
+# A product several units' stock images share (SinYine's air and ground
+# units): this unit's has STOCK_DTB_NODE in its device tree.
+if [ "$kind" = stock ] && [ -n "$STOCK_DTB_NODE" ]; then
+	arto cat "$image" dtb0 | tr '\000\001' '\n\n' | grep -qxF "$STOCK_DTB_NODE" ||
+		die "$image: stock firmware, but not this unit's (its device tree has no $STOCK_DTB_NODE)"
+fi
 parts=$(arto parts "$image")
 for p in uboot0 kernel0 dtb0 userapp0; do
 	[ -n "$(img_len $p)" ] || die "$image: no $p"
@@ -313,6 +324,19 @@ active=$(bank check_flash)
 [ -n "$active" ] || die "the GPT marks no clear active slot (openipc-bsel check_flash)"
 if [ -n "$running" ] && [ "$running" != "$active" ] && [ -z "$force" ]; then
 	die "running slot $running, but slot $active is the active one: reboot first (-f flashes anyway)"
+fi
+if [ -n "$skip_running" ] && [ -n "$running" ]; then
+	same=1
+	for p in kernel dtb; do
+		len=$(img_len ${p}0)
+		want=$(arto cat "$image" ${p}0 | md5sum | cut -d' ' -f1)
+		[ "$(nand_md5 "$(mtd $p$running)" "$len")" = "$want" ] || { same=; break; }
+	done
+	if [ -n "$same" ]; then
+		log "the running slot $running holds this image already: nothing written"
+		cleanup
+		exit 3
+	fi
 fi
 target=$((1 - ${running:-$active}))
 if [ -n "$slot" ] && [ "$slot" != "$target" ]; then
