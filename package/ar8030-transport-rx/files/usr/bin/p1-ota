@@ -135,22 +135,26 @@ if [ -n "$sysupgrade_file" ]; then
 	air "cat > $D/sysupgrade && chmod +x $D/sysupgrade" <"$sysupgrade_file" ||
 		die "copying $sysupgrade_file to the air failed"
 else
-	# Older air builds' sysupgrade has two bugs, fixed in builder betafpv-p1:
+	# Older air builds' sysupgrade has three bugs, fixed in builder betafpv-p1:
 	# its U-Boot env carry-over (fw_printenv | fw_setenv -s -) deadlocks on
-	# the tools' shared lock about one run in three (9affcae), and it carries
+	# the tools' shared lock about one run in three (9affcae); it carries
 	# lifecycled's ar8030.json over but not the power level set (ar8030.power)
-	# or the paired marker. A copy with both lines fixed runs instead; each
-	# expression only matches the old line, so with a newer build the copy is
-	# the original.
+	# or the paired marker; and it refuses a uboot, kernel or dtb partition
+	# with a bad block, which the SPL skips (only env still has to be free of
+	# them). A copy with those lines fixed runs instead; each expression only
+	# matches the old line, so with a newer build the copy is the original.
 	fixed=$(air "sed -f /dev/stdin /usr/sbin/sysupgrade > $D/sysupgrade && chmod +x $D/sysupgrade &&
 		{ cmp -s /usr/sbin/sysupgrade $D/sysupgrade && echo same || echo fixed; }" <<'EOF'
 s#| fw_setenv -c "$WORK/env.config" -s - ||#> "$WORK/env.txt" \&\& fw_setenv -c "$WORK/env.config" -s "$WORK/env.txt" ||#
 s#lib/firmware/ar8030/ar8030\.json"$#lib/firmware/ar8030"#
+s%^\([[:space:]]*\)\[ "\$(cat /sys/class/mtd/\${dev#/dev/}/bad_blocks)" = 0 ] ||$%\1{ [ "${dst#env}" != "$dst" ] || [ "$len" -gt $(($(cat /sys/class/mtd/${dev#/dev/}/size) - $(cat /sys/class/mtd/${dev#/dev/}/bad_blocks) * $(cat /sys/class/mtd/${dev#/dev/}/erasesize))) ]; } \&\& [ "$(cat /sys/class/mtd/${dev#/dev/}/bad_blocks)" != 0 ] \&\&%
+s%^\([[:space:]]*\)die "\$dst has a bad block: not written (the SPL may not skip it)"$%\1die "$dst: a bad block, and it is env or the data does not fit the good blocks"%
+s%flash_erase -q "\$dev" 0 0 && nandwrite%flash_erase -q "$dev" 0 0 2>/dev/null \&\& nandwrite%
 EOF
 	)
 	case "$fixed" in
 		same) ;;
-		fixed) echo "  older air build: its sysupgrade runs with the env-lock and carry-over fixes" ;;
+		fixed) echo "  older air build: its sysupgrade runs with the env-lock, carry-over and bad-block fixes" ;;
 		*) die "cannot prepare the air's sysupgrade" ;;
 	esac
 fi
