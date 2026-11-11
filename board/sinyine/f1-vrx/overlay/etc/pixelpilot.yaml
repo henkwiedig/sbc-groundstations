@@ -27,6 +27,12 @@ gsmenu:
 # enables collection of `os_mon.*` OSD facts (board/common/artosyn-osd). ADC
 # channel 1 is a key ladder here, not the battery as on the VR04.
 os_sensors:
+  # The supply: the INA226 on i2c0 0x40 (hwmon "ina226", found by name),
+  # os_mon.power.voltage/current/power{sensor=vrx} like the other goggles'
+  # supply voltage, plus current and power.
+  power:
+    - type: ina226
+      name: vrx
   # The SoC temperature (artosyn_protemp: whole degrees C in in_temp_scale),
   # os_mon.temperature{name=soc}.
   temperature:

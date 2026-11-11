@@ -195,6 +195,19 @@
             ]
         },
         {
+            "name": "Goggle supply current and power",
+            "type": "TplTextWidget",
+            "__comment": "the supply voltage's row (y 135 = its label's top): an INA226 power entry `name: vrx` (SinYine F1 VRX); hidden where the supply is an ADC divider (no current)",
+            "x": -125,
+            "y": 135,
+            "template": "%.2fA %.1fW",
+            "hide_when_undefined": true,
+            "facts": [
+                {"name": "os_mon.power.current", "tags": {"sensor": "vrx"}, "convert": "x / 1000"},
+                {"name": "os_mon.power.power", "tags": {"sensor": "vrx"}, "convert": "x / 1000000"}
+            ]
+        },
+        {
             "name": "SoC/GPU temperature",
             "type": "IconTplTextWidget",
             "__comment": "os_sensors temperature thermal_zone0 (soc-thermal) / thermal_zone1 (gpu-thermal) in /etc/pixelpilot.yaml; the fan widget shares this row",

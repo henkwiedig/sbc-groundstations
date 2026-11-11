@@ -12,6 +12,9 @@
  *   - IT66122 at 7-bit 0x4d on i2c0 (with the RTC and an INA226 at 0x40):
  *     ar_lowdelay's "hdmi" device init puts the panel library on bus 0;
  *     no interrupt line, stock polls the chip
+ *   - INA226 (supply monitor): stock's libina226 on i2c0 0x40, calibration
+ *     0x0a00 with a 0.02 mA current LSB, which means a 0.1 ohm shunt (stock
+ *     itself only reads the bus voltage, so the current is unconfirmed)
  *   - its reset: SinYine's own helper pulses GPIO 107, stock's boot script
  *     drives it high; the panel library pulses GPIO 43 (hogged high here).
  *     GPIO 42 high as stock's run.sh does ("LT9711_EN", the unused LT9711)
@@ -156,6 +159,13 @@
 };
 
 &i2c0 {
+	/* the supply: hwmon "ina226", PixelPilot's os_sensors power entry */
+	power-sensor@40 {
+		compatible = "ti,ina226";
+		reg = <0x40>;
+		shunt-resistor = <100000>;	/* micro-ohms */
+	};
+
 	hdmi-tx@4d {
 		compatible = "ite,it66122";
 		reg = <0x4d>;
