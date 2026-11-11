@@ -5,10 +5,10 @@
 ###############################################################################
 
 # The V4L2 platform (the BetaFPV VR04's wave5 decoder/encoder and Artosyn VO)
-# is PixelPilot's v4l2-wave5 branch, on top of 7e22988; the Rockchip pin below
-# has the VRX Pro's head tracking (a03c094) on top of that.
+# is PixelPilot's v4l2-wave5 branch, on top of the Rockchip pin below
+# (ascent-vrx-pro-input a03c094, the VRX Pro's head tracking).
 ifeq ($(BR2_PACKAGE_PIXELPILOT_V4L2),y)
-PIXELPILOT_VERSION=0c8c7559002a9c58a50d54b95eb2ae987480b304
+PIXELPILOT_VERSION=da87054c1dca46e40fb47d2a03a471043fba9ce0
 else
 PIXELPILOT_VERSION=a03c0947808f50f9679f74cf106ba19c40de1ee1
 endif
