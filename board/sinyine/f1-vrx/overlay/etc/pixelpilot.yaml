@@ -34,3 +34,9 @@ os_sensors:
       path: /sys/bus/iio/devices/iio:device1/in_temp_scale
       multiplier: 1000
       name: soc
+  # Goggle fan duty (os_mon.fan.duty{sensor=vrx}, %): GPIO 106's pwm-gpio
+  # (the DT's fan-pwm), driven by gs-fan.
+  fan:
+    - type: pwm
+      device: fan-pwm
+      name: vrx

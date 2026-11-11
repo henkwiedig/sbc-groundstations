@@ -1,0 +1,140 @@
+#!/bin/sh
+# Goggle fan control: one PWM channel, auto (follows a temperature) or manual.
+# The board's /etc/default/gs-fan names the hardware and sets the defaults.
+#
+#   gs-fan daemon           control loop (started by /etc/init.d/S05gs-fan)
+#   gs-fan get mode|pct|temp
+#   gs-fan set mode auto|manual
+#   gs-fan set pct <0-100>  manual speed (also switches to manual)
+#
+# Auto: FAN_MIN_PCT at or below FAN_TEMP_LOW, linear up to 100 % at
+# FAN_TEMP_HIGH, on the hottest of FAN_TEMP_FILES (each value divided by
+# FAN_TEMP_DIV is whole degrees C). FAN_KICK_S: seconds at 100 % whenever the
+# fan starts from standstill, for fans that do not start at a low duty. The
+# config is re-read every cycle, so a change applies within FAN_POLL_S.
+# PixelPilot's System -> Fan page shows up when this file exists.
+
+CONF=/etc/default/gs-fan
+
+# the hardware (the board's /etc/default/gs-fan sets these)
+FAN_PWM_DEV=            # the pwmchip's device: the last part of readlink -f pwmchipN/device
+FAN_PWM_CHANNEL=0
+FAN_PWM_PERIOD=40000    # ns
+FAN_TEMP_FILES="/sys/class/thermal/thermal_zone*/temp"
+FAN_TEMP_DIV=1000
+FAN_KICK_S=0
+
+FAN_MODE=auto
+FAN_PCT=80
+FAN_MIN_PCT=30
+FAN_TEMP_LOW=45
+FAN_TEMP_HIGH=70
+FAN_POLL_S=2
+
+load_conf() { [ -r "$CONF" ] && . "$CONF"; }
+
+conf_set() {
+	if grep -q "^$1=" "$CONF" 2>/dev/null; then
+		sed -i "s/^$1=.*/$1=$2/" "$CONF"
+	else
+		echo "$1=$2" >> "$CONF"
+	fi
+}
+
+pwm_path() {
+	[ -n "$FAN_PWM_DEV" ] || return 1
+	for c in /sys/class/pwm/pwmchip*; do
+		case "$(readlink -f "$c/device")" in
+		*/$FAN_PWM_DEV) echo "$c"; return 0 ;;
+		esac
+	done
+	return 1
+}
+
+# Hottest of FAN_TEMP_FILES, whole degrees C (empty if none is readable).
+temp_c() {
+	max=
+	for z in $FAN_TEMP_FILES; do
+		[ -r "$z" ] || continue
+		t=$(cat "$z" 2>/dev/null) || continue
+		case "$t" in ''|*[!0-9-]*) continue ;; esac
+		[ -z "$max" ] || [ "$t" -gt "$max" ] && max=$t
+	done
+	[ -n "$max" ] && echo $((max / FAN_TEMP_DIV))
+}
+
+auto_pct() {
+	t=$(temp_c)
+	[ -z "$t" ] && { echo 100; return; }   # no sensor: fail safe
+	if [ "$t" -le "$FAN_TEMP_LOW" ]; then
+		echo "$FAN_MIN_PCT"
+	elif [ "$t" -ge "$FAN_TEMP_HIGH" ]; then
+		echo 100
+	else
+		echo $((FAN_MIN_PCT + (100 - FAN_MIN_PCT) * (t - FAN_TEMP_LOW) / (FAN_TEMP_HIGH - FAN_TEMP_LOW)))
+	fi
+}
+
+apply_pct() {
+	c=$(pwm_path) || return 1
+	p=$c/pwm$FAN_PWM_CHANNEL
+	[ -d "$p" ] || echo "$FAN_PWM_CHANNEL" > "$c/export"
+	if [ "$(cat "$p/period")" != "$FAN_PWM_PERIOD" ]; then
+		echo 0 > "$p/duty_cycle"
+		echo "$FAN_PWM_PERIOD" > "$p/period"
+		echo normal > "$p/polarity" 2>/dev/null
+	fi
+	echo $((FAN_PWM_PERIOD * $1 / 100)) > "$p/duty_cycle"
+	[ "$(cat "$p/enable")" = 1 ] || echo 1 > "$p/enable"
+}
+
+cur_pct() {
+	c=$(pwm_path) && p=$c/pwm$FAN_PWM_CHANNEL && [ -d "$p" ] || return
+	period=$(cat "$p/period")
+	[ "$(cat "$p/enable")" = 1 ] && [ "$period" -gt 0 ] || { echo 0; return; }
+	echo $(($(cat "$p/duty_cycle") * 100 / period))
+}
+
+case "$1" in
+daemon)
+	last=
+	while :; do
+		load_conf
+		if [ "$FAN_MODE" = manual ]; then want=$FAN_PCT; else want=$(auto_pct); fi
+		# 5 % deadband against hunting, but always hit the exact end points
+		if [ -z "$last" ] || [ $((want - last)) -ge 5 ] || [ $((last - want)) -ge 5 ] ||
+		   { [ "$want" != "$last" ] && { [ "$want" = 100 ] || [ "$want" = "$FAN_MIN_PCT" ] || [ "$FAN_MODE" = manual ]; }; }; then
+			if [ "$FAN_KICK_S" -gt 0 ] 2>/dev/null && [ "$want" -gt 0 ] && [ "$want" -lt 100 ] &&
+			   { [ -z "$last" ] || [ "$last" = 0 ]; }; then
+				apply_pct 100 && sleep "$FAN_KICK_S"
+			fi
+			apply_pct "$want" && last=$want
+		fi
+		sleep "$FAN_POLL_S"
+	done
+	;;
+get)
+	load_conf
+	case "$2" in
+	mode) echo "$FAN_MODE" ;;
+	pct) if [ "$FAN_MODE" = manual ]; then echo "$FAN_PCT"; else cur_pct; fi ;;
+	temp) temp_c ;;
+	*) echo "mode=$FAN_MODE pct=$(cur_pct) temp=$(temp_c)" ;;
+	esac
+	;;
+set)
+	case "$2" in
+	mode)
+		case "$3" in auto|manual) conf_set FAN_MODE "$3" ;; *) exit 2 ;; esac ;;
+	pct)
+		[ "$3" -ge 0 ] 2>/dev/null && [ "$3" -le 100 ] || exit 2
+		conf_set FAN_PCT "$3"
+		conf_set FAN_MODE manual ;;
+	*) exit 2 ;;
+	esac
+	;;
+*)
+	echo "usage: gs-fan daemon | get [mode|pct|temp] | set mode auto|manual | set pct <0-100>" >&2
+	exit 2
+	;;
+esac

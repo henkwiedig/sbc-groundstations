@@ -1,0 +1,20 @@
+# gs-fan: goggle fan control (see /usr/bin/gs-fan). Set from the menu under
+# System -> Fan, or by hand; re-read every FAN_POLL_S seconds.
+#
+# The SinYine F1 VRX's fan: GPIO 106 as the kernel's pwm-gpio (the DT's
+# fan-pwm), 200 Hz like stock's fan_proxy (which holds it at 60 %, 10-100 %
+# accepted). A 1 s full-speed start before a low duty.
+FAN_PWM_DEV=fan-pwm
+FAN_PWM_CHANNEL=0
+FAN_PWM_PERIOD=5000000
+FAN_KICK_S=1
+# The SoC temperature: artosyn_protemp's in_temp_scale is whole degrees C
+# (the only IIO device with a temperature channel).
+FAN_TEMP_FILES="/sys/bus/iio/devices/iio:device*/in_temp_scale"
+FAN_TEMP_DIV=1
+FAN_MODE=auto
+FAN_PCT=60
+FAN_MIN_PCT=30
+FAN_TEMP_LOW=45
+FAN_TEMP_HIGH=70
+FAN_POLL_S=2

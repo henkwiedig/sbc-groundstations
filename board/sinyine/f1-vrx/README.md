@@ -46,7 +46,8 @@ mounts (the support package did not show up on it).
 - Power: button GPIO 105, low while pressed. Stock: a short press beeps and
   toggles the recording, 2 s beep three times and drive GPIO 68 low, which
   cuts the power; nothing drives 68 high.
-- Fan: GPIO 106, stock runs a 200 Hz software PWM at 60 %.
+- Fan: GPIO 106, stock runs a 200 Hz software PWM at 60 % (fan_proxy, which
+  takes 10-100 %), no temperature control.
 - Buzzer: PWM 0x1000000 channel 3.
 - Radio: the Ascent ground baseband firmware (as on the VR04) with SinYine's
   own ground power setup and PA calibration (stock bb_config_gnd.json), and
@@ -78,7 +79,10 @@ mounts (the support package did not show up on it).
 - `overlay/`: `/etc/default/p1-gnd` (USB name "SinYine F1 VRX", stock image
   check, update file name, display modules, FEM pin), `/etc/default/beeper`,
   `/etc/pixelpilot.yaml` (two ladders: PixelPilot's `vrx_adc` with a
-  `device` per key), `S03sinyine-fan`, `S96sinyine-power` +
+  `device` per key; the fan's duty),
+  `/etc/default/gs-fan` (the fan for `board/common/gs-fan`'s control loop:
+  pwm-gpio `fan-pwm` at 200 Hz, the SoC temperature from artosyn_protemp,
+  1 s full-speed start; System -> Fan in PixelPilot), `S96sinyine-power` +
   `/usr/sbin/sinyine-power` (the power button), update screens
 - `host/80-sinyine-f1-vrx.rules`: names the USB network `vrx-gnd0` on a Linux
   host
