@@ -5,12 +5,17 @@ the chip's mask-ROM download mode: no serial console, nothing written to the
 NAND. (ar9311-usbboot.py of OpenIPC builder's devices/ar9311_artosyn_artlynk-p1,
 for the goggles.)
 
-  vr04-usbboot.py ram [--bundle DIR] [--no-drm] [--args ARGS] [--serial TTY]
+  vr04-usbboot.py ram [--images DIR] [--bundle DIR] [--no-drm] [--args ARGS]
+                      [--serial TTY]
       patched stock SPL + U-Boot, then this build's RAM boot: uImage, the one
-      *.dtb and initrd.xz (else initrd.gz) of output/images/vr04-testboot,
-      the bundle vr04-uboot-boot.py ram sends. U-Boot boots it on its own;
-      this waits for SSH on the goggles (root password 12345, the RAM image
-      has no key). --serial shows the console meanwhile.
+      *.dtb and initrd.xz (else initrd.gz) of IMAGES/<unit>-testboot (the
+      one *-testboot there), the bundle vr04-uboot-boot.py ram sends. U-Boot
+      boots it on its own; this waits for SSH on the unit (root password
+      12345, the RAM image has no key). --serial shows the console meanwhile.
+      The P1 HD VRX (betafpv_p1_vrx) boots the same way, with --images
+      output/betafpv_p1_vrx_defconfig/images: same board, and its stock
+      VRX 2.0.8 image has the same SPL code and DDR firmware (vendor.img
+      payload) as the VR04 2.1.3 one these blobs come from.
   vr04-usbboot.py hid
       patched SPL, the stock U-Boot as it is: booted over USB it goes
       straight into its USB upgrade mode (1d6b:0100), so
@@ -473,7 +478,7 @@ def cmd_hid(a):
     end = time.time() + 30
     while time.time() < end:
         if usb.core.find(idVendor=HID_VID, idProduct=HID_PID) is not None:
-            print("U-Boot is in its upgrade mode: vr04-usbburn.py flash IMAGE")
+            print("U-Boot is in its upgrade mode: vr04-usbburn.py flash IMAGE (VR04 or VRX image)")
             return
         time.sleep(0.5)
     sys.exit("1d6b:0100 did not show up")
@@ -485,22 +490,26 @@ def main():
     for name, fn, help_ in (("ram", cmd_ram, "this build's RAM boot, autobooted by U-Boot"),
                             ("hid", cmd_hid, "stock U-Boot in its USB upgrade mode, for vr04-usbburn.py")):
         p = sub.add_parser(name, help=help_)
-        p.add_argument("--images", default=DEFAULT_IMAGES, help=f"build output/images (default {DEFAULT_IMAGES})")
+        p.add_argument("--images", default=DEFAULT_IMAGES,
+                       help=f"build output/images, VR04 or VRX (default {DEFAULT_IMAGES})")
         p.add_argument("--blobs", help="stock loader.bin/vendor.img/uboot0.img (default IMAGES/artlynk-vr04)")
         p.add_argument("--wait", type=float, default=60, help="seconds to wait for the ROM device")
         p.add_argument("--dry-run", action="store_true", help="build and check everything, send nothing")
         p.set_defaults(fn=fn)
         if name == "ram":
-            p.add_argument("--bundle", help="RAM boot files (default IMAGES/vr04-testboot)")
+            p.add_argument("--bundle", help="RAM boot files (default the one IMAGES/*-testboot)")
             p.add_argument("--no-drm", action="store_true", help="keep the display drivers out")
             p.add_argument("--args", default="", help="more kernel command line")
-            p.add_argument("--host", default="192.168.3.100", help="the goggles, for the SSH wait")
+            p.add_argument("--host", default="192.168.3.100", help="the unit, for the SSH wait")
             p.add_argument("--timeout", type=int, default=120, help="seconds from sent to SSH")
             p.add_argument("--serial", help="console TTY to show meanwhile (optional)")
     a = ap.parse_args()
     a.blobs = a.blobs or os.path.join(a.images, "artlynk-vr04")
-    if a.cmd == "ram":
-        a.bundle = a.bundle or os.path.join(a.images, "vr04-testboot")
+    if a.cmd == "ram" and not a.bundle:
+        tbs = sorted(n for n in os.listdir(a.images) if n.endswith("-testboot")) if os.path.isdir(a.images) else []
+        if len(tbs) != 1:
+            sys.exit(f"{a.images}: needs exactly one *-testboot, has {tbs} (--images, --bundle)")
+        a.bundle = os.path.join(a.images, tbs[0])
     a.fn(a)
 
 
