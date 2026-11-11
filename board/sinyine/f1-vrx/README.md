@@ -95,8 +95,8 @@ mounts (the support package did not show up on it).
   host
 
 PixelPilot needs the per-key `device` of its ADC ladder reader and the
-`name`/optional `hwmon_id` of an `ina226` power entry: its v4l2-wave5 branch
-has both since the V4L2 pin da87054 (`package/pixelpilot/pixelpilot.mk`).
+`name`/optional `hwmon_id` of an `ina226` power entry: its artosyn branch,
+pinned in `package/pixelpilot/pixelpilot.mk`, has both.
 
 Build: `DEFCONFIG=sinyine_f1_vrx_defconfig ./build.sh`, with SinYine's
 `SinYine_F1_VRX_20260914_V1.0.0.bin` in `cache/vendor-images/` (the update
