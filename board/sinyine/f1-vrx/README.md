@@ -46,6 +46,11 @@ mounts (the support package did not show up on it).
 - Power: button GPIO 105, low while pressed. Stock: a short press beeps and
   toggles the recording, 2 s beep three times and drive GPIO 68 low, which
   cuts the power; nothing drives 68 high.
+- Supply monitor: INA226 at 0x40 on i2c0 (stock's `libina226.so`: config
+  0x45ff, calibration 0x0a00, 0.02 mA current LSB, which means a 0.1 ohm
+  shunt). Stock only reads the bus voltage (its log, the low-voltage
+  buzzer), so the shunt value is unconfirmed until a current is checked
+  against a meter.
 - Fan: GPIO 106, stock runs a 200 Hz software PWM at 60 % (fan_proxy, which
   takes 10-100 %), no temperature control.
 - Buzzer: PWM 0x1000000 channel 3.
@@ -62,6 +67,7 @@ mounts (the support package did not show up on it).
   panel, DSI, backlight and the VR04's ladder; the IT66122 on i2c0 (port 0
   from the VO, bus-width 16; port 1 to an hdmi-connector), two adc-keys,
   gpio-keys "power-button", gpio-poweroff on GPIO 68, pwm-gpio on GPIO 106,
+  the INA226 (`ti,ina226`, 100000 µΩ shunt; ina2xx built in, hwmon "ina226"),
   UART2, the hogs above
 - kernel patches, after the P1 ground units' (`../../betafpv/p1-gnd/linux-patches/`)
   and the P1 HD VRX's (`../../betafpv/p1-vrx/linux-patches/`, for its pixel
@@ -79,7 +85,8 @@ mounts (the support package did not show up on it).
 - `overlay/`: `/etc/default/p1-gnd` (USB name "SinYine F1 VRX", stock image
   check, update file name, display modules, FEM pin), `/etc/default/beeper`,
   `/etc/pixelpilot.yaml` (two ladders: PixelPilot's `vrx_adc` with a
-  `device` per key; the fan's duty),
+  `device` per key; the INA226 as the `vrx` power sensor: the shared OSD's
+  supply voltage, plus current and power on the same row; the fan's duty),
   `/etc/default/gs-fan` (the fan for `board/common/gs-fan`'s control loop:
   pwm-gpio `fan-pwm` at 200 Hz, the SoC temperature from artosyn_protemp,
   1 s full-speed start; System -> Fan in PixelPilot), `S96sinyine-power` +
@@ -87,8 +94,9 @@ mounts (the support package did not show up on it).
 - `host/80-sinyine-f1-vrx.rules`: names the USB network `vrx-gnd0` on a Linux
   host
 
-PixelPilot needs the per-key `device` of its ADC ladder reader (a change on
-top of its v4l2-wave5 branch); until that is in the pinned commit, build with
+PixelPilot needs the per-key `device` of its ADC ladder reader and the
+`name`/optional `hwmon_id` of an `ina226` power entry (changes on top of its
+v4l2-wave5 branch); until those are in the pinned commit, build with
 `PIXELPILOT_OVERRIDE_SRCDIR=<PixelPilot_rk checkout>`.
 
 Build: `DEFCONFIG=sinyine_f1_vrx_defconfig ./build.sh`, with SinYine's

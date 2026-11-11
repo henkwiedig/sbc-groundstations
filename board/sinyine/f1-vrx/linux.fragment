@@ -1,9 +1,20 @@
 # sinyine_f1_vrx on top of board/betafpv/p1-gnd/linux.fragment: the HDMI
 # transmitter (ite-it66121 with linux-patches/0002) and its connector node,
 # the power button (gpio-keys) and power-off line (gpio-poweroff), the fan's
-# software PWM (pwm-gpio).
+# software PWM (pwm-gpio), the INA226 supply monitor (ina2xx, hwmon).
 CONFIG_DRM_ITE_IT66121=m
 CONFIG_DRM_DISPLAY_CONNECTOR=m
 CONFIG_KEYBOARD_GPIO=y
 CONFIG_POWER_RESET_GPIO=y
 CONFIG_PWM_GPIO=y
+CONFIG_HWMON=y
+CONFIG_SENSORS_INA2XX=y
+# ml_defconfig lists these behind its "# CONFIG_HWMON is not set"; with
+# HWMON on they would come back as modules this board has no use for
+# CONFIG_SENSORS_GPIO_FAN is not set
+# CONFIG_SENSORS_JC42 is not set
+# CONFIG_SENSORS_LM75 is not set
+# CONFIG_SENSORS_LM90 is not set
+# CONFIG_SENSORS_PWM_FAN is not set
+# CONFIG_SENSORS_INA3221 is not set
+# CONFIG_SENSORS_TMP102 is not set
