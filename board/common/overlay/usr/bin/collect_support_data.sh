@@ -314,6 +314,7 @@ for file in /etc/network/interfaces.d/*; do
     collect_file "$file" "configs/network_interfaces.d/$(basename $file)"
 done
 for file in /etc/*wpa*.conf; do
+    [ -f "$file" ] || continue   # no match: the glob stays literal
     psk=$(grep -o 'psk="[^"]*"' "$file" | sed 's/psk="//;s/"//')
     if [ -n "$psk" ]; then
         psk_hash=$(echo -n "$psk" | sha256sum | cut -d" " -f1)
@@ -367,7 +368,9 @@ mkdir -p custom_checks
 du -sh / 2>/dev/null | head -5 > custom_checks/disk_usage.txt || true
 
 # Inode usage
-df -i > custom_checks/inode_usage.txt 2>&1
+# busybox df without FEATURE_DF_FANCY (images without coreutils) has no -i;
+# its exit 1 went silently into the file and set -e aborted the collection.
+df -i > custom_checks/inode_usage.txt 2>&1 || true
 
 # List filesysten
 # find exits non-zero when e.g. /proc entries vanish mid-walk; under set -e
