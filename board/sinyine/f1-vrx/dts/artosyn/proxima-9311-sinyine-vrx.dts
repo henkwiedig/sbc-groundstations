@@ -65,7 +65,7 @@
 		timeout-ms = <3000>;
 	};
 
-	/* the fan's software PWM (S03sinyine-fan sets 200 Hz, 60 percent) */
+	/* the fan's software PWM (gs-fan drives it at 200 Hz, as stock) */
 	fan_pwm: fan-pwm {
 		compatible = "pwm-gpio";
 		gpios = <&gpio 106 GPIO_ACTIVE_HIGH>;

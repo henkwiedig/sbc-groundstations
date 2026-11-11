@@ -15,9 +15,7 @@ BR2_ENABLE_LOCALE_WHITELIST="C en_US"
 BR2_GENERATE_LOCALE="C.UTF-8"
 BR2_TARGET_TZ_INFO=y
 BR2_TARGET_LOCALTIME="Etc/UTC"
-# Temporary disabled do not commit like this
-# BR2_ROOTFS_OVERLAY="${BR2_EXTERNAL_OPENIPC_SBC_GS_PATH}/board/common/overlay ${BR2_EXTERNAL_OPENIPC_SBC_GS_PATH}/board/common/beeper/overlay ${BR2_EXTERNAL_OPENIPC_SBC_GS_PATH}/board/common/artosyn-osd/overlay ${BR2_EXTERNAL_OPENIPC_SBC_GS_PATH}/board/betafpv/p1-gnd/overlay ${BR2_EXTERNAL_OPENIPC_SBC_GS_PATH}/board/sinyine/f1-vrx/overlay ${BR2_EXTERNAL_OPENIPC_SBC_GS_PATH}/board/local/overlay"
-BR2_ROOTFS_OVERLAY="${BR2_EXTERNAL_OPENIPC_SBC_GS_PATH}/board/common/overlay ${BR2_EXTERNAL_OPENIPC_SBC_GS_PATH}/board/common/beeper/overlay ${BR2_EXTERNAL_OPENIPC_SBC_GS_PATH}/board/common/artosyn-osd/overlay ${BR2_EXTERNAL_OPENIPC_SBC_GS_PATH}/board/betafpv/p1-gnd/overlay ${BR2_EXTERNAL_OPENIPC_SBC_GS_PATH}/board/sinyine/f1-vrx/overlay"
+BR2_ROOTFS_OVERLAY="${BR2_EXTERNAL_OPENIPC_SBC_GS_PATH}/board/common/overlay ${BR2_EXTERNAL_OPENIPC_SBC_GS_PATH}/board/common/beeper/overlay ${BR2_EXTERNAL_OPENIPC_SBC_GS_PATH}/board/common/artosyn-osd/overlay ${BR2_EXTERNAL_OPENIPC_SBC_GS_PATH}/board/common/gs-fan/overlay ${BR2_EXTERNAL_OPENIPC_SBC_GS_PATH}/board/betafpv/p1-gnd/overlay ${BR2_EXTERNAL_OPENIPC_SBC_GS_PATH}/board/sinyine/f1-vrx/overlay ${BR2_EXTERNAL_OPENIPC_SBC_GS_PATH}/board/local/overlay"
 BR2_ROOTFS_POST_BUILD_SCRIPT="${BR2_EXTERNAL_OPENIPC_SBC_GS_PATH}/board/common/post-build-script.sh ${BR2_EXTERNAL_OPENIPC_SBC_GS_PATH}/board/betafpv/p1-gnd/post-build.sh"
 BR2_ROOTFS_POST_IMAGE_SCRIPT="${BR2_EXTERNAL_OPENIPC_SBC_GS_PATH}/board/betafpv/p1-gnd/post-image.sh"
 BR2_ROOTFS_POST_SCRIPT_ARGS="${BR2_EXTERNAL_OPENIPC_SBC_GS_PATH}/board/sinyine/f1-vrx"
