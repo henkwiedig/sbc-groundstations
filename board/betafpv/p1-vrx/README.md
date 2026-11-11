@@ -51,6 +51,16 @@ Build: `DEFCONFIG=betafpv_p1_vrx_defconfig ./build.sh` -> in
 `P1_GND_<stock release>_OpenIPC-VRX_<sha>.img` (the update image),
 `betafpv_p1_vrx.tar.gz` (the release archive), `p1-vrx-testboot/` (RAM boot).
 
+RAM boot without writing the NAND, as on the VR04: over the console
+(`../p1-gnd/scripts/vr04-uboot-boot.py ram --bundle
+output/betafpv_p1_vrx_defconfig/images/p1-vrx-testboot`), or without a serial
+console from the chip's mask-ROM USB download (`../p1-gnd/scripts/vr04-usbboot.py
+ram --images output/betafpv_p1_vrx_defconfig/images`: SPI-NAND CLK to ground
+at power-on, USB to the host; never tried on a VRX or a VR04). The stock blobs
+it sends are the VR04 2.1.3 ones; stock VRX 2.0.8 has the same SPL code and
+DDR firmware. `host/80-betafpv-p1-vrx.rules` gives the host its route to
+192.168.3.100 for the SSH wait.
+
 ## The display chain
 
 VO (artosyn_vo) -> DSI host (artosyn_dsi + mainline dw-mipi-dsi) ->
