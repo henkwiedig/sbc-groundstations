@@ -397,6 +397,8 @@ list_waybeam_sensor_bins() {
 #   POST /api/v1/channel?chan=<index|auto>    -> persisted on the air unit (AP), which owns the channel
 #   GET  /api/v1/power                        -> {"power":"auto"|mW|null,"power_dbm":N,"power_levels":[...]}
 #   POST /api/v1/power?level=<mW|auto>        -> persisted, per side
+#   GET  /api/v1/frame-change                 -> {"frame_change":0|1|2|null,"frame_change_applied":bool|null,...}
+#   POST /api/v1/frame-change?mode=<0|1|2>    -> persisted on the air unit (AP), which owns it
 #   POST /api/v1/linkctl?cmd=<c>&args=<...>   -> {"ok":true,"exit_code":0,"output":"..."}, one-shot passthrough
 LIFECYCLED_TIMEOUT=5
 
@@ -467,6 +469,29 @@ set_lifecycled_channel() {
     local side="$1" chan
     chan=$(first_word "$2")
     curl -s -m "$LIFECYCLED_TIMEOUT" -X POST "$(lifecycled_url "$side")/api/v1/channel?chan=${chan}" >/dev/null 2>&1
+}
+
+# Frame structure: the air unit's (AP's) BB_SET_FRAME_CHANGE mode, persisted
+# by its lifecycled and re-applied after every connect/relink. Shown as
+# "<mode> (<what it does>)"; the set takes the first word. Empty when the
+# air's lifecycled predates /api/v1/frame-change.
+frame_change_label() {
+    case "$1" in
+        1) echo "1 (most throughput)" ;;
+        2) echo "2 (low latency)" ;;
+        0) echo "0 (chip default)" ;;
+    esac
+}
+
+get_lifecycled_frame_change() {
+    frame_change_label "$(curl -s -m "$LIFECYCLED_TIMEOUT" "$(lifecycled_url "$1")/api/v1/frame-change" 2>/dev/null |
+        jq -r '.frame_change // empty' 2>/dev/null)"
+}
+
+set_lifecycled_frame_change() {
+    local side="$1" mode
+    mode=$(first_word "$2")
+    curl -s -m "$LIFECYCLED_TIMEOUT" -X POST "$(lifecycled_url "$side")/api/v1/frame-change?mode=${mode}" >/dev/null 2>&1
 }
 
 lifecycled_status_summary() {
@@ -1069,9 +1094,10 @@ case "$@" in
 
 # ── Air: Artosyn ─────────────────────────────────────────────────────────────
 # ar8030-lifecycled's HTTP control API on the air unit ($REMOTE_IP:8899, see
-# lifecycled_url() above). All three are lifecycled-persisted: bandwidth and
-# output power per side, the channel by the air unit alone (it owns it --
-# changing it here retunes both ends together over the live link).
+# lifecycled_url() above). All four are lifecycled-persisted: bandwidth and
+# output power per side, the channel and the frame structure by the air unit
+# alone (it owns them -- a channel change here retunes both ends together
+# over the live link; a frame structure change applies at once while linked).
 
     "get air artosyn bandwidth")
         get_lifecycled_bandwidth air
@@ -1085,6 +1111,10 @@ case "$@" in
         get_lifecycled_channel air
         emit_values_cmd list_lifecycled_channels air
         ;;
+    "get air artosyn frame_change")
+        get_lifecycled_frame_change air
+        emit_values "1 (most throughput)\n2 (low latency)\n0 (chip default)"
+        ;;
 
     "set air artosyn bandwidth"*)
         set_lifecycled_bandwidth air "$5"
@@ -1094,6 +1124,9 @@ case "$@" in
         ;;
     "set air artosyn channel"*)
         set_lifecycled_channel air "$5"
+        ;;
+    "set air artosyn frame_change"*)
+        set_lifecycled_frame_change air "$5"
         ;;
 
 # ── GS: WFB-NG ──────────────────────────────────────────────────────────────
