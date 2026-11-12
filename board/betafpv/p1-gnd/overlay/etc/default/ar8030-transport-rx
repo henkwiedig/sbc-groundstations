@@ -7,7 +7,13 @@
 # (ar8030-transport's README "Build" / rx/main.c usage()) for the full
 # list. Example overriding the bb_socket port and PixelPilot target:
 #   AR8030_TRANSPORT_RX_ARGS="-o 2 -H 127.0.0.1 -p 5600"
-AR8030_TRANSPORT_RX_ARGS=""
+# -M 8192: RTP payloads up to 8 KB instead of 1400 bytes. The RTP only
+# crosses the loopback to PixelPilot, and its cost there is per packet
+# (udpsrc, probe, tee, depayloader): on the VR04 at 21 Mbit/s 2213 -> 745
+# packets/s, udpsrc 32 -> 22 % of a core, latency unchanged (A/B
+# 2026-11-12: p50 22.2 vs 22.8 ms, vsync target 35.5 vs 36.8 ms). udpsrc
+# takes packets over its 1492-byte mtu into its 64 KB spare buffer.
+AR8030_TRANSPORT_RX_ARGS="-M 8192"
 
 # Extra flags passed straight to ar8030-lifecycled -- see its --help
 # output (ar8030-transport's README "HTTP control API" / lifecycled/
