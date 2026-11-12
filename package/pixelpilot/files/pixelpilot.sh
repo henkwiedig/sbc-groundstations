@@ -8,7 +8,7 @@ do
   # UDP port. Here and not in /etc/default/pixelpilot, whose gsmenu-edited
   # overlay copies would keep an older image's arguments.
   FRAME_SHM=""
-  [ "$PIXELPILOT_RX_MODE" = "artosyn" ] && FRAME_SHM="--frame-shm gnd_frames"
+  [ "$PIXELPILOT_RX_MODE" = "artosyn" ] && FRAME_SHM="--frame-shm gnd_frames --frame-shm-audio gnd_audio"
   /usr/bin/pixelpilot $PIXELPILOT_ARGS $FRAME_SHM "$@"
   rc=$?
   if [ $rc = 2 -o $rc = 143 -o $rc = 137 ]

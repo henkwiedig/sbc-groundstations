@@ -82,8 +82,9 @@ start() {
 	# The video goes to PixelPilot through rx's frame-shm ring, not RTP over
 	# the loopback (ar8030-transport docs/ground-frame-ring.md): -R turns
 	# rx's RTP output off, and pixelpilot.sh reads the same ring in receiver
-	# mode artosyn.
-	start-stop-daemon -S -q -b -m -p "$PIDFILE" -x "$DAEMON" -- $log_args -R gnd_frames $AR8030_TRANSPORT_RX_ARGS
+	# mode artosyn. -A: the air unit's audio (tx -a) in a ring of its own.
+	start-stop-daemon -S -q -b -m -p "$PIDFILE" -x "$DAEMON" -- $log_args -R gnd_frames -A gnd_audio \
+		$AR8030_TRANSPORT_RX_ARGS
 	start_lifecycled
 }
 
