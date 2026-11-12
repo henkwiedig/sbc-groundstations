@@ -1,0 +1,98 @@
+app/ar8030: drop ioctl replies no call is waiting for
+
+io_rpc_cb() took every packet on the ioctl connection as the reply to
+whatever call ran last. iose->pbuf keeps pointing at that caller's
+output buffer -- usually a stack local -- after the call returned, so a
+reply that arrived with no call waiting (a duplicate, or a late one
+after a timed-out bb_ioctl_ex()) was memcpy'd by the reader thread into
+a dead stack frame of whichever thread made the last call.
+
+Confirmed on the BetaFPV P1 air (core dump, 2026-11-12):
+ar8030-transport-tx's 3 s liveness check (BB_GET_STATUS into a 300-byte
+stack local) had returned; a second BB_GET_STATUS reply then landed on
+the same addresses, which now held the saved frame record of the futex
+wait the main thread sat in, and tx returned to "address" 5805000 (the
+channel's freq_khz) -- SIGSEGV with no log line, about once an hour,
+each time right after the chip logged "SDIO read over but no cb". Every
+client of the library (tx, lifecycled, linkctl, rx) shares this path.
+
+Copy and wake only while bs_send_usbpack_and_wait() still waits for
+exactly that reqid (it holds psess->mtx everywhere but in its cond
+wait), do both under psess->mtx, clear pbuf once the call returns, and
+log anything dropped to stderr (stdout is fully buffered in daemons
+whose stdout is a file, so a printf would only show up much later).
+
+Verified on the same P1: 14 min after a bind, tx logged "io: dropped
+reply req 0x1000000 len 300 sta 0 (no call waiting, last 0x1000000)" --
+the reply that used to kill it -- right after the chip's SDIO glitch,
+and kept running.
+
+Mirrors builder's own identical patch 0038 (same vendor source).
+
+diff --git a/app/ar8030/session_ioctl.c b/app/ar8030/session_ioctl.c
+--- a/app/ar8030/session_ioctl.c
++++ b/app/ar8030/session_ioctl.c
+@@ -4,6 +4,7 @@
+ #include "ioctl_tab.h"
+ #include "session.h"
+ #include "usbpack.h"
++#include <pthread.h>
+ #include <stdio.h>
+ #include <stdlib.h>
+ #include <string.h>
+@@ -19,7 +20,30 @@
+ static int io_rpc_cb(struct BB_HANDLE* phd, struct usbpack* pack, struct BASE_SESSION* psess)
+ {
+     IOCTL_SESSION* iose = container_of(psess, IOCTL_SESSION, base);
+-    iose->sta           = pack->sta;
++
++    /* A reply is only ever copied into the caller's output buffer while
++     * that caller still waits for it in bs_send_usbpack_and_wait(), which
++     * holds psess->mtx except inside its cond wait. Before this, every
++     * packet on the connection was taken as the reply to whatever ran
++     * last: iose->pbuf still pointed at the previous caller's stack
++     * buffer after it returned, so a reply arriving with no call waiting
++     * (a duplicate, or a late one after a timed-out call) was memcpy'd
++     * into a dead stack frame by this reader thread. Confirmed on the P1
++     * air (core dump): a BB_GET_STATUS reply landed in the frame
++     * ar8030-transport-tx's 3 s liveness check had left, on top of the
++     * saved frame record of the futex wait the main thread sat in, and tx
++     * jumped to "address" 5805000 (the channel's freq_khz) -- SIGSEGV
++     * about once an hour, each time right after the chip logged "SDIO
++     * read over but no cb". */
++    pthread_mutex_lock(&psess->mtx);
++    if (!psess->wakeup_need || psess->wakeup_set || pack->reqid != (uint32_t)iose->reqid) {
++        int waiting = psess->wakeup_need && !psess->wakeup_set;
++        pthread_mutex_unlock(&psess->mtx);
++        fprintf(stderr, "io: dropped reply req %#x len %d sta %d (%s %#x)\n", pack->reqid, pack->datalen,
++                pack->sta, waiting ? "waiting for" : "no call waiting, last", iose->reqid);
++        return 0;
++    }
++    iose->sta = pack->sta;
+     if (iose->pbuf && pack->datalen) {
+         /* pack->datalen is whatever the daemon (and, upstream of it, the
+          * chip's own RTOS firmware over whichever physical transport)
+@@ -46,7 +70,10 @@
+         }
+         memcpy(iose->pbuf, pack->datapack, copylen);
+     }
+-    bs_weakup(psess);
++    /* bs_weakup() without taking psess->mtx a second time. */
++    psess->wakeup_set = 1;
++    pthread_cond_broadcast(&psess->cv);
++    pthread_mutex_unlock(&psess->mtx);
+     return 0;
+ }
+ 
+@@ -127,6 +154,11 @@
+ 
+     int ret = bs_send_usbpack_and_wait(&iose->base, &pack, timeout);
+ 
++    /* The output buffer is the caller's and goes out of scope now. */
++    pthread_mutex_lock(&iose->base.mtx);
++    iose->pbuf = NULL;
++    pthread_mutex_unlock(&iose->base.mtx);
++
+     if (ret) {
+         printf("ioctl fail , remote exit\n");
+         return -1;
