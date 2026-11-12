@@ -114,6 +114,8 @@ define AR8030_TRANSPORT_RX_INSTALL_TARGET_CMDS
 		$(TARGET_DIR)/usr/bin/p1-ota
 	$(INSTALL) -D -m 0755 $(AR8030_TRANSPORT_RX_PKGDIR)/files/usr/bin/air-ota \
 		$(TARGET_DIR)/usr/bin/air-ota
+	$(INSTALL) -D -m 0644 $(AR8030_TRANSPORT_RX_PKGDIR)/files/usr/share/ar8030/collect_air_logs \
+		$(TARGET_DIR)/usr/share/ar8030/collect_air_logs
 endef
 
 ifeq ($(BR2_PACKAGE_AR8030_TRANSPORT_RX_KMOD),y)

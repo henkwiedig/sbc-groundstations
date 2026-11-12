@@ -1,0 +1,142 @@
+#!/bin/sh
+#
+# collect_air_logs: snapshot of everything worth keeping from an AR8030 air
+# unit before it is powered off -- its logs live in RAM only. The syslog
+# ring buffer, ar8030d's and the transport's logs from /tmp/ar8030, waybeam's
+# log and live counters, link state, load and temperatures, what is in the
+# overlay, and the relevant configs.
+#
+#   collect_air_logs            write /tmp/air_logs_<date>.tar.gz, print its path
+#   collect_air_logs -          write the tar.gz to stdout, e.g. from the
+#                               ground station or a laptop:
+#       ssh root@192.168.100.1 collect_air_logs - > air.tar.gz
+#
+# Every air unit gets this file from the ar8030-transport-tx package, and
+# the ground carries an identical copy (sbc-groundstations,
+# package/ar8030-transport-rx/files/usr/share/ar8030/collect_air_logs) that
+# its support package pipes into the air (ssh ... sh -s -- -), so that air
+# images without this file, or with an older one, still give everything.
+# Keep the two the same. That use is why this script never looks at its own
+# path, keeps its stdin alone (</dev/null wherever a command could read
+# it), and finds board differences at run time instead of naming boards.
+#
+# It runs next to the encoder and the transport: lowest CPU priority, and
+# nothing that walks big trees.
+
+renice -n 19 -p $$ >/dev/null 2>&1   # where there is one; the ground uses nice
+
+API=http://127.0.0.1:8899/api/v1
+NAME="air_logs_$(date +%Y%m%d-%H%M%S)"
+WORK="/tmp/$NAME"
+MAX=2097152 # bytes kept from the end of each log
+
+mkdir -p "$WORK" || exit 1
+cd "$WORK" || exit 1
+
+fetch() { # url -> stdout; busybox wget, the Ascent's curl is broken
+	wget -q -T 3 -O - "$1" 2>/dev/null </dev/null || echo "unreachable"
+}
+
+# The counters first and last: their difference over the collection is a
+# rate, and the logs below rotate.
+WB_PORT=$(sed -n 's/.*"webPort"[^0-9]*\([0-9][0-9]*\).*/\1/p' /etc/waybeam.json 2>/dev/null | head -n 1)
+WB="http://127.0.0.1:${WB_PORT:-80}/api/v1"
+mkdir -p waybeam
+fetch "$WB/transport/status" > waybeam/transport_status_start.json
+
+logread > syslog.log 2>&1 </dev/null
+dmesg > dmesg.log 2>&1
+
+# ar8030d's own logs (daemon_log/, capped at 2 MB each by ar8030d) and the
+# transport's log; tail -c bounds anything unexpectedly large.
+mkdir -p ar8030/daemon_log
+for f in /tmp/ar8030/* /tmp/ar8030/daemon_log/*; do
+	[ -f "$f" ] || continue
+	case "$f" in
+		*/daemon_log/*) dest="ar8030/daemon_log/${f##*/}" ;;
+		*) dest="ar8030/${f##*/}" ;;
+	esac
+	tail -c $MAX "$f" > "$dest"
+done
+
+# waybeam's stdout: /tmp on the AR9311 init script, /var/run on the CV610's.
+for f in /tmp/waybeam.log /var/run/waybeam.log; do
+	[ -f "$f" ] && tail -c $MAX "$f" > "waybeam/${f##*/}"
+done
+for ep in version config fps/live transport/status idr/stats intra/status \
+	resilience/status ae awb record/status modes; do
+	fetch "$WB/$ep" > "waybeam/$(echo "$ep" | tr / _).json"
+done
+
+for ep in status link batt rf-temp channel power frame-change; do
+	fetch "$API/$ep" > "api_$ep.json"
+done
+
+# The SoC temperature as lifecycled reads it (its --soc-temp-cmd).
+TEMP_CMD=
+[ -r /etc/default/ar8030-transport-tx ] && TEMP_CMD=$(. /etc/default/ar8030-transport-tx >/dev/null 2>&1 </dev/null;
+	echo "$AR8030_LIFECYCLED_ARGS" | sed -n 's/.*--soc-temp-cmd[ =]\([^ ]*\).*/\1/p')
+
+{
+	echo "== date";       date
+	echo "== uptime";     cat /proc/uptime
+	echo "== loadavg";    cat /proc/loadavg
+	echo "== soc_temp_c ($TEMP_CMD)"; [ -n "$TEMP_CMD" ] && $TEMP_CMD </dev/null
+	echo "== thermal";
+	for z in /sys/class/thermal/thermal_zone*; do
+		[ -r "$z/temp" ] && echo "$(cat "$z/type" 2>/dev/null): $(cat "$z/temp")"
+	done
+	echo "== cpufreq";
+	for p in /sys/devices/system/cpu/cpufreq/policy*; do
+		[ -d "$p" ] || continue
+		echo "${p##*/}: cur $(cat "$p/scaling_cur_freq" 2>/dev/null) min $(cat "$p/scaling_min_freq" 2>/dev/null) max $(cat "$p/scaling_max_freq" 2>/dev/null) governor $(cat "$p/scaling_governor" 2>/dev/null)"
+		[ -r "$p/stats/time_in_state" ] && sed 's/^/  /' "$p/stats/time_in_state"
+	done
+	echo "== free";       free
+	echo "== df";         df
+	echo "== top";        top -b -n 1 </dev/null
+	echo "== ps";         ps w
+	echo "== ip addr";    ip addr
+	echo "== ip route";   ip route
+	echo "== interrupts"; cat /proc/interrupts
+	echo "== modules";    cat /proc/modules
+	echo "== cmdline";    cat /proc/cmdline
+	echo "== os-release"; cat /etc/os-release
+	echo "== boot bank";
+	command -v openipc-bsel >/dev/null && { openipc-bsel check_cmdline; openipc-bsel check_flash; } </dev/null
+	echo "== binaries";
+	md5sum /usr/bin/ar8030-transport-tx /usr/bin/ar8030-lifecycled /usr/bin/ar8030d \
+		/usr/bin/waybeam /usr/bin/msposd 2>&1
+	# Test builds copied into the overlay shadow the image's files.
+	echo "== overlay";
+	[ -d /overlay ] && find /overlay -xdev -type f 2>/dev/null | head -n 500
+} > system.txt 2>&1
+
+# The encoder's VPU where it is a wave5 (AR9311): the driver's own state
+# node (instances, job timeouts, firmware faults; read only -- never write
+# its "recover" neighbour, that kills every instance), and the clocks.
+for f in /sys/kernel/debug/wave5/state /sys/kernel/debug/clk/clk_summary; do
+	[ -r "$f" ] && cat "$f" > "$(echo "${f#/sys/kernel/debug/}" | tr / _).txt" 2>&1
+done
+
+# A crash of the previous boot, where the kernel keeps one.
+if [ -d /sys/fs/pstore ] && [ -n "$(ls /sys/fs/pstore 2>/dev/null)" ]; then
+	mkdir -p pstore && cp /sys/fs/pstore/* pstore/ 2>/dev/null
+fi
+
+mkdir -p config
+for f in /etc/default/* /etc/waybeam.json /lib/firmware/ar8030/*.json; do
+	[ -f "$f" ] && cp "$f" config/
+done
+
+fetch "$WB/transport/status" > waybeam/transport_status_end.json
+
+# busybox tar here has no -z (FEATURE_SEAMLESS_GZ off).
+cd /tmp || exit 1
+if [ "$1" = "-" ]; then
+	tar -cf - "$NAME" | gzip
+	rm -rf "$WORK"
+else
+	tar -cf - "$NAME" | gzip > "$WORK.tar.gz" && rm -rf "$WORK"
+	echo "$WORK.tar.gz"
+fi
