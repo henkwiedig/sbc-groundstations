@@ -10,29 +10,17 @@ config BR2_PACKAGE_ARTLYNK_VR04_VENDOR_FIRMWARE
 	        generation, from Ascent_L_Gnd_*.img in the cache)
 	    /lib/firmware/ar8030/vr04_gnd.json           (baseband config:
 	        the Ascent ground config with the goggles' own power
-	        setup and PA calibration from the stock one)
+	        setup and PA calibration from the stock one; a board
+	        overlay can replace it, as the SinYine F1 VRX's does)
 	  The stock SPL, U-Boot, DDR training firmware, env, kernel and
 	  DT stay in output/images/artlynk-vr04/: the board's
 	  post-image.sh packs the OpenIPC update image on the stock one
 	  and checks its kernel container against them. The stock AR8030
 	  ground firmware and configs are kept there for later.
 
-	  Nothing is committed and nothing is downloaded: the stock image
-	  comes from ARTLYNK_VR04_VENDOR_IMG, else
-	  cache/vendor-images/P1_GND_*.img (the pinned release first,
-	  then the newest). See extract.py for host prerequisites.
-	  Missing pieces are skipped with a warning, never a build
-	  failure.
-
-config BR2_PACKAGE_ARTLYNK_VR04_VENDOR_FIRMWARE_BASE_IMAGE
-	string "another unit's stock image as the base"
-	depends on BR2_PACKAGE_ARTLYNK_VR04_VENDOR_FIRMWARE
-	help
-	  A stock image in cache/vendor-images/ (or the path in
-	  ARTLYNK_VR04_BASE_IMG) that the OpenIPC update image is packed
-	  on instead of BetaFPV's P1 GND one, for a unit of the same
-	  design from another maker: its SPL, vendor (DDR training), env
-	  and U-Boot go into the update image, and its ground baseband
-	  config gives the power setup and PA calibration of
-	  vr04_gnd.json. The codec firmware still comes from the P1 GND
-	  image. The SinYine F1 VRX: SinYine_F1_VRX_20260914_V1.0.0.bin.
+	  Nothing is committed: the stock images come from
+	  ARTLYNK_VR04_VENDOR_IMG / ASCENT_L_GND_IMG, else
+	  cache/vendor-images/ (the pinned releases, fetched from Google
+	  Drive when missing, else the newest there). See extract.py for
+	  host prerequisites. Missing pieces are skipped with a warning,
+	  never a build failure.

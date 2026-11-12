@@ -58,11 +58,18 @@ mounts (the support package did not show up on it).
   own ground power setup and PA calibration (stock bb_config_gnd.json), and
   its front-end pins: those of SinYine's VRX baseband, the VR04's script with
   pin 2.4 on its function 73 (as on the P1 air unit) instead of GPIO low.
+- Boot: SinYine's SPL and U-Boot are the same Artosyn build as BetaFPV's P1
+  GND 2.1.3 ones (BetaFPV's also know the Dosilicon DS35X12C NAND), over the
+  same vendor (DDR training), env and partition table, byte for byte. They
+  differ only in their built-in device tree's `pinctrl-cfgs`: SinYine's
+  sets 66 pins, BetaFPV's 45. SinYine's adds GPIO 45-64 (the parallel video
+  bus) and sets 41-44, 66-68, 94-97, 106 and 107 differently.
 
 ## This directory
 
 - `device.env`: dtb, file names (`sinyine-vrx-*`), update image name
-  `SinYine_F1_VRX_99991231_OpenIPC_<sha>.bin`, display modules
+  `SinYine_F1_VRX_99991231_OpenIPC_<sha>.bin`, `IMG_NO_LOADER` (the update
+  image carries no SPL, see the build below), display modules
 - `dts/artosyn/proxima-9311-sinyine-vrx.dts`: ml-kernel's goggle DT without
   panel, DSI, backlight and the VR04's ladder; the IT66122 on i2c0 (port 0
   from the VO, bus-width 16; port 1 to an hdmi-connector), two adc-keys,
@@ -90,7 +97,11 @@ mounts (the support package did not show up on it).
   `/etc/default/gs-fan` (the fan for `board/common/gs-fan`'s control loop:
   pwm-gpio `fan-pwm` at 200 Hz, the SoC temperature from artosyn_protemp,
   1 s full-speed start; System -> Fan in PixelPilot), `S96sinyine-power` +
-  `/usr/sbin/sinyine-power` (the power button), update screens
+  `/usr/sbin/sinyine-power` (the power button), update screens,
+  `/lib/firmware/ar8030/vr04_gnd.json` (the baseband config, whole: the
+  Caddx Ascent L Gnd's ground config with SinYine's power section and PA
+  calibration; it replaces the one artlynk-vr04-vendor-firmware makes with
+  the VR04's)
 - `host/80-sinyine-f1-vrx.rules`: names the USB network `vrx-gnd0` on a Linux
   host
 
@@ -98,11 +109,17 @@ PixelPilot needs the per-key `device` of its ADC ladder reader and the
 `name`/optional `hwmon_id` of an `ina226` power entry: its artosyn branch,
 pinned in `package/pixelpilot/pixelpilot.mk`, has both.
 
-Build: `DEFCONFIG=sinyine_f1_vrx_defconfig ./build.sh`, with SinYine's
-`SinYine_F1_VRX_20260914_V1.0.0.bin` in `cache/vendor-images/` (the update
-image is packed on it: its SPL, vendor, env and U-Boot) next to BetaFPV's
-P1_GND image (the codec firmware) and the Ascent L Gnd image (the AR8030
-firmware). In `output/sinyine_f1_vrx_defconfig/images/`:
+Build: `DEFCONFIG=sinyine_f1_vrx_defconfig ./build.sh`. It needs no SinYine
+file: artlynk-vr04-vendor-firmware fetches BetaFPV's P1_GND image (the codec
+firmware, and the base of the update image: its vendor, env and U-Boot) and
+the Ascent L Gnd image (the AR8030 firmware) into `cache/vendor-images/`, as
+for the VR04. The update image leaves the SPL out (`IMG_NO_LOADER`,
+`ar9311-image.py --no-loader`): the stock upgrade menu (libar_ota) and
+U-Boot's USB upgrade write an image's SPL into all four boot zones, but skip
+that when its loader size is 0, and sysupgrade never writes it. So the unit
+keeps SinYine's SPL and its pins, and OpenIPC's slot gets BetaFPV's U-Boot
+(it only runs on the reboot-to-U-Boot path: RAM boot, USB upgrade). In
+`output/sinyine_f1_vrx_defconfig/images/`:
 `SinYine_F1_VRX_99991231_OpenIPC_<sha>.bin` (the update image),
 `sinyine_f1_vrx.tar.gz` (the release archive), `sinyine-vrx-testboot/` (RAM
 boot).
@@ -133,7 +150,7 @@ boot).
    `SinYine_F1_VRX_99991231_OpenIPC_<sha>.bin`, then the stock upgrade: the
    VRX updates the linked TX over the link first, then itself
    (`rxUpgradeRxImgthread`, libar_ota: no signature check, partition table
-   and vendor unchanged, the SPL rewritten with SinYine's own). It flashes
+   and vendor unchanged, the SPL left as it is: the image has none). It flashes
    the slot not running, so SinYine's firmware stays in the other one. The
    file stays on the card; OpenIPC's first boot renames it `.skipped`
    instead of installing it into the other slot too (sysupgrade

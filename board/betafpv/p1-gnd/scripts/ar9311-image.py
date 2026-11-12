@@ -19,6 +19,12 @@ of at most 4 MiB as there. The header's customer version says "OpenIPC" (stock:
 is this image's own and the RSA signature stays empty, so the stock flasher
 (U-Boot's USB upgrade) rejects it -- sysupgrade and ar9311-install.py take it.
 
+--no-loader leaves the SPL out (loader size 0), for a unit of another maker
+packed on BetaFPV's image (the SinYine F1 VRX): its SPL sets that board's
+pins. The stock flashers write the image's SPL into all four boot zones, but
+skip that step when the loader size is 0 (the VRX's libar_ota and U-Boot's
+upgrade alike), so the unit keeps its own; sysupgrade never writes it.
+
 Format: package/arto-image/src/arto.c. Host prerequisite: python-lzo (as for
 package/artlynk-vr04-vendor-firmware).
 """
@@ -104,7 +110,7 @@ def cmd_pack(a):
             segs.append((off + i, stored, len(chunk)))
     segs.sort()
 
-    loader = base[b["body"] + b["rom"]:b["body"] + b["rom"] + b["loader"]]
+    loader = b"" if a.no_loader else base[b["body"] + b["rom"]:b["body"] + b["rom"] + b["loader"]]
     rom = base[b["body"]:b["body"] + b["rom"]]
     ptable = base[b["ptab"]:b["ptab"] + b["nparts"] * PART_ENTRY]
     body = BASE_HDR + b["hext"] + 0x120
@@ -119,6 +125,7 @@ def cmd_pack(a):
     hdr = bytearray(base[:BASE_HDR + b["hext"]])
     hdr[0x2c:0x40] = CUSTOMER.ljust(0x14, b"\0")
     struct.pack_into("<Q", hdr, 0x10, len(after_sig))
+    struct.pack_into("<I", hdr, 0x1c, len(loader))
     struct.pack_into("<H", hdr, 0x22, len(segs))
     out = bytes(hdr) + hashlib.sha256(after_sig).digest() + bytes(0x100) + after_sig
     parse(out)  # its own hash and tables
@@ -135,6 +142,8 @@ def main():
     p.add_argument("--kernel", required=True, help="uImage.ar9311 (OTRA)")
     p.add_argument("--dtb", required=True, help="the flash dtb")
     p.add_argument("--userapp", required=True, help="rootfs.ubi")
+    p.add_argument("--no-loader", action="store_true",
+                   help="leave the SPL out (loader size 0): the unit keeps its own")
     p.add_argument("--out", required=True)
     p.set_defaults(fn=cmd_pack)
     a = ap.parse_args()

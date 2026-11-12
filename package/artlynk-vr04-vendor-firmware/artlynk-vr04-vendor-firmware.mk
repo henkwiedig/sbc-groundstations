@@ -36,13 +36,8 @@ ARTLYNK_VR04_VENDOR_FIRMWARE_ASCENT_GND_CFG = \
 
 # The host's python3, which has python-lzo (a host prerequisite), not
 # Buildroot's host-python3 should a package have pulled it in.
-# A unit of another maker packs its update image on its own stock image
-# (Config.in: ..._BASE_IMAGE), see extract.py.
-ARTLYNK_VR04_VENDOR_FIRMWARE_BASE_IMAGE = $(call qstrip,$(BR2_PACKAGE_ARTLYNK_VR04_VENDOR_FIRMWARE_BASE_IMAGE))
-
 define ARTLYNK_VR04_VENDOR_FIRMWARE_BUILD_CMDS
 	PATH=$$(echo "$$PATH" | tr : '\n' | grep -v '^$(HOST_DIR)' | paste -sd: -) \
-	ARTLYNK_VR04_BASE_NAME="$(ARTLYNK_VR04_VENDOR_FIRMWARE_BASE_IMAGE)" \
 	python3 $(ARTLYNK_VR04_VENDOR_FIRMWARE_PKGDIR)/extract.py $(ARTLYNK_VR04_VENDOR_FIRMWARE_OUT) \
 		$(HOST_DIR) $(ARTLYNK_VR04_VENDOR_FIRMWARE_CACHE) $(ARTLYNK_VR04_VENDOR_FIRMWARE_VENDOR_RELEASE) \
 		$(ARTLYNK_VR04_VENDOR_FIRMWARE_ASCENT_GND_CFG) $(ARTLYNK_VR04_VENDOR_FIRMWARE_VENDOR_FILE_ID) \

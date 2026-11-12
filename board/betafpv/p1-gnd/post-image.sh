@@ -39,7 +39,9 @@
 # package/artlynk-vr04-vendor-firmware used, the update image
 # <stock release>_OpenIPC${IMG_TAG}_<sha>.img that /sbin/sysupgrade and
 # scripts/vr04-install.py flash into a slot (with IMG_NAME in device.env:
-# ${IMG_NAME}_<sha>.${IMG_EXT}, the SinYine F1 VRX's naming).
+# ${IMG_NAME}_<sha>.${IMG_EXT}, the SinYine F1 VRX's naming). IMG_NO_LOADER=1
+# in device.env leaves the stock SPL out of it, so the unit keeps its own
+# (the SinYine F1 VRX, whose SPL sets other pins than BetaFPV's).
 
 set -e
 LOAD=0x200a0000
@@ -182,7 +184,8 @@ if [ -f artlynk-vr04/stock-image ]; then
 	[ -z "${IMG_NAME}" ] || img="${IMG_NAME}_${sha}.${IMG_EXT:-img}"
 	if "${SYSPY}" "${BOARD_DIR}/scripts/ar9311-image.py" pack \
 		--base "$(sed -n 1p artlynk-vr04/stock-image)" --kernel uImage.ar9311 \
-		--dtb ${DEVICE}-flash.dtb --userapp rootfs.ubi --out "${img}"; then
+		--dtb ${DEVICE}-flash.dtb --userapp rootfs.ubi ${IMG_NO_LOADER:+--no-loader} \
+		--out "${img}"; then
 		md5sum "${img}" > "${img}.md5sum"
 		tar -czf "${PLATFORM}.tar.gz" "${img}" "${img}.md5sum"
 	else
