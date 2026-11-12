@@ -1,0 +1,30 @@
+daemon/sock_node_rpc.c: no log line for every read handed to a client
+
+sock_rpc_push_read_data() logged each block of received data it passes
+to a socket client, at the "ioctl" module's INFO level (the module index
+is off by one, so COM_SOCKET_COM prints as [ioctl]). On the ground that
+is the video: 322 lines a second at 21 Mbit/s, each formatted, written
+to stdout and to the log file with an fflush. It cost ~2 % of a core on
+the 800 MHz AR9311 goggles, and the 2 MB log cap wrapped the daemon log
+every ~19 s, so a support package only ever held its last seconds. The
+line carried nothing but the stream position and length; the log is
+per module, not per message, so it cannot be filtered out by level
+without losing that module's useful lines. (It also passed an int to
+PRIx64.)
+
+--- a/daemon/sock_node_rpc.c	2026-11-12 12:34:06.915648521 +0100
++++ b/daemon/sock_node_rpc.c	2026-11-12 12:34:06.931928375 +0100
+@@ -322,13 +322,6 @@
+         .sta     = len,
+     };
+ 
+-    com_log(COM_SOCKET_COM,
+-            "%d-%d , read @%#" PRIx64 "len = %#" PRIx64,
+-            psoc->slot,
+-            psoc->port,
+-            prpc->rd_pos_init,
+-            len);
+-
+     sock_rpc_send_msg(prpc, &retpack);
+     prpc->rd_pos_init += len;
+ 
