@@ -80,13 +80,13 @@ jobs:
           if [ "${NAME}" = caddx_vrxpro ]; then
             pipx install ubi_reader
           fi
-          # betafpv_vr04, betafpv_p1_vrx (the P1 ground units):
-          # artlynk-vr04-vendor-firmware takes BetaFPV's and CADDX's stock
-          # images apart with ubi_reader and python3's lzo module (the host's
-          # python3, not Buildroot's), and post-image packs the update image
-          # with lzo.
+          # betafpv_vr04, betafpv_p1_vrx, sinyine_f1_vrx (the P1 ground units):
+          # artlynk-vr04-vendor-firmware fetches BetaFPV's and CADDX's stock
+          # images (each job on its own), takes them apart with ubi_reader and
+          # python3's lzo module (the host's python3, not Buildroot's), and
+          # post-image packs the update image with lzo.
           case "${NAME}" in
-          betafpv_vr04 | betafpv_p1_vrx)
+          betafpv_vr04 | betafpv_p1_vrx | sinyine_f1_vrx)
             pipx install ubi_reader
             sudo apt install -y python3-lzo
             ;;
@@ -102,6 +102,14 @@ jobs:
           for f in output/${NAME}_defconfig/images/P1_GND_*_OpenIPC*_*.img; do
             if [ -f "$f" ]; then
               mv "$f" "${f%_*}.img"
+            fi
+          done
+          # The SinYine F1 VRX's: SinYine_F1_VRX_99991231_OpenIPC_<sha>.bin ->
+          # SinYine_F1_VRX_99991231_OpenIPC.bin (its stock upgrade menu and the
+          # SD-card update take any SinYine_F1_VRX_*.bin).
+          for f in output/${NAME}_defconfig/images/SinYine_F1_VRX_*_OpenIPC_*.bin; do
+            if [ -f "$f" ]; then
+              mv "$f" "${f%_*}.bin"
             fi
           done
 
@@ -124,3 +132,4 @@ jobs:
             /mnt/workspace/output/${{ inputs.platform }}_defconfig/images/${{ inputs.platform }}.tar.gz
             /mnt/workspace/output/${{ inputs.platform }}_defconfig/images/${{ inputs.platform }}_testboot.tar
             /mnt/workspace/output/${{ inputs.platform }}_defconfig/images/P1_GND_*_OpenIPC*.img
+            /mnt/workspace/output/${{ inputs.platform }}_defconfig/images/SinYine_F1_VRX_*_OpenIPC*.bin
