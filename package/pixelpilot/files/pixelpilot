@@ -25,7 +25,8 @@ PIXELPILOT_DVR_MAX_SIZE="4000"
 # there's no equivalent live signal for artosyn -- ar8030's own AR8030_ENABLED
 # defaults to true on boards that ship it, independent of which RX mode was
 # last selected -- so artosyn needs this explicit flag instead. Written by
-# gsmenu.sh's "set gs system rx_mode".
+# gsmenu.sh's "set gs system rx_mode". In artosyn mode pixelpilot.sh adds
+# --frame-shm gnd_frames: the video comes from ar8030-transport-rx's ring.
 PIXELPILOT_RX_MODE="wfb"
 
 

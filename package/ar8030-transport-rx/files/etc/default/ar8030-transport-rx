@@ -5,8 +5,8 @@
 
 # Extra flags passed straight to ar8030-transport-rx -- see its -h output
 # (ar8030-transport's README "Build" / rx/main.c usage()) for the full
-# list. Example overriding the bb_socket port and PixelPilot target:
-#   AR8030_TRANSPORT_RX_ARGS="-o 2 -H 127.0.0.1 -p 5600"
+# list. The video goes to PixelPilot through a frame-shm ring (S98 passes
+# -R gnd_frames); for a test, -P -H <host> -p <port> sends it as RTP too.
 AR8030_TRANSPORT_RX_ARGS=""
 
 # Extra flags passed straight to ar8030-lifecycled -- see its --help

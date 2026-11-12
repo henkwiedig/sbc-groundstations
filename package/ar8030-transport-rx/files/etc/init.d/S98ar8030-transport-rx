@@ -79,7 +79,11 @@ start() {
 		mkdir -p "$RUNDIR"
 		log_args="-v -L $LOGFILE"
 	fi
-	start-stop-daemon -S -q -b -m -p "$PIDFILE" -x "$DAEMON" -- $log_args $AR8030_TRANSPORT_RX_ARGS
+	# The video goes to PixelPilot through rx's frame-shm ring, not RTP over
+	# the loopback (ar8030-transport docs/ground-frame-ring.md): -R turns
+	# rx's RTP output off, and pixelpilot.sh reads the same ring in receiver
+	# mode artosyn.
+	start-stop-daemon -S -q -b -m -p "$PIDFILE" -x "$DAEMON" -- $log_args -R gnd_frames $AR8030_TRANSPORT_RX_ARGS
 	start_lifecycled
 }
 
