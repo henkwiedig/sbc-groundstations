@@ -7,7 +7,7 @@
 # PixelPilot's artosyn branch, on upstream master with the OSD editor. One pin
 # for both platforms: Rockchip (the VRX Pro) and V4L2 (the wave5 decoder/encoder
 # and Artosyn VO of the BetaFPV VR04, P1 VRX and SinYine F1 VRX).
-PIXELPILOT_VERSION=3c45676a074ec6b2f170dd4708624f3d574b012d
+PIXELPILOT_VERSION=6000ac9961a456b2f9a104aab1238147ff9ebf36
 PIXELPILOT_SITE=https://github.com/OpenIPC/PixelPilot_rk.git
 PIXELPILOT_SITE_METHOD = git
 PIXELPILOT_GIT_SUBMODULES = YES
