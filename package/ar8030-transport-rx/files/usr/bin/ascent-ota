@@ -21,11 +21,11 @@
 # The uplink is the slow direction: the air holds it at MCS 1-2 (stock's
 # link policy, lifecycled --link-policy 2) inside the frame structure
 # lifecycled exchanges in the downlink's favour, ~1.1 Mbit/s of TCP. For
-# the download the air goes to MCS 1-5 and the original frame structure,
-# ~3 Mbit/s on the bench at 20 MHz (MCS 8 overflows the air chip's rx
-# buffers: "bb_phy_pool_alloc: rx len 3070 exceeding!"). The air reverts
-# on its own after OTA_BOOST_SECS should this script die, and a reboot
-# starts from lifecycled's defaults anyway.
+# the download the air goes to the original frame structure and MCS 1-8,
+# 4.2 Mbit/s of TCP on the bench (P1 air) at 20 MHz, or MCS 1-5, ~3.1
+# Mbit/s, on an air whose chip can't take more (BOOST_MCS8 below). The air
+# reverts on its own after OTA_BOOST_SECS should this script die, and a
+# reboot starts from lifecycled's defaults anyway.
 
 AIR=${AIR_IP:-192.168.100.1}
 GND=${GND_IP:-192.168.100.2}
@@ -34,6 +34,15 @@ AIR_SSH_PASS=${AIR_SSH_PASS:-12345}
 BOOST_SECS=${OTA_BOOST_SECS:-900}
 
 BOOST_ON="ar8030-linkctl frame-change 0 && ar8030-linkctl mcs-range 1 5"
+# MCS 8 needs the air chip's rx buffers sized for it. The chip sizes them at
+# boot by the largest rx half of its config, and builder's air config has the
+# broadcast rx half at 10 MHz for that (builder package/ar8030 README). Under
+# the earlier 5 MHz an uplink block above MCS 5 overflows them ("rx len 3070
+# exceeding!") and the uplink collapses, so the boost asks the chip first:
+# user 8's rx bandwidth in linkctl status. The air takes MCS table entry 8
+# (7, 10 and 12 it refuses with ret=6).
+BOOST_MCS8="ar8030-linkctl frame-change 0 && ar8030-linkctl mcs-table 2 8 && ar8030-linkctl mcs-range 1 8"
+BOOST_MCS8_IF='^user 8: .* rx\{[^}]*bandwidth=(10|20|40)M'
 BOOST_OFF="ar8030-linkctl mcs-range 1 2; ar8030-linkctl frame-change 1"
 BOOST_PID=/tmp/ascent-ota-boost.pid
 PROGRESS=/tmp/ascent-ota.progress
@@ -160,8 +169,13 @@ else
 fi
 
 if [ -n "$boost" ]; then
-	air "{ $BOOST_ON; } >/dev/null 2>&1 && { setsid sh -c 'sleep $BOOST_SECS; $BOOST_OFF' </dev/null >/dev/null 2>&1 & echo \$! > $BOOST_PID; }" ||
+	mcs=5
+	air "ar8030-linkctl status 2>/dev/null" | grep -Eq "$BOOST_MCS8_IF" && { BOOST_ON=$BOOST_MCS8; mcs=8; }
+	if air "{ $BOOST_ON; } >/dev/null 2>&1 && { setsid sh -c 'sleep $BOOST_SECS; $BOOST_OFF' </dev/null >/dev/null 2>&1 & echo \$! > $BOOST_PID; }"; then
+		echo "  uplink boost: MCS 1-$mcs"
+	else
 		echo "ascent-ota: uplink boost failed, copying at the normal rate" >&2
+	fi
 	boosted=1
 fi
 
