@@ -9,7 +9,10 @@ do
   # overlay copies would keep an older image's arguments.
   FRAME_SHM=""
   [ "$PIXELPILOT_RX_MODE" = "artosyn" ] && FRAME_SHM="--frame-shm gnd_frames --frame-shm-audio gnd_audio"
-  /usr/bin/pixelpilot $PIXELPILOT_ARGS $FRAME_SHM "$@"
+  # The menu's Smoothness level (gsmenu.sh), same reason.
+  SMOOTHNESS=""
+  [ -n "$PIXELPILOT_VSYNC_SMOOTHNESS" ] && SMOOTHNESS="--vsync-lock-smoothness $PIXELPILOT_VSYNC_SMOOTHNESS"
+  /usr/bin/pixelpilot $PIXELPILOT_ARGS $FRAME_SHM $SMOOTHNESS "$@"
   rc=$?
   if [ $rc = 2 -o $rc = 143 -o $rc = 137 ]
   then

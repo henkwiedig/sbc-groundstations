@@ -12,6 +12,12 @@ PIXELPILOT_LIVE_COLORTRANS=""
 # fast pans). Needs a kernel trim knob (VOP2 debugfs vsync_adjust, Artosyn VO
 # sysfs pclk_hz); set to "--vsync-lock" on boards that have one.
 PIXELPILOT_VSYNC_LOCK=""
+# With the vsync lock: how many late frames the latency target waits for, 0
+# (least latency, most dropped frames) .. 5 (fewest drops, ~5 ms more); unset =
+# PixelPilot's default, 4. GS -> System -> Display -> Smoothness sets it and
+# applies it at once. pixelpilot.sh passes it (not PIXELPILOT_ARGS, so older
+# gsmenu-edited copies of this file get it too).
+#PIXELPILOT_VSYNC_SMOOTHNESS=4
 PIXELPILOT_DVR_CODEC="h265"
 PIXELPILOT_DVR_BITRATE="50000"
 PIXELPILOT_DVR_FPS="60"

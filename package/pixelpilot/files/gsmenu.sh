@@ -1307,6 +1307,12 @@ case "$@" in
         echo $PIXELPILOT_VIDEO_SCALE
         emit_values "0.5 1.0"
         ;;
+    "get gs system vsync_smoothness")
+        # PixelPilot's VsyncLock::kDefaultSmoothness when unset
+        . /etc/default/pixelpilot
+        echo ${PIXELPILOT_VSYNC_SMOOTHNESS:-4}
+        emit_values "0 5"
+        ;;
     "get gs system datetime")
         date "+%Y-%m-%d %H:%M %Z"
         ;;
@@ -1523,6 +1529,15 @@ EOF
         ;;
     "set gs system video_scale"*)
         sed -i "s/^PIXELPILOT_VIDEO_SCALE=.*/PIXELPILOT_VIDEO_SCALE=$5/" /etc/default/pixelpilot
+        ;;
+    "set gs system vsync_smoothness"*)
+        # PixelPilot applies it live; this keeps it for the next start (older
+        # copies of the file have no such line: append it)
+        if grep -q '^PIXELPILOT_VSYNC_SMOOTHNESS=' /etc/default/pixelpilot; then
+            sed -i "s/^PIXELPILOT_VSYNC_SMOOTHNESS=.*/PIXELPILOT_VSYNC_SMOOTHNESS=$5/" /etc/default/pixelpilot
+        else
+            echo "PIXELPILOT_VSYNC_SMOOTHNESS=$5" >> /etc/default/pixelpilot
+        fi
         ;;
     "set gs system tz_region"*)
         z=$(tz_current)
