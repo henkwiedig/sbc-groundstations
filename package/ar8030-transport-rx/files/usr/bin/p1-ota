@@ -13,6 +13,13 @@
 # passwords, ssh keys, /etc/default and the AR8030 pairing, without which
 # the new slot would never come back over this link.
 #
+# A stock image -- BetaFPV's P1_SKY_*.img or SinYine's SinYine_F1_TX_*.bin
+# (the air's sysupgrade checks which one fits the unit) -- takes the stock
+# firmware back. Stock talks Artosyn's own protocol, not this ground
+# station's, so the air is gone from this link once it reboots: this
+# warns, and ends after the flash. Stock comes back with its own settings
+# and pairing, for stock goggles.
+#
 # sysupgrade runs detached from the ssh session: a link drop while it
 # flashes does not stop it halfway, and this script asks how it ended.
 #
@@ -40,7 +47,9 @@ Usage: $0 [options] <image.img>
 
 Flashes the P1 air unit's inactive slot with <image.img> (an OpenIPC
 P1_SKY_*.img) over ar_net0, carries its settings and pairing over, and
-reboots it into the new slot.
+reboots it into the new slot. A stock image (BetaFPV P1_SKY_*.img, SinYine
+SinYine_F1_TX_*.bin) goes in the same way; the air then no longer talks to
+this ground station.
 
   -x, --no-reboot      Flash and select the new slot, don't reboot.
   --no-boost           Leave the uplink at its normal MCS/frame setup.
@@ -65,6 +74,7 @@ air() {
 }
 
 no_reboot=
+stock=
 boost=1
 sysupgrade_file=
 img=
@@ -85,8 +95,10 @@ done
 # Artosyn update image: "OTRA", byte 6 the flash type (2 = NAND; the P1
 # SKY AIO's NOR images say 0), customer version at 0x2c, product at 0x80
 # (an air unit's says HM, P1_SKY... before 2.1; BetaFPV's ground images
-# IGNORE or P1_GND_...). The air's sysupgrade checks it all, SHA-256
-# included; this only spares a useless copy over the link.
+# IGNORE or P1_GND_...; SinYine's, Artosyn's reference firmware, the SDK
+# release, 0.17.11-00, for its VRX too: the dtb tells them apart, which the
+# air reads). The air's sysupgrade checks it all, SHA-256 included; this
+# only spares a useless copy over the link.
 case "$(head -c 8 "$img" | od -An -tx1 | tr -d ' \n')" in
 	4f545241????02*) ;;
 	4f545241*) die "$img is not a P1 SKY (NAND) image" ;;
@@ -94,13 +106,16 @@ case "$(head -c 8 "$img" | od -An -tx1 | tr -d ' \n')" in
 	*) die "$img is not a P1 update image" ;;
 esac
 product=$(dd if="$img" bs=1 skip=128 count=64 2>/dev/null | tr -d '\000')
+customer=$(dd if="$img" bs=1 skip=44 count=20 2>/dev/null | tr -d '\000')
 case "$product" in
 	HM | P1_SKY*) ;;
+	[0-9]*.[0-9]*.[0-9]*-[0-9]*) [ -z "$customer" ] || die "$img: product \"$product\", customer version \"$customer\": unknown image" ;;
 	*) die "$img is not an air-unit image (product \"$product\", a ground station's?)" ;;
 esac
-customer=$(dd if="$img" bs=1 skip=44 count=20 2>/dev/null | tr -d '\000')
-[ "$customer" = OpenIPC ] ||
-	die "$img is not an OpenIPC image (customer version \"$customer\"): stock firmware would not come back over this link"
+if [ "$customer" != OpenIPC ]; then
+	stock=1
+	echo "Stock firmware (product \"$product\"): after the flash the air no longer talks to this ground station -- pair it with stock goggles."
+fi
 
 # Which slot (0/1) the air runs from; empty if it isn't a P1 (arto is the
 # P1's update-image tool) or runs from RAM.
@@ -206,7 +221,7 @@ air_rm=1
 
 new_slot=$((1 - slot))
 if [ -n "$no_reboot" ]; then
-	echo "Slot $new_slot flashed and active from the next boot; reboot the air to start it."
+	echo "Slot $new_slot flashed and active from the next boot; reboot the air to start it${stock:+ (stock: it is then gone from this link)}."
 	exit 0
 fi
 
@@ -216,6 +231,10 @@ boot_id=$(air 'cat /proc/sys/kernel/random/boot_id' 2>/dev/null)
 echo "Rebooting the air into slot $new_slot"
 air_rm=
 air 'busybox reboot -d 1 -f' >/dev/null 2>&1
+if [ -n "$stock" ]; then
+	echo "The air starts stock firmware from slot $new_slot: it no longer answers this ground station, pair it with stock goggles."
+	exit 0
+fi
 sleep 3
 connect=3
 deadline=$(($(date +%s) + 180))

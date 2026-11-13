@@ -38,6 +38,7 @@ config BR2_PACKAGE_AR8030_TRANSPORT_RX
 	  And /usr/bin/p1-ota, the same for a BetaFPV P1 air unit: it copies
 	  an OpenIPC P1_SKY_*.img into the air's /tmp over ssh and runs the
 	  air's sysupgrade on it, which keeps the settings and pairing.
+	  A stock image puts BetaFPV's or SinYine's stock firmware back.
 
 	  /usr/bin/air-ota picks the one for an image by its header;
 	  PixelPilot's Drone -> Actions -> OTA update runs it.
