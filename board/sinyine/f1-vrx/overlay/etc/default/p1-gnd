@@ -20,3 +20,11 @@ BACKLIGHT=
 # vr04-fem: the FEM control pin 2.4 as SinYine's own VRX baseband sets it,
 # its function 73 (dir 2: function only), not the VR04's GPIO low
 FEM_PIN_2_4="2 73 0"
+# lifecycled's output power levels (/etc/default/ar8030-transport-rx), in
+# place of the VR04's 200,100,25: SinYine's stock runs the VRX at 25 dBm
+# (bb_config_gnd.json manu_init 25, pwr_range [5, 25]), so 300,200,100,25 =
+# 25/23/20/14 dBm. The top one is set at startup and on every connect -- also
+# on a unit whose overlay still holds an older vr04_gnd.json, whose
+# "pwr_auto": "on" with "auto_init": 5 left the power unset (the chip takes
+# 9-39 dBm only).
+LIFECYCLED_POWER_LEVELS=300,200,100,25

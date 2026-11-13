@@ -18,15 +18,17 @@ AR8030_TRANSPORT_RX_ARGS=""
 # video_strategy 2 (~2.5-3 dB lower thresholds than ar8030.json's), as
 # the stock goggles do for the Ascent Lite. See ar8030-transport
 # common/ar8030_link_policy.h.
-# --default-power none (betafpv_vr04): lifecycled leaves the output power to
-# the baseband config, i.e. the goggles' stock power section in vr04_gnd.json
-# (23 dBm manual, range 5-23). Its own ground table is the Ascent ground's
-# (500 mW -> 24 + 3 = 27 dBm).
-# --max-power 200: BetaFPV runs the VR04's PA up to 23 dBm, which is the
-# 200 mW level (20 + 3); 500 mW and "auto" go to 27. Bench: 23 dBm already
-# costs ~4.5 dB uplink SNR against 20 dBm (100 mW). The menu then offers
-# 200/100/25 mW.
-AR8030_LIFECYCLED_ARGS="--http-port 8899 --link-policy 2 --default-power none --max-power 200"
+# --power-levels: the output power levels the menu offers, in mW; each goes
+# to the chip as 10*log10(mW) dBm and the top one is the default, set at
+# startup and on every connect. VR04 and P1 VRX: 200,100,25 = 23/20/14 dBm,
+# BetaFPV's own top for the VR04 (vr04_gnd.json 23 dBm manual, range 5-23).
+# Bench: 23 dBm already costs ~4.5 dB uplink SNR against 20 dBm at bench
+# range. Other P1 ground units: LIFECYCLED_POWER_LEVELS of /etc/default/p1-gnd
+# (the SinYine F1 VRX: its stock's 25 dBm top).
+AR8030_LIFECYCLED_ARGS="--http-port 8899 --link-policy 2 --power-levels $(
+	LIFECYCLED_POWER_LEVELS=200,100,25
+	[ -r /etc/default/p1-gnd ] && . /etc/default/p1-gnd
+	echo "$LIFECYCLED_POWER_LEVELS")"
 
 # ar8030-flightlog (/etc/init.d/S99ar8030-flightlog, toggle with `flightlog
 # enable|disable`): records link quality

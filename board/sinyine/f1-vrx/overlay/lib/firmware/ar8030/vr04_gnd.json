@@ -191,7 +191,7 @@
     "auto_reset": 25,
     "manu_init": 25,
     "manu_reset": 25,
-    "pwr_auto": "on",
+    "pwr_auto": "off",
     "link_auto": "follow",
     "pwr_range": [
      5,

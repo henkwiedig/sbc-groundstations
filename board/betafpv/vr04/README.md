@@ -180,9 +180,9 @@ uplink SNR 3-9 -> 15.5 dB at 23 dBm (the P1's AGC gain 98 -> 35), the
 goggles' own AGC gain 69/93 -> 32/36. The L_Gnd firmware reads the stock
 VR04 PA calibration's layout (four values per row, no sub-bands) as is.
 
-lifecycled runs with `--max-power 200`: 23 dBm, BetaFPV's maximum for the
-VR04. 500 mW and "auto" would go to 27 dBm; at 23 the PA already costs
-~4.5 dB uplink SNR against 20 dBm.
+lifecycled offers 200/100/25 mW (`--power-levels 200,100,25`, 23/20/14 dBm)
+and sets 200 at startup and on every connect: 23 dBm, BetaFPV's maximum for
+the VR04. At 23 the PA already costs ~4.5 dB uplink SNR against 20 dBm.
 
 ## Unit log
 

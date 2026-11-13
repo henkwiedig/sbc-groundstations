@@ -58,6 +58,13 @@ mounts (the support package did not show up on it).
   own ground power setup and PA calibration (stock bb_config_gnd.json), and
   its front-end pins: those of SinYine's VRX baseband, the VR04's script with
   pin 2.4 on its function 73 (as on the P1 air unit) instead of GPIO low.
+- Output power: stock's 25 dBm top (pwr_range [5, 25]) on both sides. Here
+  lifecycled offers 300/200/100/25 mW (`--power-levels`, 25/23/20/14 dBm;
+  /etc/default/p1-gnd LIFECYCLED_POWER_LEVELS) and sets the top one at
+  startup and on every connect. The config's power section has
+  `"pwr_auto": "off"`: SinYine's "on" starts the chip at `auto_init` 5,
+  below the 9 dBm it takes, so the power stayed unset (uplink SNR ~3 dB on
+  a bench where the VR04 gets ~20).
 - Boot: SinYine's SPL and U-Boot are the same Artosyn build as BetaFPV's P1
   GND 2.1.3 ones (BetaFPV's also know the Dosilicon DS35X12C NAND), over the
   same vendor (DDR training), env and partition table, byte for byte. They
