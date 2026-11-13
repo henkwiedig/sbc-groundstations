@@ -223,27 +223,38 @@ if ! grep -q " /sys/kernel/debug debugfs " /proc/mounts; then
 fi
 
 VIDEO_PIDS=$(pidof pixelpilot ar8030-transport-rx ar8030d ar8030-tun msposd wfb_rx 2>/dev/null)
+# Each thread's CPU ticks with the time they were read (/proc/uptime, in
+# centiseconds), all with shell builtins: with a cat per file a pass over
+# PixelPilot's ~60 threads took over a second on a loaded 2-core box, and
+# dividing by the nominal 1 s blew every figure up ~2.5x (the threads summed
+# to 257 % of a 2-core box once).
 thread_times() {
     for p in $VIDEO_PIDS; do
         for t in /proc/$p/task/*; do
-            s=$(cat "$t/stat" 2>/dev/null) || continue
-            c=$(cat "$t/comm" 2>/dev/null)
+            read -r s 2>/dev/null < "$t/stat" || continue
+            read -r c 2>/dev/null < "$t/comm"
+            read -r up _ < /proc/uptime
             s=${s##*) }
             # after the comm: $1 = field 3 (state), so field N is $((N-2))
             set -- $s
-            echo "$p ${t##*/} $(( ${12} + ${13} )) ${39} ${38} $c"
+            echo "$p ${t##*/} $(( ${12} + ${13} )) ${up%.*}${up#*.} ${39} ${38} $c"
         done
     done
 }
+CLK_TCK=$(getconf CLK_TCK 2>/dev/null || echo 100)
 thread_times > video/.t0
 cat /proc/interrupts > video/interrupts_t0.txt 2>&1
 sleep 1
 thread_times > video/.t1
 cat /proc/interrupts > video/interrupts_t1.txt 2>&1
 {
-    echo "# one second of CPU per thread (100 = one core); policy 0 OTHER, 1 FIFO, 2 RR"
+    echo "# CPU per thread over ~1 s, each thread over its own measured window (100 = one core);"
+    echo "# policy 0 OTHER, 1 FIFO, 2 RR"
     echo "# pid tid cpu% policy rtprio comm"
-    awk 'NR == FNR { t0[$2] = $3; next } ($2 in t0) { printf "%s %s %d %s %s", $1, $2, $3 - t0[$2], $4, $5; for (i = 6; i <= NF; i++) printf " %s", $i; print "" }' \
+    awk -v hz="$CLK_TCK" 'NR == FNR { t0[$2] = $3; u0[$2] = $4; next }
+        ($2 in t0) && $4 > u0[$2] {
+            printf "%s %s %.0f %s %s", $1, $2, ($3 - t0[$2]) * 100 / hz / (($4 - u0[$2]) / 100), $5, $6
+            for (i = 7; i <= NF; i++) printf " %s", $i; print "" }' \
         video/.t0 video/.t1 | sort -k3 -n -r
 } > video/threads.txt 2>&1
 rm -f video/.t0 video/.t1
