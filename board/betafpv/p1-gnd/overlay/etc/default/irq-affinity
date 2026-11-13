@@ -1,0 +1,9 @@
+# Interrupts moved off CPU0 at boot (S96irq-affinity), entries <irq>=<cpu list>:
+# <irq> is the action name /proc/interrupts shows, or dt:<node> for a device
+# tree node's interrupt. CPU0 keeps USB, the SD card and the rest; CPU1 takes
+# the video path: the AR8030's SDIO host (mmc@1b00000), the wave5 decoder and
+# the display controller.
+# VR04 bench, 20 s scp of a recording off the SD card: 36/21/10 frames lost per
+# run -> 0/0/0; display drops in those 10 s windows ~31 -> ~4; unloaded, no
+# change (0-2 drops per 10 s, no missed vblanks).
+IRQ_AFFINITY="dt:soc/mmc@1b00000=1 vpu_irq=1 artosyn-vo=1"

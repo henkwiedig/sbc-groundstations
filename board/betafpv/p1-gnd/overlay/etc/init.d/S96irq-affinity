@@ -1,0 +1,65 @@
+#!/bin/sh
+#
+# Which CPU serves which interrupt (/etc/default/irq-affinity). The GIC gives
+# every device interrupt to CPU0. Under load (USB networking, the SD card)
+# CPU0 then spent ~60 % in hard and soft interrupts, and the AR8030's SDIO
+# work, which the MMC core runs in a normal-priority kworker on the CPU that
+# took the interrupt, fell behind: video frames were lost. This moves the
+# video path's interrupts (AR8030 SDIO host, decoder, display) to CPU1. Late
+# in the boot: the display driver only loads with udev / S50vr04-display;
+# before S97ar8030 and PixelPilot start.
+#
+
+test -r /etc/default/irq-affinity && . /etc/default/irq-affinity
+
+# Linux IRQ numbers for an entry: dt:<node> = the device tree node's first
+# interrupt (GIC cells <type nr flags>: SPI nr + 32, PPI nr + 16; matched in
+# /proc/interrupts, where both SD hosts are just "dw-mci"), else the action
+# name /proc/interrupts shows.
+irqs_for() {
+	case "$1" in
+	dt:*)
+		set -- $(od -An -tu1 "/proc/device-tree/${1#dt:}/interrupts" 2>/dev/null)
+		[ $# -ge 8 ] || return
+		hw=$(( ($5 << 24 | $6 << 16 | $7 << 8 | $8) + ($4 == 1 ? 16 : 32) ))
+		awk -v hw=$hw '{ for (i = 2; i < NF; i++) if ($i ~ /^GIC/ && $(i + 1) == hw) { sub(":", "", $1); print $1 } }' \
+			/proc/interrupts
+		;;
+	*)
+		for d in /sys/kernel/irq/*; do
+			[ "$(cat "$d/actions" 2>/dev/null)" = "$1" ] && echo "${d##*/}"
+		done
+		;;
+	esac
+}
+
+start() {
+	for e in $IRQ_AFFINITY; do
+		what=${e%=*}
+		cpus=${e##*=}
+		irqs=$(irqs_for "$what")
+		if [ -z "$irqs" ]; then
+			logger -t irq-affinity "$what: no such interrupt"
+			continue
+		fi
+		for i in $irqs; do
+			if echo "$cpus" > "/proc/irq/$i/smp_affinity_list" 2>/dev/null; then
+				logger -t irq-affinity "$what (irq $i) -> CPU $cpus"
+			else
+				logger -t irq-affinity "$what (irq $i): CPU $cpus refused"
+			fi
+		done
+	done
+}
+
+case "$1" in
+start|restart|reload)
+	start
+	;;
+stop)
+	;;
+*)
+	echo "Usage: $0 {start|stop|restart}"
+	exit 1
+	;;
+esac
