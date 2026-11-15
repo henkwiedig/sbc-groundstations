@@ -52,6 +52,15 @@ BB_CFG=${BB_CFG:-ar8030/bb_config_gnd_pro.json}
 # ar8030-transport/lifecycled/lc_log.h) -- no RUNDIR/cd needed the way
 # ar8030d's own log still requires (S97ar8030's own RUNDIR comment).
 
+# --default-bandwidth none: this ground's TX, the uplink, stays at the
+# bandwidth both chips' config files give it (2.5 MHz), the one they log in
+# with. The uplink carries little (clock sync, the API, MSP, head tracking),
+# and the narrow channel gains SNR. A chip moved off it goes back by itself
+# 10 s after the link is lost, but keeps the wider bandwidth's LDPC code
+# length when it already sits at its initial MCS, as a ground that lost its
+# uplink does: its logins never decode at the air again and only a chip
+# reset brings the link back. A 20 MHz uplink set by an older image
+# (ar8030.tuning) is ignored; p1-ota/ascent-ota widen it for the copy only.
 start_lifecycled() {
 	[ -x "$LIFECYCLED" ] || return 0
 	start-stop-daemon -S -q -b -m -p "$LIFECYCLED_PIDFILE" -x "$LIFECYCLED" -- \
@@ -59,7 +68,7 @@ start_lifecycled() {
 		--reset-method none \
 		--hook-dir /etc/ar8030/hooks.d \
 		--cfg-path "/lib/firmware/$BB_CFG" \
-		--default-bandwidth 20 \
+		--default-bandwidth none \
 		$AR8030_LIFECYCLED_ARGS
 }
 

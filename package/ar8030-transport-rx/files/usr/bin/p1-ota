@@ -23,9 +23,11 @@
 # sysupgrade runs detached from the ssh session: a link drop while it
 # flashes does not stop it halfway, and this script asks how it ended.
 #
-# The uplink is the slow direction (MCS 1-2 under lifecycled --link-policy
-# 2): the ssh copy runs at ~115 KB/s. For the copy the air goes to the
-# original frame structure and MCS 1-8, as with ascent-ota, or MCS 1-5 on
+# The uplink is the slow direction: the chip config's 2.5 MHz (lifecycled
+# --default-bandwidth none, see S98ar8030-transport-rx) at MCS 1-2 (lifecycled
+# --link-policy 2), ~12 KB/s over ssh. For the copy this ground widens it to
+# 20 MHz on the live link (UPLINK_WIDE below; ~115 KB/s) and the air goes to
+# the original frame structure and MCS 1-8, as with ascent-ota, or MCS 1-5 on
 # an air whose chip can't take more (BOOST_MCS8 below). At MCS 1-5 the copy
 # runs at ~280 KB/s (raw TCP gets ~380, dropbear's 24 KB receive window
 # costs the rest), so an 11 MB image takes ~45 s; MCS 8 took raw TCP from
@@ -49,6 +51,14 @@ BOOST_MCS8="ar8030-linkctl frame-change 0 && ar8030-linkctl mcs-table 2 8 && ar8
 BOOST_MCS8_IF='^user 8: .* rx\{[^}]*bandwidth=(10|20|40)M'
 BOOST_OFF="ar8030-linkctl mcs-range 1 2; ar8030-linkctl frame-change 1"
 BOOST_PID=/tmp/p1-ota-boost.pid
+# The uplink back at the chip config's bandwidth before the air reboots: a
+# ground chip moved off it goes back by itself 10 s after the link is lost,
+# but with the wider bandwidth's LDPC code length, and its logins then never
+# decode at the air. If the link is gone when the copy is over (and does not
+# come back within UPLINK_WAIT_S), this ground's radio restarts instead.
+UPLINK_WIDE=20
+UPLINK_NORMAL=2.5
+UPLINK_WAIT_S=15
 D=/tmp/p1-ota # on the air: image, sysupgrade, its log and exit code
 CHUNK=1048576
 
@@ -63,7 +73,8 @@ SinYine_F1_TX_*.bin) goes in the same way; the air then no longer talks to
 this ground station.
 
   -x, --no-reboot      Flash and select the new slot, don't reboot.
-  --no-boost           Leave the uplink at its normal MCS/frame setup.
+  --no-boost           Leave the uplink at its normal bandwidth, MCS and
+                       frame setup (2.5 MHz, MCS 1-2: ~12 KB/s).
   --sysupgrade=FILE    Run FILE on the air instead of its own
                        /usr/sbin/sysupgrade.
 
@@ -136,18 +147,39 @@ air_slot() {
 }
 
 boosted=
+widened=
 air_rm=
 cleanup() {
 	[ -n "$boosted" ] && boost_off
+	uplink_normal
 	[ -n "$air_rm" ] && air "rm -rf $D" >/dev/null 2>&1
 }
 trap cleanup EXIT
 trap 'exit 1' INT TERM HUP
 
+# This ground's own TX = the uplink. The air's lifecycled answers an uplink
+# change in frame change mode 2 by entering mode 2 again; the wait lets that
+# pass before the boost sets frame change 0.
+uplink_wide() {
+	ar8030-linkctl bandwidth $UPLINK_WIDE >/dev/null 2>&1 || return 1
+	widened=1
+	sleep 3
+}
+
+uplink_normal() {
+	[ -n "$widened" ] || return 0
+	widened=
+	ar8030-linkctl bandwidth $UPLINK_NORMAL -w $UPLINK_WAIT_S >/dev/null 2>&1 && return 0
+	echo "p1-ota: the link is gone with the uplink at $UPLINK_WIDE MHz: restarting this ground's radio" >&2
+	/etc/init.d/S97ar8030 restart >/dev/null 2>&1
+	/etc/init.d/S98ar8030-transport-rx restart >/dev/null 2>&1
+}
+
 boost_off() {
 	air "[ -f $BOOST_PID ] && kill \$(cat $BOOST_PID) 2>/dev/null; rm -f $BOOST_PID; $BOOST_OFF" >/dev/null 2>&1 ||
 		echo "p1-ota: could not restore the uplink; the air does it itself within ${BOOST_SECS}s" >&2
 	boosted=
+	uplink_normal
 }
 
 echo "Air: $AIR"
@@ -187,9 +219,10 @@ fi
 
 if [ -n "$boost" ]; then
 	mcs=5
+	uplink_wide || echo "p1-ota: could not widen the uplink, copying at $UPLINK_NORMAL MHz" >&2
 	air "ar8030-linkctl status 2>/dev/null" | grep -Eq "$BOOST_MCS8_IF" && { BOOST_ON=$BOOST_MCS8; mcs=8; }
 	if air "{ $BOOST_ON; } >/dev/null 2>&1 && { setsid sh -c 'sleep $BOOST_SECS; $BOOST_OFF' </dev/null >/dev/null 2>&1 & echo \$! > $BOOST_PID; }"; then
-		echo "  uplink boost: MCS 1-$mcs"
+		echo "  uplink boost: ${widened:+$UPLINK_WIDE MHz, }MCS 1-$mcs"
 	else
 		echo "p1-ota: uplink boost failed, copying at the normal rate" >&2
 	fi

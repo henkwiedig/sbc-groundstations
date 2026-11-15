@@ -18,14 +18,16 @@
 # downloads an URL there too. dropbear's 24 KiB receive window makes the ssh
 # copy ~30 % slower than HTTP.
 #
-# The uplink is the slow direction: the air holds it at MCS 1-2 (stock's
-# link policy, lifecycled --link-policy 2) inside the frame structure
-# lifecycled exchanges in the downlink's favour, ~1.1 Mbit/s of TCP. For
-# the download the air goes to the original frame structure and MCS 1-8,
-# 4.2 Mbit/s of TCP on the bench (P1 air) at 20 MHz, or MCS 1-5, ~3.1
-# Mbit/s, on an air whose chip can't take more (BOOST_MCS8 below). The air
-# reverts on its own after OTA_BOOST_SECS should this script die, and a
-# reboot starts from lifecycled's defaults anyway.
+# The uplink is the slow direction: the chip config's 2.5 MHz (lifecycled
+# --default-bandwidth none, see S98ar8030-transport-rx), and the air holds it
+# at MCS 1-2 (stock's link policy, lifecycled --link-policy 2) inside the
+# frame structure lifecycled exchanges in the downlink's favour, ~0.1 Mbit/s
+# of TCP (~1.1 at 20 MHz). For the download this ground widens it to 20 MHz
+# on the live link (UPLINK_WIDE below) and the air goes to the original frame
+# structure and MCS 1-8, 4.2 Mbit/s of TCP on the bench (P1 air), or MCS
+# 1-5, ~3.1 Mbit/s, on an air whose chip can't take more (BOOST_MCS8 below).
+# The air reverts on its own after OTA_BOOST_SECS should this script die, and
+# a reboot starts from lifecycled's defaults anyway.
 
 AIR=${AIR_IP:-192.168.100.1}
 GND=${GND_IP:-192.168.100.2}
@@ -45,6 +47,14 @@ BOOST_MCS8="ar8030-linkctl frame-change 0 && ar8030-linkctl mcs-table 2 8 && ar8
 BOOST_MCS8_IF='^user 8: .* rx\{[^}]*bandwidth=(10|20|40)M'
 BOOST_OFF="ar8030-linkctl mcs-range 1 2; ar8030-linkctl frame-change 1"
 BOOST_PID=/tmp/ascent-ota-boost.pid
+# The uplink back at the chip config's bandwidth before the air reboots: a
+# ground chip moved off it goes back by itself 10 s after the link is lost,
+# but with the wider bandwidth's LDPC code length, and its logins then never
+# decode at the air. If the link is gone when the download is over (and does
+# not come back within UPLINK_WAIT_S), this ground's radio restarts instead.
+UPLINK_WIDE=20
+UPLINK_NORMAL=2.5
+UPLINK_WAIT_S=15
 PROGRESS=/tmp/ascent-ota.progress
 D=/tmp/ascent-ota # on the air, for the ssh copy
 CHUNK=1048576
@@ -58,7 +68,8 @@ ar_net0, carries its settings and pairing over, and reboots it into the
 new bank.
 
   -x, --no-reboot      Flash and select the new bank, don't reboot.
-  --no-boost           Leave the uplink at its normal MCS/frame setup.
+  --no-boost           Leave the uplink at its normal bandwidth, MCS and
+                       frame setup (2.5 MHz, MCS 1-2: ~12 KB/s).
   --sysupgrade=FILE    Run FILE on the air instead of its own
                        /usr/sbin/sysupgrade (an air build older than
                        --copy-overlay: pass builder's sysupgrade).
@@ -111,20 +122,41 @@ size=$(wc -c < "$img") # no stat in the VR04 image
 work=$(mktemp -d /tmp/ascent-ota.XXXXXX) || die "mktemp failed"
 http_pid=
 boosted=
+widened=
 air_rm=
 cleanup() {
 	[ -n "$http_pid" ] && kill "$http_pid" 2>/dev/null
 	[ -n "$boosted" ] && boost_off
+	uplink_normal
 	[ -n "$air_rm" ] && air "rm -rf $D" >/dev/null 2>&1
 	rm -rf "$work"
 }
 trap cleanup EXIT
 trap 'exit 1' INT TERM HUP
 
+# This ground's own TX = the uplink. The air's lifecycled answers an uplink
+# change in frame change mode 2 by entering mode 2 again; the wait lets that
+# pass before the boost sets frame change 0.
+uplink_wide() {
+	ar8030-linkctl bandwidth $UPLINK_WIDE >/dev/null 2>&1 || return 1
+	widened=1
+	sleep 3
+}
+
+uplink_normal() {
+	[ -n "$widened" ] || return 0
+	widened=
+	ar8030-linkctl bandwidth $UPLINK_NORMAL -w $UPLINK_WAIT_S >/dev/null 2>&1 && return 0
+	echo "ascent-ota: the link is gone with the uplink at $UPLINK_WIDE MHz: restarting this ground's radio" >&2
+	/etc/init.d/S97ar8030 restart >/dev/null 2>&1
+	/etc/init.d/S98ar8030-transport-rx restart >/dev/null 2>&1
+}
+
 boost_off() {
 	air "[ -f $BOOST_PID ] && kill \$(cat $BOOST_PID) 2>/dev/null; rm -f $BOOST_PID; $BOOST_OFF" >/dev/null 2>&1 ||
 		echo "ascent-ota: could not restore the uplink; the air does it itself within ${BOOST_SECS}s" >&2
 	boosted=
+	uplink_normal
 }
 
 # Which bank (0/1) the air runs, the way its sysupgrade tells (the mtd behind ubi0).
@@ -170,9 +202,10 @@ fi
 
 if [ -n "$boost" ]; then
 	mcs=5
+	uplink_wide || echo "ascent-ota: could not widen the uplink, downloading at $UPLINK_NORMAL MHz" >&2
 	air "ar8030-linkctl status 2>/dev/null" | grep -Eq "$BOOST_MCS8_IF" && { BOOST_ON=$BOOST_MCS8; mcs=8; }
 	if air "{ $BOOST_ON; } >/dev/null 2>&1 && { setsid sh -c 'sleep $BOOST_SECS; $BOOST_OFF' </dev/null >/dev/null 2>&1 & echo \$! > $BOOST_PID; }"; then
-		echo "  uplink boost: MCS 1-$mcs"
+		echo "  uplink boost: ${widened:+$UPLINK_WIDE MHz, }MCS 1-$mcs"
 	else
 		echo "ascent-ota: uplink boost failed, copying at the normal rate" >&2
 	fi
