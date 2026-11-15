@@ -1933,6 +1933,28 @@ EOF
     "button gs actions Reboot")
         reboot
         ;;
+    # Factory reset (Actions, behind PixelPilot's confirm dialog; the output
+    # shows in its window). firstboot puts the unit's settings back to its
+    # firmware's and reboots it. On the air unit it runs detached: the P1's
+    # and the Ascent's forced reboot drops this session without closing it,
+    # and $SSH's time limit must not stop a reset still under way. What it
+    # printed in its first 3 s comes back, unless the unit is rebooting by then.
+    "button air actions Factory reset")
+        $SSH true 2>/dev/null || { echo "The drone is not reachable."; exit 1; }
+        out=$($SSH '(firstboot; echo "firstboot: exit $?") </dev/null >/tmp/firstboot.log 2>&1 &
+            sleep 3; cat /tmp/firstboot.log' 2>/dev/null)
+        [ -n "$out" ] && echo "$out"
+        case "$out" in
+        *"firstboot: exit "[1-9]*)
+            echo "The drone's firmware did not reset its settings: an older image may not support it (BetaFPV P1: update it first)."
+            exit 1
+            ;;
+        esac
+        echo "The drone reboots with its default settings."
+        ;;
+    "button gs actions Factory reset")
+        firstboot
+        ;;
     "search channel")
         echo "Not implmented"
         echo "Not implmented" >&2
