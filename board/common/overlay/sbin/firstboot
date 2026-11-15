@@ -1,7 +1,15 @@
 #!/bin/sh
+# Resets the settings: /init wipes the overlay when it finds this marker.
 
 touch /overlay/.firstboot
 sync
-echo s > /proc/sysrq-trigger  # Sync filesystems
-echo u > /proc/sysrq-trigger  # Remount filesystems read-only
-echo b > /proc/sysrq-trigger  # Reboot
+echo "firstboot: settings are reset on the way back up, rebooting"
+if [ -e /proc/sysrq-trigger ]; then
+	echo s > /proc/sysrq-trigger  # Sync filesystems
+	echo u > /proc/sysrq-trigger  # Remount filesystems read-only
+	echo b > /proc/sysrq-trigger  # Reboot
+fi
+# A kernel without magic SysRq (the AR9311 goggles') has no trigger file, and
+# firstboot used to end here without a reboot, leaving the wipe to whenever
+# the next one came. The marker is on flash already: a plain reboot will do.
+reboot
