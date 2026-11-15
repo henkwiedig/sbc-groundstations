@@ -185,26 +185,13 @@
         {
             "name": "Goggle supply voltage",
             "type": "IconTplTextWidget",
-            "__comment": "os_sensors power entry `name: vrx` in /etc/pixelpilot.yaml (VRX Pro: SARADC ch5, stock's G-Volt; VR04: ADC ch1, the battery)",
+            "__comment": "os_sensors power entry `name: vrx` in /etc/pixelpilot.yaml (VRX Pro: SARADC ch5, stock's G-Volt; VR04: ADC ch1, the battery; SinYine F1 VRX: the INA226 bus voltage, its current reads 0 there)",
             "x": -250,
             "y": 155,
             "icon_path": "head_mounted_device.png",
             "template": "%.2fV",
             "facts": [
                 {"name": "os_mon.power.voltage", "tags": {"sensor": "vrx"}, "convert": "x / 1000"}
-            ]
-        },
-        {
-            "name": "Goggle supply current and power",
-            "type": "TplTextWidget",
-            "__comment": "the supply voltage's row (y 135 = its label's top): an INA226 power entry `name: vrx` (SinYine F1 VRX); hidden where the supply is an ADC divider (no current)",
-            "x": -125,
-            "y": 135,
-            "template": "%.2fA %.1fW",
-            "hide_when_undefined": true,
-            "facts": [
-                {"name": "os_mon.power.current", "tags": {"sensor": "vrx"}, "convert": "x / 1000"},
-                {"name": "os_mon.power.power", "tags": {"sensor": "vrx"}, "convert": "x / 1000000"}
             ]
         },
         {

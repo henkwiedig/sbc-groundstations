@@ -28,8 +28,9 @@ gsmenu:
 # channel 1 is a key ladder here, not the battery as on the VR04.
 os_sensors:
   # The supply: the INA226 on i2c0 0x40 (hwmon "ina226", found by name),
-  # os_mon.power.voltage/current/power{sensor=vrx} like the other goggles'
-  # supply voltage, plus current and power.
+  # os_mon.power.voltage{sensor=vrx} like the other goggles' supply voltage.
+  # It also yields current and power, but they read 0: no goggle current
+  # passes its shunt inputs on this board.
   power:
     - type: ina226
       name: vrx

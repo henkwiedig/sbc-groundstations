@@ -47,10 +47,11 @@ mounts (the support package did not show up on it).
   toggles the recording, 2 s beep three times and drive GPIO 68 low, which
   cuts the power; nothing drives 68 high.
 - Supply monitor: INA226 at 0x40 on i2c0 (stock's `libina226.so`: config
-  0x45ff, calibration 0x0a00, 0.02 mA current LSB, which means a 0.1 ohm
-  shunt). Stock only reads the bus voltage (its log, the low-voltage
-  buzzer), so the shunt value is unconfirmed until a current is checked
-  against a meter.
+  0x45ff, calibration 0x0a00, 0.02 mA current LSB). Stock only reads the
+  bus voltage (its log, the low-voltage buzzer), and a voltmeter is all it
+  is: on a tester's unit the shunt voltage read 0 in three support packages
+  (bus 14.5-15.8 V, goggles running), so current and power read 0 as well
+  and are not on the OSD.
 - Fan: GPIO 106, stock runs a 200 Hz software PWM at 60 % (fan_proxy, which
   takes 10-100 %), no temperature control.
 - Buzzer: PWM 0x1000000 channel 3.
@@ -100,7 +101,7 @@ mounts (the support package did not show up on it).
   check, update file name, display modules, FEM pin), `/etc/default/beeper`,
   `/etc/pixelpilot.yaml` (two ladders: PixelPilot's `vrx_adc` with a
   `device` per key; the INA226 as the `vrx` power sensor: the shared OSD's
-  supply voltage, plus current and power on the same row; the fan's duty),
+  supply voltage; the fan's duty),
   `/etc/default/gs-fan` (the fan for `board/common/gs-fan`'s control loop:
   pwm-gpio `fan-pwm` at 200 Hz, the SoC temperature from artosyn_protemp,
   1 s full-speed start; System -> Fan in PixelPilot), `S96sinyine-power` +
