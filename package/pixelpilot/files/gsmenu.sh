@@ -392,7 +392,8 @@ list_waybeam_sensor_bins() {
 # S98ar8030-transport-rx runs it locally here). "side" below is "air" or
 # "gs". Responses are flat JSON (no "data" wrapper, unlike waybeam's API):
 #   GET  /api/v1/status                       -> {"ok":true,"role":...,"state":...,"bandwidth_mhz":N,"paired":bool,...}
-#   POST /api/v1/bandwidth?mhz=<1|2|5|10|20|40> -> persisted, survives reconnects
+#   POST /api/v1/bandwidth?mhz=<1|2|5|10|20|40> -> persisted, survives reconnects (the ground's
+#                                                   uplink: live link only, see S98ar8030-transport-rx)
 #   GET  /api/v1/channel                      -> {"channel":"auto"|N|null,...,"table_mhz":[...]}
 #   POST /api/v1/channel?chan=<index|auto>    -> persisted on the air unit (AP), which owns the channel
 #   GET  /api/v1/power                        -> {"power":"auto"|mW|null,"power_dbm":N,"power_levels":[...]}
@@ -502,7 +503,8 @@ lifecycled_status_summary() {
         return
     fi
     echo "$j" | jq -r \
-        '.state + " slot=" + (.connected_slot|tostring) + " bw=" + (.bandwidth_mhz|tostring) + "MHz" +
+        '.state + " slot=" + (.connected_slot|tostring) + " bw=" +
+         (if .bandwidth_mhz == 2 then "2.5" elif .bandwidth_mhz == 1 then "1.25" else (.bandwidth_mhz|tostring) end) + "MHz" +
          (if .power == null then "" elif .power == "auto" then " pwr=auto" else " pwr=" + (.power|tostring) + "mW" end) +
          (if .paired then " (paired)" else " (not paired)" end)' 2>/dev/null
 }
@@ -1222,23 +1224,18 @@ case "$@" in
 # runs it on this same box), so unlike the air-side "artosyn"/"waybeam" pages
 # this one is NOT gated on drone detection: it's the ground radio's own local
 # state, queryable/settable whether or not the air unit is currently linked.
-# No channel here: the air unit owns it (see the Air: Artosyn page).
+# No channel here: the air unit owns it (see the Air: Artosyn page). No
+# bandwidth either: this ground's TX is the uplink, which stays at the chip
+# config's 2.5 MHz (see S98ar8030-transport-rx); the status shows it.
 
     "get gs artosyn status")
         lifecycled_status_summary gs
-        ;;
-    "get gs artosyn bandwidth")
-        get_lifecycled_bandwidth gs
-        emit_values "1\n2\n5\n10\n20\n40"
         ;;
     "get gs artosyn power")
         get_lifecycled_power gs
         emit_values_cmd list_lifecycled_power_levels gs
         ;;
 
-    "set gs artosyn bandwidth"*)
-        set_lifecycled_bandwidth gs "$5"
-        ;;
     "set gs artosyn power"*)
         set_lifecycled_power gs "$5"
         ;;
