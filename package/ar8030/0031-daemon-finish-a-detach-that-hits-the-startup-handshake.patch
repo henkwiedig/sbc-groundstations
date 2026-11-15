@@ -1,0 +1,75 @@
+daemon: finish a detach that hits the startup handshake
+
+ar8030d never re-attached to its SDIO device when the device failed
+while the daemon was still handshaking with it -- e.g. ar8030d started
+while the chip re-enumerated from ROM to its RTOS firmware, or a write
+that got EIO right after a start. Every client then got "no device"
+until the daemon was restarted.
+
+The detach (sdiorpc_8030_poll -> stop_sdio -> dev_node_force_exit ->
+del_worknod) waits for every work node to be closed by dev_send_thread.
+Until the device answers the handshake, the hardware node stays
+writable and makes another keep-alive packet every time, and
+dev_send_thread's inner loop only stops on a freed node or an empty
+packet, not on a failed send: it kept sending keep-alives into the dead
+device. And get_working_node() asks the hardware list first, so even
+back in the outer loop the hardware node always won over the closed
+callback node. del_worknod() waited forever -- in the main thread,
+which is the one that polls for the device again.
+
+Leave the inner loop when dev_send() fails (every transport returns < 0
+on an error and >= 0 on success), and hand out closed work nodes before
+writable ones, so a detach always finishes and the device is probed
+again a second later.
+
+Reproduced on a BetaFPV P1 air unit by starting ar8030d without waiting
+for the chip's RTOS: before, "sdio detach" and nothing more, still no
+device 40 s later; after, "stop subdev", "stop dev_node_list", a new
+"sdio probe" one second later, the handshake, and the link came up.
+
+diff --git a/daemon/usb_event_list.c b/daemon/usb_event_list.c
+--- a/daemon/usb_event_list.c
++++ b/daemon/usb_event_list.c
+@@ -94,6 +94,11 @@
+     return pnod->pact->dev_write_able(pnod);
+ }
+ 
++static int find_freed(basenode* pnod, void* par)
++{
++    return pnod && pnod->freeflag;
++}
++
+ struct basenode* plist_find_work_node(dev_node_list* plist, finder fd, void* fdpar)
+ {
+     if (!plist || !fd) {
+@@ -125,7 +130,13 @@
+ static basenode* get_working_node(dev_node_list* plist)
+ {
+     while (plist->running & run_dev) {
+-        basenode* ret = plist_find_usb_node(plist, find_work_and_del, NULL);
++        /* Work nodes being closed first: del_worknod() waits for them, and
++         * the hardware node stays writable for as long as the device never
++         * answered its keep-alive, so it would otherwise always win. */
++        basenode* ret = plist_find_work_node(plist, find_freed, NULL);
++        if (!ret) {
++            ret = plist_find_usb_node(plist, find_work_and_del, NULL);
++        }
+         if (!ret) {
+             ret = plist_find_work_node(plist, find_work_and_del, NULL);
+         }
+@@ -192,9 +203,12 @@
+ 
+             int sdlen = tmpnod->pact->dev_pack_make(tmpnod, sndbuff, SD_BUF_LEN);
+ 
+-            if (sdlen > 0) {
+-                plist->dev_send(plist->devhandle, sndbuff, sdlen, 0);
+-            } else {
++            if (sdlen <= 0) {
++                break;
++            }
++            if (plist->dev_send(plist->devhandle, sndbuff, sdlen, 0) < 0) {
++                /* The device failed: back to get_working_node(), which
++                 * hands out the nodes a detach is waiting for. */
+                 break;
+             }
+         }
