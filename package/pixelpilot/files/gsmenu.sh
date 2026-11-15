@@ -373,6 +373,25 @@ waybeam_video_sizes() {
     fi
 }
 
+# video0.resilience choices: the presets the air's encoder runs, as waybeam's
+# /api/v1/capabilities lists them. The AR9311 has no SVC-T, so no rally, range
+# or fpv; before waybeam 0.98 its /set took fpv anyway, saved it, and waybeam
+# then refused its own config on every start. With intra refresh it sends no
+# periodic IDR, so sprint and patrol would run as racing and endurance. That
+# waybeam lists nothing, so the AR9311 list is spelled out here for it.
+waybeam_resilience_presets() {
+    local opts
+    opts=$(curl -s -m "$WAYBEAM_TIMEOUT" "http://$REMOTE_IP/api/v1/capabilities" 2>/dev/null \
+        | jq -r '.data.fields["video0.resilience"].ui.options // empty | join("\n")' 2>/dev/null)
+    if [ -n "$opts" ]; then
+        printf '%s' "$opts"
+    elif [ "$(waybeam_backend)" = "ar9311" ]; then
+        printf 'off\nrescue\nquality\nracing\nendurance'
+    else
+        printf 'off\nrescue\nquality\nsprint\nracing\nrally\nendurance\npatrol\nrange\nfpv'
+    fi
+}
+
 # isp.sensorBin is a full path (e.g. /etc/sensors/cam_os02k10_100fps_xg1_day.bin)
 # with no listing endpoint of its own -- unlike majestic's sensor_file, waybeam's
 # REST API doesn't expose the air unit's filesystem, so this still goes over the
@@ -847,7 +866,7 @@ case "$@" in
         ;;
     "get air waybeam video_resilience")
         get_waybeam_value video0.resilience
-        emit_values "off\nrescue\nquality\nsprint\nracing\nrally\nendurance\npatrol\nrange\nfpv"
+        emit_values_cmd waybeam_resilience_presets
         ;;
     "get air waybeam audio_enabled")
         [ "$(get_waybeam_value audio.enabled)" = "true" ] && echo 1 || echo 0
