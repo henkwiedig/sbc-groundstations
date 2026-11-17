@@ -419,6 +419,8 @@ list_waybeam_sensor_bins() {
 #   POST /api/v1/power?level=<mW|auto>        -> persisted, per side
 #   GET  /api/v1/frame-change                 -> {"frame_change":0|1|2|null,"frame_change_applied":bool|null,...}
 #   POST /api/v1/frame-change?mode=<0|1|2>    -> persisted on the air unit (AP), which owns it
+#   GET  /api/v1/standby                      -> {"enabled":bool|null,"standby":bool|null,"standby_dbm":N|null,...}
+#   POST /api/v1/standby?enabled=<0|1>        -> persisted on the air unit; 409 without a low-power mode
 #   POST /api/v1/linkctl?cmd=<c>&args=<...>   -> {"ok":true,"exit_code":0,"output":"..."}, one-shot passthrough
 LIFECYCLED_TIMEOUT=5
 
@@ -512,6 +514,29 @@ set_lifecycled_frame_change() {
     local side="$1" mode
     mode=$(first_word "$2")
     curl -s -m "$LIFECYCLED_TIMEOUT" -X POST "$(lifecycled_url "$side")/api/v1/frame-change?mode=${mode}" >/dev/null 2>&1
+}
+
+# Low power when disarmed: whether the air unit drops to its standby power
+# (lifecycled --standby-dbm) while the FC reports disarmed, persisted by the
+# air's lifecycled; the board's image sets the default (--standby-default).
+# The overheat pause lowers the power either way. A switch: 1/0 out, on/off
+# in. Empty when the air's lifecycled has no low-power mode or predates
+# /api/v1/standby; a set then fails with a message instead of doing nothing.
+get_lifecycled_standby() {
+    curl -s -m "$LIFECYCLED_TIMEOUT" "$(lifecycled_url "$1")/api/v1/standby" 2>/dev/null |
+        jq -r 'if .enabled == null then empty elif .enabled then 1 else 0 end' 2>/dev/null
+}
+
+set_lifecycled_standby() {
+    local side="$1" on
+    case "$2" in
+        on|true|1|yes) on=1 ;;
+        *)             on=0 ;;
+    esac
+    curl -s -f -m "$LIFECYCLED_TIMEOUT" -X POST "$(lifecycled_url "$side")/api/v1/standby?enabled=${on}" \
+        >/dev/null 2>&1 && return 0
+    echo "The drone did not take it: it needs a link and an image with this setting." >&2
+    return 2
 }
 
 lifecycled_status_summary() {
@@ -1115,10 +1140,11 @@ case "$@" in
 
 # ── Air: Artosyn ─────────────────────────────────────────────────────────────
 # ar8030-lifecycled's HTTP control API on the air unit ($REMOTE_IP:8899, see
-# lifecycled_url() above). All four are lifecycled-persisted: bandwidth and
-# output power per side, the channel and the frame structure by the air unit
-# alone (it owns them -- a channel change here retunes both ends together
-# over the live link; a frame structure change applies at once while linked).
+# lifecycled_url() above). All five are lifecycled-persisted: bandwidth and
+# output power per side, the channel, the frame structure and the low power
+# when disarmed by the air unit alone (it owns them -- a channel change here
+# retunes both ends together over the live link; a frame structure change
+# applies at once while linked).
 
     "get air artosyn bandwidth")
         get_lifecycled_bandwidth air
@@ -1136,6 +1162,9 @@ case "$@" in
         get_lifecycled_frame_change air
         emit_values "1 (most throughput)\n2 (low latency)\n0 (chip default)"
         ;;
+    "get air artosyn standby")
+        get_lifecycled_standby air
+        ;;
 
     "set air artosyn bandwidth"*)
         set_lifecycled_bandwidth air "$5"
@@ -1148,6 +1177,9 @@ case "$@" in
         ;;
     "set air artosyn frame_change"*)
         set_lifecycled_frame_change air "$5"
+        ;;
+    "set air artosyn standby"*)
+        set_lifecycled_standby air "$5"
         ;;
 
 # ── GS: WFB-NG ──────────────────────────────────────────────────────────────
