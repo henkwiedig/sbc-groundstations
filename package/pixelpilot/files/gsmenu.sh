@@ -1359,7 +1359,7 @@ case "$@" in
         # PixelPilot's VsyncLock::kDefaultSmoothness when unset
         . /etc/default/pixelpilot
         echo ${PIXELPILOT_VSYNC_SMOOTHNESS:-4}
-        emit_values "0 5"
+        emit_values "0 7"
         ;;
     "get gs system datetime")
         date "+%Y-%m-%d %H:%M %Z"

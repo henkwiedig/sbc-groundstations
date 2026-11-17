@@ -13,8 +13,9 @@ PIXELPILOT_LIVE_COLORTRANS=""
 # sysfs pclk_hz); set to "--vsync-lock" on boards that have one.
 PIXELPILOT_VSYNC_LOCK=""
 # With the vsync lock: how many late frames the latency target waits for, 0
-# (least latency, most dropped frames) .. 5 (fewest drops, ~5 ms more); unset =
-# PixelPilot's default, 4. GS -> System -> Display -> Smoothness sets it and
+# (least latency, most dropped frames) .. 5 (~5 ms more than 4), 6 and 7 = 5
+# plus a fixed 8 / 17 ms (half / one frame at 60 fps: nearly no late frames);
+# unset = PixelPilot's default, 4. GS -> System -> Display -> Smoothness sets it and
 # applies it at once. pixelpilot.sh passes it (not PIXELPILOT_ARGS, so older
 # gsmenu-edited copies of this file get it too).
 #PIXELPILOT_VSYNC_SMOOTHNESS=4
