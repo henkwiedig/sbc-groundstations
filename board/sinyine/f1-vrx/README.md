@@ -20,9 +20,12 @@ paired TX and the buttons work.** Every board fact below comes from
 SinYine's stock image `SinYine_F1_VRX_20260914_V1.0.0.bin`: static analysis
 of its SPL, kernel DT, `ar_lowdelay`, `libmpp_service.so` and
 `libpn_hdmitx_it6612x.so`, and those libraries' own code run under qemu (the
-VO's DVP register words, the IT66122's register sequence). Not tried yet:
-the RAM boot, the power button, the fan, the DVR; open: whether the SD card
-mounts (the support package did not show up on it).
+VO's DVP register words, the IT66122's register sequence). A tester's
+support packages (2026-11-12/13) show the SD card mounted (exFAT on
+/media/dvr) and a DVR recording on it, and the power button dead: the
+interrupt-driven gpio-keys found no IRQ (artosyn_gpio has no irqchip), so
+there was no input device; it is gpio-keys-polled since 2026-11-19, not yet
+tried on a unit. Not tried yet: the RAM boot, the fan.
 
 ## The hardware, from stock
 
@@ -43,9 +46,11 @@ mounts (the support package did not show up on it).
 - Keys: ADC channel 0 right 469 / enter 946 / up 1378 mV, channel 1 down
   465 / left 952 / bind 1374 mV (stock's adc-keys thresholds). No back key:
   left steps back in the menu.
-- Power: button GPIO 105, low while pressed. Stock: a short press beeps and
-  toggles the recording, 2 s beep three times and drive GPIO 68 low, which
-  cuts the power; nothing drives 68 high.
+- Power: button GPIO 105, low while pressed, polled (stock's button_proxy
+  every 10 ms). Stock: released within 2 s, one beep and `ar_lowdelay_rx
+  -rec_ctrl` (recording on/off); released after 2 s or more, three beeps,
+  sync, 0.5 s, then GPIO 68 low, which cuts the power; nothing drives 68
+  high.
 - Supply monitor: INA226 at 0x40 on i2c0 (stock's `libina226.so`: config
   0x45ff, calibration 0x0a00, 0.02 mA current LSB). Stock only reads the
   bus voltage (its log, the low-voltage buzzer), and a voltmeter is all it
@@ -81,7 +86,7 @@ mounts (the support package did not show up on it).
 - `dts/artosyn/proxima-9311-sinyine-vrx.dts`: ml-kernel's goggle DT without
   panel, DSI, backlight and the VR04's ladder; the IT66122 on i2c0 (port 0
   from the VO, bus-width 16; port 1 to an hdmi-connector), two adc-keys,
-  gpio-keys "power-button", gpio-poweroff on GPIO 68, pwm-gpio on GPIO 106,
+  gpio-keys-polled "power-button", gpio-poweroff on GPIO 68, pwm-gpio on GPIO 106,
   the INA226 (`ti,ina226`, 100000 µΩ shunt; ina2xx built in, hwmon "ina226"),
   UART2, the hogs above
 - kernel patches, after the P1 ground units' (`../../betafpv/p1-gnd/linux-patches/`)

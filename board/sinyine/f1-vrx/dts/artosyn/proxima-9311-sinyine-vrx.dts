@@ -49,9 +49,14 @@
 		};
 	};
 
-	/* "power" (KEY_POWER): /usr/sbin/sinyine-power, short press and hold */
+	/*
+	 * "power" (KEY_POWER): /usr/sbin/sinyine-power, short press and hold.
+	 * Polled: artosyn_gpio has no irqchip, so the interrupt-driven
+	 * gpio-keys fails to probe (-ENXIO, no input device at all).
+	 */
 	power-button {
-		compatible = "gpio-keys";
+		compatible = "gpio-keys-polled";
+		poll-interval = <20>;
 
 		power {
 			label = "power";

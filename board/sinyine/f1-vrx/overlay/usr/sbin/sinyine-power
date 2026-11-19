@@ -1,11 +1,12 @@
 #!/bin/sh
 #
-# The SinYine F1 VRX's power button (GPIO 105, the DT's gpio-keys
+# The SinYine F1 VRX's power button (GPIO 105, the DT's gpio-keys-polled
 # "power-button", KEY_POWER), as stock's button_proxy handles it:
 # - a short press: one beep, the DVR recording on or off (PixelPilot's
-#   SIGUSR1)
+#   SIGUSR1; stock: ar_lowdelay_rx -rec_ctrl, also a toggle)
 # - held 2 s: three beeps, sync, poweroff; the kernel's gpio-poweroff then
-#   drives GPIO 68 low, which cuts the power
+#   drives GPIO 68 low, which cuts the power (stock acts on the release
+#   after >= 2 s, here at 2 s while still held)
 #
 # It sleeps in a read of the key's event device until something happens
 # there, then follows the key's state (evtest --query: exit status 10 while
