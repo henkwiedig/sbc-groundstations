@@ -1,0 +1,1 @@
+obj-m += artosyn_ge2d.o

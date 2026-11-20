@@ -1,0 +1,13 @@
+config BR2_PACKAGE_ARTOSYN_GE2D
+	bool "artosyn-ge2d"
+	depends on BR2_LINUX_KERNEL
+	help
+	  Kernel module for the GE2D 2D engine of the Artosyn AR9311
+	  (BetaFPV VR04 and P1 HD VRX, SinYine F1 VRX): /dev/ge2d runs
+	  blend/blit command lists on dma-buf frames. PixelPilot's V4L2
+	  build blends the OSD into re-encoded recordings with it.
+
+	  AR9311 only: the module maps the engine at its fixed address.
+
+comment "artosyn-ge2d needs a Linux kernel to be built"
+	depends on !BR2_LINUX_KERNEL

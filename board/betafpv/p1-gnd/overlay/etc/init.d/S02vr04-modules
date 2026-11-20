@@ -6,11 +6,13 @@
 # I/O rail -- then the SD/SDIO host glue, ADC (buttons), SoC temperature and
 # PWM (backlight, buzzer), and the wave5 decoder/encoder: udev's coldplug
 # alone left it out on the SinYine F1 VRX (no /dev/video*, PixelPilot "no
-# device decodes H.265"), while a modprobe brings it up.
+# device decodes H.265"), while a modprobe brings it up. Last the two engines
+# that PixelPilot burns the OSD into recordings with, which no device binds:
+# the dw-axi-dmac copy shim and the GE2D.
 
 case "$1" in
 start)
-	for m in artosyn_gpio dw_mci-artosyn artosyn_adc artosyn_protemp artosyn_pwm wave5; do
+	for m in artosyn_gpio dw_mci-artosyn artosyn_adc artosyn_protemp artosyn_pwm wave5 ml_dmablit artosyn_ge2d; do
 		modprobe $m || echo "S02vr04-modules: $m did not load"
 	done
 	;;
