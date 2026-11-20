@@ -41,6 +41,17 @@ emit_values_cmd() { printf '\x1e'; "$@"; }
 # it is msposd.
 builtin_msp_osd() { grep -q '"type": "---ExternalSurfaceWidget"' /etc/pixelpilot/osd.json 2>/dev/null; }
 
+# Artosyn AR9311 grounds (BetaFPV VR04 / P1 VRX, SinYine VRX): the menu offers
+# the DVR re-encoder only what holds up there -- H.264 (its H.265 is not reliable
+# at the goggles' 500 MHz codec clock: coloured specks that drift until the next
+# keyframe; add h265 to the list below to have it anyway) at up to 20 Mbit/s
+# (more takes codec time and memory from the live picture, and the link rarely
+# carries more than 20 Mbit/s to begin with). 30 and 60 fps: at 60 the live
+# picture keeps up too, but while the menu is open during a recording its
+# latency rises to ~160 ms. A bitrate set in /etc/default/pixelpilot by hand is
+# shown and still used.
+artosyn_ground() { grep -q artosyn /proc/device-tree/compatible 2>/dev/null; }
+
 # Timezone (System -> Date & Time): /etc/localtime links into the zoneinfo
 # tree (BR2_TARGET_TZ_INFO); glibc re-reads it, so running apps follow. The
 # RTC and the kernel stay UTC.
@@ -1409,8 +1420,13 @@ case "$@" in
         ;;
     "get gs system dvr_reenc_codec")
         . /etc/default/pixelpilot
-        echo $PIXELPILOT_DVR_CODEC
-        emit_values "h264\nh265"
+        if artosyn_ground; then
+            echo $PIXELPILOT_DVR_CODEC
+            emit_values "h264"
+        else
+            echo $PIXELPILOT_DVR_CODEC
+            emit_values "h264\nh265"
+        fi
         ;;
     "get gs system dvr_reenc_resolution")
         . /etc/default/pixelpilot
@@ -1424,8 +1440,15 @@ case "$@" in
         ;;
     "get gs system dvr_reenc_bitrate")
         . /etc/default/pixelpilot
-        echo $PIXELPILOT_DVR_BITRATE
-        emit_values "5000\n10000\n15000\n20000\n25000\n30000\n35000\n40000\n45000\n50000"
+        if artosyn_ground; then
+            echo $PIXELPILOT_DVR_BITRATE
+            v="5000\n10000\n15000\n20000"
+            [ "$PIXELPILOT_DVR_BITRATE" -gt 20000 ] 2>/dev/null && v="$v\n$PIXELPILOT_DVR_BITRATE"
+            emit_values "$v"
+        else
+            echo $PIXELPILOT_DVR_BITRATE
+            emit_values "5000\n10000\n15000\n20000\n25000\n30000\n35000\n40000\n45000\n50000"
+        fi
         ;;
     "get gs system rec_enabled"*)
         echo 0

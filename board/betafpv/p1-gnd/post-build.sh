@@ -39,9 +39,13 @@ done
 
 # DVR re-encode at 20 Mbit/s (stock records at 8 or 20): the package's 50
 # with the OSD running saturates both cores and the recording stays empty.
-# And at 30 fps: decoding a 20 Mbit/s 1080p60 stream and encoding 1080p60
-# on the one wave5 core drops the live video every few seconds (30 s
-# recording: 11 dropouts at 60 fps, 2 at 30).
+# And at 30 fps: the live picture's decoder shares the one wave5 core with
+# the re-encoder. 60 fps works as well (11-20, H.264 20 Mbit/s: live latency
+# +2-5 ms, no drops, a full 60 fps file) but raises the live latency to ~160 ms
+# while the menu is open during a recording; the menu offers both.
+# And H.264: the wave5 encoder's H.265 is not reliable at the 500 MHz codec
+# clock these grounds run (coloured specks that drift until the next keyframe;
+# its H.264 encodes bit-exact there).
 # The link is the AR8030 (no WiFi): the menu's link pages and the link
 # widgets come from lifecycled.
 # Vsync lock on, as on the VRX Pro: artosyn_vo's pclk_hz trims the display's
@@ -50,6 +54,7 @@ done
 [ ! -f etc/default/pixelpilot ] ||
 	sed -i -e 's/^PIXELPILOT_DVR_BITRATE=.*/PIXELPILOT_DVR_BITRATE="20000"/' \
 		-e 's/^PIXELPILOT_DVR_FPS=.*/PIXELPILOT_DVR_FPS="30"/' \
+		-e 's/^PIXELPILOT_DVR_CODEC=.*/PIXELPILOT_DVR_CODEC="h264"/' \
 		-e 's/^PIXELPILOT_RX_MODE=.*/PIXELPILOT_RX_MODE="artosyn"/' \
 		-e 's/^PIXELPILOT_VSYNC_LOCK=.*/PIXELPILOT_VSYNC_LOCK="--vsync-lock"/' etc/default/pixelpilot
 grep -q '^PIXELPILOT_VSYNC_LOCK="--vsync-lock"' etc/default/pixelpilot ||
