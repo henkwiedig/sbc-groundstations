@@ -37,12 +37,14 @@ for f in lib/*.so*; do
 		cmp -s "$f" "usr/$f" && ln -sf "../usr/$f" "$f"
 done
 
-# DVR re-encode at 20 Mbit/s (stock records at 8 or 20): the package's 50
-# with the OSD running saturates both cores and the recording stays empty.
-# And at 30 fps: the live picture's decoder shares the one wave5 core with
-# the re-encoder. 60 fps works as well (11-20, H.264 20 Mbit/s: live latency
-# +2-5 ms, no drops, a full 60 fps file) but raises the live latency to ~160 ms
-# while the menu is open during a recording; the menu offers both.
+# DVR: raw by default, the received stream as it is (no codec time or memory
+# taken from the live picture). Re-encoding (menu: Mode reencode or both) has
+# the OSD burnt in (GE2D) at 60 fps, 20 Mbit/s (stock records at 8 or 20): the
+# package's 50 with the OSD running saturates both cores and the recording
+# stays empty. 60 fps holds up (11-20, H.264 20 Mbit/s: live latency +2-5 ms,
+# no drops, a full 60 fps file); only with the menu open during a recording
+# the live latency rises to ~160 ms, as the live picture's decoder shares the
+# one wave5 core with the re-encoder (30 fps, a developer setting, avoids it).
 # And H.264: the wave5 encoder's H.265 is not reliable at the 500 MHz codec
 # clock these grounds run (coloured specks that drift until the next keyframe;
 # its H.264 encodes bit-exact there).
@@ -53,12 +55,17 @@ done
 # so the display follows the camera.
 [ ! -f etc/default/pixelpilot ] ||
 	sed -i -e 's/^PIXELPILOT_DVR_BITRATE=.*/PIXELPILOT_DVR_BITRATE="20000"/' \
-		-e 's/^PIXELPILOT_DVR_FPS=.*/PIXELPILOT_DVR_FPS="30"/' \
+		-e 's/^PIXELPILOT_DVR_FPS=.*/PIXELPILOT_DVR_FPS="60"/' \
 		-e 's/^PIXELPILOT_DVR_CODEC=.*/PIXELPILOT_DVR_CODEC="h264"/' \
+		-e 's/^PIXELPILOT_DVR_OSD=.*/PIXELPILOT_DVR_OSD="--dvr-osd"/' \
+		-e 's/^PIXELPILOT_DVR_MODE=.*/PIXELPILOT_DVR_MODE="raw"/' \
 		-e 's/^PIXELPILOT_RX_MODE=.*/PIXELPILOT_RX_MODE="artosyn"/' \
 		-e 's/^PIXELPILOT_VSYNC_LOCK=.*/PIXELPILOT_VSYNC_LOCK="--vsync-lock"/' etc/default/pixelpilot
 grep -q '^PIXELPILOT_VSYNC_LOCK="--vsync-lock"' etc/default/pixelpilot ||
 	{ echo "post-build: no PIXELPILOT_VSYNC_LOCK in etc/default/pixelpilot"; exit 1; }
+grep -q '^PIXELPILOT_DVR_MODE="raw"' etc/default/pixelpilot &&
+	grep -q '^PIXELPILOT_DVR_OSD="--dvr-osd"' etc/default/pixelpilot ||
+	{ echo "post-build: DVR defaults not set in etc/default/pixelpilot"; exit 1; }
 
 # The OSD is PixelPilot's own MSP DisplayPort renderer, not msposd. On this
 # board msposd holds 41 MB (31.8 MB of its own, full-frame buffers, and the
