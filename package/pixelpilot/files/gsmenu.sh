@@ -193,6 +193,15 @@ set_waybeam_value() {
     curl -s -m "$WAYBEAM_TIMEOUT" "http://$REMOTE_IP/api/v1/set?${key}=${enc}" >/dev/null 2>&1
 }
 
+# video0.stripBalance (waybeam 0.100+, AR9311 strips only): the share in % of
+# the quality gap between the strips that the bitrate closes. It evens out the
+# seam between the strips at the cost of latency (bits move into the strip
+# sent last), restarts waybeam when set, and is a developer row. Other air
+# units, and older waybeam, have none: empty, shown as n/a.
+waybeam_strip_balance() {
+    [ "$(waybeam_backend)" = "ar9311" ] && get_waybeam_value video0.stripBalance
+}
+
 # Live image tuning through waybeam's IQ API (/api/v1/iq, /api/v1/iq/set --
 # CV610 "_schema" shape: data.<group>.fields.<dotted field>). Live only:
 # nothing here is persisted, the ISP falls back to the sensor tuning file
@@ -904,6 +913,16 @@ case "$@" in
         get_waybeam_value video0.resilience
         emit_values_cmd waybeam_resilience_presets
         ;;
+    "get air waybeam video_strip_balance")
+        v=$(waybeam_strip_balance)
+        if [ -n "$v" ]; then
+            echo "$v"
+            emit_values "0\n25\n50\n75\n100"
+        else
+            echo "n/a"
+            emit_values "n/a"
+        fi
+        ;;
     "get air waybeam audio_enabled")
         [ "$(get_waybeam_value audio.enabled)" = "true" ] && echo 1 || echo 0
         ;;
@@ -948,6 +967,9 @@ case "$@" in
         ;;
     "set air waybeam video_resilience"*)
         set_waybeam_value video0.resilience "$5"
+        ;;
+    "set air waybeam video_strip_balance"*)
+        [ "$5" != "n/a" ] && set_waybeam_value video0.stripBalance "$5"
         ;;
     "set air waybeam audio_enabled"*)
         [ "$5" = "on" ] && set_waybeam_value audio.enabled true || set_waybeam_value audio.enabled false
