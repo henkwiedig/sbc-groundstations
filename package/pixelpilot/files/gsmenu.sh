@@ -1610,6 +1610,19 @@ EOF
             echo "PIXELPILOT_VSYNC_SMOOTHNESS=$5" >> /etc/default/pixelpilot
         fi
         ;;
+    "set gs system developer"*)
+        # The menu's developer mode (Enter 7x on System -> Version turns it on,
+        # System -> Developer Mode off): PixelPilot applies it at once, this
+        # keeps it for the next start (pixelpilot.sh passes --developer while
+        # PIXELPILOT_DEVELOPER is set). Its current state PixelPilot knows itself.
+        v=""
+        [ "$5" = "on" ] && v=1
+        if grep -q '^PIXELPILOT_DEVELOPER=' /etc/default/pixelpilot; then
+            sed -i "s/^PIXELPILOT_DEVELOPER=.*/PIXELPILOT_DEVELOPER=\"$v\"/" /etc/default/pixelpilot
+        else
+            echo "PIXELPILOT_DEVELOPER=\"$v\"" >> /etc/default/pixelpilot
+        fi
+        ;;
     "set gs system tz_region"*)
         z=$(tz_current)
         # keep the zone when the region didn't change; else its first city

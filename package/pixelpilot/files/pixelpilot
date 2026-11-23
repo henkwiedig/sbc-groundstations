@@ -19,6 +19,10 @@ PIXELPILOT_VSYNC_LOCK=""
 # applies it at once. pixelpilot.sh passes it (not PIXELPILOT_ARGS, so older
 # gsmenu-edited copies of this file get it too).
 #PIXELPILOT_VSYNC_SMOOTHNESS=4
+# Developer mode: the menu also shows the developer-only settings (e.g. the DVR
+# re-encoder's). Set ("1") = pixelpilot.sh passes --developer. Enter 7 times on
+# GS -> System -> Version switches it on, System -> Developer Mode off again.
+#PIXELPILOT_DEVELOPER="1"
 PIXELPILOT_DVR_CODEC="h265"
 PIXELPILOT_DVR_BITRATE="50000"
 PIXELPILOT_DVR_FPS="60"

@@ -12,7 +12,10 @@ do
   # The menu's Smoothness level (gsmenu.sh), same reason.
   SMOOTHNESS=""
   [ -n "$PIXELPILOT_VSYNC_SMOOTHNESS" ] && SMOOTHNESS="--vsync-lock-smoothness $PIXELPILOT_VSYNC_SMOOTHNESS"
-  /usr/bin/pixelpilot $PIXELPILOT_ARGS $FRAME_SHM $SMOOTHNESS "$@"
+  # The menu's developer mode (gsmenu.sh), same reason.
+  DEVELOPER=""
+  [ -n "$PIXELPILOT_DEVELOPER" ] && DEVELOPER="--developer"
+  /usr/bin/pixelpilot $PIXELPILOT_ARGS $FRAME_SHM $SMOOTHNESS $DEVELOPER "$@"
   rc=$?
   if [ $rc = 2 -o $rc = 143 -o $rc = 137 ]
   then
