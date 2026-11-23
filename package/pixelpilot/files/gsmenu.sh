@@ -1956,6 +1956,16 @@ EOF
         fi
         ;;
 
+# ── GS: Version page (PixelPilot reads the ground's /etc/os-release itself) ──
+
+    "get gs version air")
+        # The air unit's /etc/os-release, or nothing when it doesn't answer (the
+        # page then leaves the air section out). The ping first, so without a
+        # link the page opens after a second, not ssh's 10 s connect timeout.
+        ping -c 1 -W 1 "$REMOTE_IP" >/dev/null 2>&1 && $SSH cat /etc/os-release 2>/dev/null
+        true
+        ;;
+
 # ── GS: Main page (info labels) ─────────────────────────────────────────────
 
     "get gs main Channel")
