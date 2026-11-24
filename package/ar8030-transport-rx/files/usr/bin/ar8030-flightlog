@@ -134,9 +134,17 @@ json_or_null() {
 	esac
 }
 
+# Ground clock in ms. busybox date has no %N (it prints "%3N" literally,
+# which made every line invalid JSON): whole seconds then, and "up"
+# (/proc/uptime, 10 ms) for intervals.
+case "$(date +%3N 2>/dev/null)" in
+[0-9][0-9][0-9]) now_ms() { date +%s%3N; } ;;
+*) now_ms() { echo "$(date +%s)000"; } ;;
+esac
+
 n=0
 while :; do
-	t=$(date +%s%3N)
+	t=$(now_ms)
 	read -r up _ < /proc/uptime
 
 	gnd=$(get "$GND_API/link")
