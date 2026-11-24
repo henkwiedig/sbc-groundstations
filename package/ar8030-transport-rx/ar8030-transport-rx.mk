@@ -14,7 +14,7 @@
 #       >> $(O)/local.mk
 #
 # or as a plain environment variable to make.
-AR8030_TRANSPORT_RX_VERSION = 63b5185a18a1b00bf2f594d04e7ec4f71c387dd2
+AR8030_TRANSPORT_RX_VERSION = 3e91bb599c63a30dc321adbac74b72f71fcd8ed2
 AR8030_TRANSPORT_RX_SITE = https://github.com/henkwiedig/ar8030-transport.git
 AR8030_TRANSPORT_RX_SITE_METHOD = git
 AR8030_TRANSPORT_RX_LICENSE = MIT
@@ -92,6 +92,8 @@ define AR8030_TRANSPORT_RX_INSTALL_TARGET_CMDS
 		$(TARGET_DIR)/usr/bin/ar8030-xdata
 	$(INSTALL) -D -m 0755 $(AR8030_TRANSPORT_RX_PKGDIR)/files/etc/ar8030/hooks.d/connected/30-ifup.sh \
 		$(TARGET_DIR)/etc/ar8030/hooks.d/connected/30-ifup.sh
+	$(INSTALL) -D -m 0755 $(AR8030_TRANSPORT_RX_PKGDIR)/files/etc/ar8030/hooks.d/connected/40-bw-auto.sh \
+		$(TARGET_DIR)/etc/ar8030/hooks.d/connected/40-bw-auto.sh
 	$(INSTALL) -D -m 0755 $(AR8030_TRANSPORT_RX_PKGDIR)/files/etc/ar8030/hooks.d/dropped/30-ifdown.sh \
 		$(TARGET_DIR)/etc/ar8030/hooks.d/dropped/30-ifdown.sh
 	$(INSTALL) -D -m 0755 $(AR8030_TRANSPORT_RX_PKGDIR)/files/etc/ar8030/hooks.d/connected/10-beep.sh \

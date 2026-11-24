@@ -1,0 +1,60 @@
+com: add BB_SET_BANDWIDTH_MODE, missing from this SDK build
+
+The chip's MCS policy can step the bandwidth as well (bw_auto): instead
+of going below a set MCS it halves the bandwidth, instead of going above
+another it doubles it, coordinated with the peer like an MCS change. The
+range and thresholds come from the slot cfg's mcs "bw_auto" block, read
+when the link is set up; request 0x2000020 switches it on or off at run
+time. Newer Artosyn SDKs call that request BB_SET_BANDWIDTH_MODE and
+carry it in their ioctl table; this build skips from BB_REQ_SET order 31
+to 33, so its client library refuses to send it ("req not found").
+
+Host side only: the daemon forwards the request to the chip unchanged,
+and the stock RTOS answers it. In 1V1 mode it applies to the PHY user
+that receives the slot -- on a DEV the BR, the AP's downlink, which is
+where the bandwidth decision for video belongs.
+
+Mirrors builder's identical patch (same vendor source).
+
+--- a/com/bb_api.h
++++ b/com/bb_api.h
+@@ -180,6 +180,16 @@
+ #define BB_SET_LNA                          BB_REQUEST(BB_REQ_SET, 29)  /**<@note 设置LNA bypass状态*/
+ #define BB_SET_POWER_RANGE                  BB_REQUEST(BB_REQ_SET, 30)  /**<@note 设置power范围*/
+ #define BB_FORCE_CLS_SOCKET                 BB_REQUEST(BB_REQ_SET, 31) /**<@note 强制关闭一个socket 可能会造成socket信息不同步*/
++/**<@note Bandwidth control mode of one slot: 1 = the chip's own MCS policy
++ * also steps the bandwidth (bw_auto), 0 = manual. Order 32, missing from
++ * this SDK build (the BB_REQ_SET numbering here skips from 31 to 33);
++ * definition and wire struct as in newer Artosyn SDKs, whose ioctl table
++ * carries it. The RTOS handles request 0x2000020 in single-user (1V1)
++ * mode only: it sets the policy flag of the PHY user that receives the
++ * slot -- on a DEV the BR, the AP's downlink -- and leaves the range and
++ * thresholds to the slot's cfg mcs bw_auto block, read at link set-up,
++ * which also resets the flag to the cfg's own "enable". */
++#define BB_SET_BANDWIDTH_MODE               BB_REQUEST(BB_REQ_SET, 32)
+ #define BB_SET_LOCAL_MAC                    BB_REQUEST(BB_REQ_SET, 33)  /**<@note 设置本机运行时MAC*/
+ /**<@note Set one MCS policy table entry directly on the chip's live state
+  * -- reverse-engineered from stock's ar_ldy_gnd binary (Ghidra decompile
+@@ -1786,6 +1796,12 @@
+     uint8_t             bandwidth;                              /**<@note 目标bandwidth 类型：bb_bandwidth_e*/
+ } bb_set_bandwidth_t;
+ 
++/**Input parameter structure for set command BB_SET_BANDWIDTH_MODE.*/
++typedef struct {
++    uint8_t             slot;                                   /**<@note target slot, type: bb_slot_e*/
++    uint8_t             mode;                                   /**<@note 1 = bandwidth adaptive, 0 = manual*/
++} bb_set_bandwidth_mode_t;
++
+ /**定义设置命令BB_SET_POWER_SAVE_MODE的输入参数结构*/
+ typedef struct {
+     int8_t              mode;                                   /**<@note 节能模式     0=手动 1=自动*/
+--- a/com/ioctl_tab.c
++++ b/com/ioctl_tab.c
+@@ -98,6 +98,7 @@
+     { BB_FORCE_CLS_SOCKET,      sizeof(bb_force_close_socket_t),       0                                     },
+     { BB_SET_REMOTE,            sizeof(bb_set_remote_t),               0                                     },
+     { BB_SET_BANDWIDTH,         sizeof(bb_set_bandwidth_t),            0                                     },
++    { BB_SET_BANDWIDTH_MODE,    sizeof(bb_set_bandwidth_mode_t),       0                                     },
+     { BB_SET_DFS,               sizeof(bb_set_dfs_t),                  0                                     },
+     { BB_SET_RF,                sizeof(bb_set_rf_t),                   0                                     },
+     { BB_SET_POWER_SAVE_MODE,   sizeof(bb_set_power_save_mode_t),      0                                     },

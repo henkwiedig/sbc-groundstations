@@ -433,6 +433,12 @@ list_waybeam_sensor_bins() {
 #   GET  /api/v1/status                       -> {"ok":true,"role":...,"state":...,"bandwidth_mhz":N,"paired":bool,...}
 #   POST /api/v1/bandwidth?mhz=<1|2|5|10|20|40> -> persisted, survives reconnects (the ground's
 #                                                   uplink: live link only, see S98ar8030-transport-rx)
+#   POST /api/v1/bandwidth?mhz=auto           -> air unit: persisted; it sets no bandwidth, the ground's
+#                                                chip steps the video's ({"bandwidth_auto":true} in status)
+#   POST /api/v1/bandwidth?auto=<0|1>         -> ground: its chip's bandwidth policy for the video it
+#                                                receives (follows the air unit's setting, see
+#                                                hooks.d/connected/40-bw-auto.sh); 409 if its radio
+#                                                config has no usable bw_auto block
 #   GET  /api/v1/channel                      -> {"channel":"auto"|N|null,...,"table_mhz":[...]}
 #   POST /api/v1/channel?chan=<index|auto>    -> persisted on the air unit (AP), which owns the channel
 #   GET  /api/v1/power                        -> {"power":"auto"|mW|null,"power_dbm":N,"power_levels":[...]}
@@ -452,13 +458,31 @@ lifecycled_status_json() {
     curl -s -m "$LIFECYCLED_TIMEOUT" "$(lifecycled_url "$1")/api/v1/status" 2>/dev/null
 }
 
+# The air unit's bandwidth: "auto" while it leaves the video bandwidth to
+# this ground's chip, else MHz.
 get_lifecycled_bandwidth() {
-    lifecycled_status_json "$1" | jq -r '.bandwidth_mhz // empty' 2>/dev/null
+    lifecycled_status_json "$1" |
+        jq -r 'if .bandwidth_auto == true then "auto" else (.bandwidth_mhz // empty) end' 2>/dev/null
 }
 
+# "auto" on the air unit also switches this ground's chip policy on (as
+# hooks.d/connected/40-bw-auto.sh does after every connect); a fixed
+# bandwidth switches it off first. Either order keeps one side from undoing
+# what the other does: the air unit re-applies a fixed bandwidth it no
+# longer sees, and a policy left on keeps narrowing.
 set_lifecycled_bandwidth() {
     local side="$1" mhz="$2"
-    curl -s -m "$LIFECYCLED_TIMEOUT" -X POST "$(lifecycled_url "$side")/api/v1/bandwidth?mhz=${mhz}" >/dev/null 2>&1
+    local air gs
+    air="$(lifecycled_url air)/api/v1/bandwidth" gs="$(lifecycled_url gs)/api/v1/bandwidth"
+    if [ "$side" = "air" ] && [ "$mhz" = "auto" ]; then
+        curl -s -m "$LIFECYCLED_TIMEOUT" -X POST "${air}?mhz=auto" >/dev/null 2>&1
+        curl -s -m "$LIFECYCLED_TIMEOUT" -X POST "${gs}?auto=1" >/dev/null 2>&1
+    elif [ "$side" = "air" ]; then
+        curl -s -m "$LIFECYCLED_TIMEOUT" -X POST "${gs}?auto=0" >/dev/null 2>&1
+        curl -s -m "$LIFECYCLED_TIMEOUT" -X POST "${air}?mhz=${mhz}" >/dev/null 2>&1
+    else
+        curl -s -m "$LIFECYCLED_TIMEOUT" -X POST "$(lifecycled_url "$side")/api/v1/bandwidth?mhz=${mhz}" >/dev/null 2>&1
+    fi
 }
 
 # Output power: a level in mW or "auto" (ground only), persisted per side by
@@ -569,6 +593,7 @@ lifecycled_status_summary() {
     echo "$j" | jq -r \
         '.state + " slot=" + (.connected_slot|tostring) + " bw=" +
          (if .bandwidth_mhz == 2 then "2.5" elif .bandwidth_mhz == 1 then "1.25" else (.bandwidth_mhz|tostring) end) + "MHz" +
+         (if .bandwidth_auto == true then " (auto)" else "" end) +
          (if .power == null then "" elif .power == "auto" then " pwr=auto" else " pwr=" + (.power|tostring) + "mW" end) +
          (if .paired then " (paired)" else " (not paired)" end)' 2>/dev/null
 }
@@ -1181,7 +1206,7 @@ case "$@" in
 
     "get air artosyn bandwidth")
         get_lifecycled_bandwidth air
-        emit_values "1\n2\n5\n10\n20\n40"
+        emit_values "auto\n1\n2\n5\n10\n20\n40"
         ;;
     "get air artosyn power")
         get_lifecycled_power air

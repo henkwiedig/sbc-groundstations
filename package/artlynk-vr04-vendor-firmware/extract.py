@@ -211,6 +211,14 @@ def make_gnd_config(out, ascent_cfg):
     vr04, cfg = json.loads(stock.read_text()), json.loads(Path(ascent_cfg).read_text())
     cfg["baseband"]["power_calibration"] = vr04["baseband"]["power_calibration"]
     cfg["baseband"]["basic"]["power"] = vr04["baseband"]["basic"]["power"]
+    # bw_auto: the goggles' chip steps the video bandwidth while the air
+    # unit's bandwidth setting is "auto" (ar8030-lifecycled switches it on at
+    # run time; the cfg keeps it off). Thresholds in JSON MCS: narrow instead
+    # of going below 3, widen instead of going above 6 -- the stock 0/0 would
+    # narrow to the bottom class. Range 5-20 MHz, as stock.
+    bw = cfg["baseband"]["basic"]["dev"]["mcs"]["slot"].get("bw_auto")
+    if bw is not None:
+        bw["threshold"] = {"low": 3, "high": 6}
     (out / "vr04_gnd.json").write_text(json.dumps(cfg, indent=1))
 
 
