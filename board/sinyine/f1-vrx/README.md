@@ -62,8 +62,10 @@ tried on a unit. Not tried yet: the RAM boot, the fan.
 - Buzzer: PWM 0x1000000 channel 3.
 - Radio: the Ascent ground baseband firmware (as on the VR04) with SinYine's
   own ground power setup and PA calibration (stock bb_config_gnd.json), and
-  its front-end pins: those of SinYine's VRX baseband, the VR04's script with
-  pin 2.4 on its function 73 (as on the P1 air unit) instead of GPIO low.
+  the VR04's front-end script. Its pin 2.4 (the second PA) follows the uplink
+  mode: function 73, as SinYine's VRX baseband sets it, with SinYine's TX
+  image (2TX_STBC, both PAs), GPIO low with a 1TX air unit such as a P1,
+  where the second PA would only add noise.
 - Output power: stock's 25 dBm top (pwr_range [5, 25]) on both sides. Here
   lifecycled offers 300/200/100/25 mW (`--power-levels`, 25/23/20/14 dBm;
   /etc/default/p1-gnd LIFECYCLED_POWER_LEVELS) and sets the top one at

@@ -16,12 +16,20 @@
 # Pins through PRJ 0x0e (prj_rpc_set_gpio, ar8030-linkctl prj-cmd). The pad bit
 # has no host request: it goes through the chip console's memory write (m).
 #
-# The other P1 ground units: FEM_PIN_2_4 of /etc/default/p1-gnd is pin 2.4's
-# "dir func level" where their own baseband sets it otherwise (the SinYine F1
-# VRX's: function 73, as on the P1 air unit).
+# Pin 2.4 switches the second PA (path B). BetaFPV's c401_1t2r holds it low;
+# its c401_2t2r, the two-PA uplink, gives it function 73, which the chip drives
+# itself. Which of the two applies is the air unit's choice: the goggles send
+# in the mode its slot rx_mode asks for -- 1TX for a P1 or an Ascent (one
+# receive path), 2TX_STBC for a SinYine F1 TX. So with FEM_PIN_2_4 "auto" (the
+# default) the pin follows the uplink mode of the link (ar8030-linkctl status,
+# user 0's tx mode; the chip sets it at LOCK, before CONNECT): function 73 for
+# a two-antenna uplink, GPIO low for 1TX and without a link. Never 73 for 1TX:
+# the second PA is then on without a signal and only adds noise (SinYine F1
+# VRX, 11-15: uplink SNR 4.2 dB against 9.7 with path A alone).
+# FEM_PIN_2_4 in /etc/default/p1-gnd may instead hold a fixed "dir func level".
 
 LOCK=/tmp/vr04-fem.pid
-FEM_PIN_2_4="1 38 0"
+FEM_PIN_2_4=auto
 [ -r /etc/default/p1-gnd ] && . /etc/default/p1-gnd
 
 log() {
@@ -43,6 +51,23 @@ trap 'rm -f $LOCK' EXIT
 # the SDIO pads) is 0 once SDIO runs, and stays 0.
 ar8030-linkctl chip-cli -w 500 "m 0x0a10a000 32 2" >/dev/null 2>&1
 
+# The uplink mode, for FEM_PIN_2_4 "auto" (see the top).
+pin_2_4="$FEM_PIN_2_4"
+uplink="fixed pin"
+if [ "$FEM_PIN_2_4" = auto ]; then
+	status=$(ar8030-linkctl status 2>/dev/null)
+	if echo "$status" | grep -q '^slot 0: CONNECT'; then
+		uplink=$(echo "$status" | sed -n 's/^user 0: tx{[^}]* mode=\([0-9A-Z_]*\)}.*/\1/p')
+		uplink=${uplink:-"mode unknown"}
+	else
+		uplink="none (no link)"
+	fi
+	case "$uplink" in
+	2TX_STBC | 2TX_MIMO) pin_2_4="2 73 0" ;;
+	*) pin_2_4="1 38 0" ;;
+	esac
+fi
+
 # port pin dir func level: dir 0 input, 1 output, 2 only the pin function.
 # Function 0x18 + pin index is the pin's plain GPIO (index: port 0 pins 0-4,
 # port 1 5-9, port 2 10-15, port 3 16-28).
@@ -56,7 +81,7 @@ while read -r port pin dir func level what; do
 		fail=1
 	fi
 done <<EOF
-2 4 $FEM_PIN_2_4 FEM control, VR04: GPIO low as stock (Ascent: 0x9d)
+2 4 $pin_2_4 second PA: function 73 for a two-antenna uplink, else GPIO low (Ascent: 0x9d)
 2 0 0 34 0 unused by stock: GPIO input (Ascent: RF control 75)
 2 1 0 35 0 unused by stock: GPIO input (Ascent: RF control 70)
 2 3 0 37 0 unused by stock: GPIO input (Ascent: 0x9e)
@@ -67,5 +92,11 @@ done <<EOF
 EOF
 
 pad=$(ar8030-linkctl chip-cli -w 800 "d 0x0a10a000 4" 2>/dev/null | tr -d '\r' | grep -m1 '^0A10A000:' | cut -c1-21)
-log "front end set up (pins ok: $([ $fail = 0 ] && echo yes || echo no)), ${pad:-pad register not read back}"
+case "$pin_2_4" in
+"2 73 0") pa_b="second PA on (pin 2.4 function 73)" ;;
+"1 38 0") pa_b="second PA off (pin 2.4 GPIO low)" ;;
+*) pa_b="pin 2.4: $pin_2_4" ;;
+esac
+log "front end set up (pins ok: $([ $fail = 0 ] && echo yes || echo no)), ${pad:-pad register not read back}," \
+	"uplink $uplink: $pa_b"
 exit $fail

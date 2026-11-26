@@ -175,7 +175,14 @@ functions on them, so PA and LNA barely work. BetaFPV's baseband (the same
 binary as the P1 air unit's) sets them up from its config's `"board":
 "c401"` with the broadcast in `1TX`, its board type c401_1t2r: port 2 pads
 on, pin 2.4 a GPIO driven low. `/usr/sbin/vr04-fem` does that after every
-chip start (lifecycled hooks `idle` and `connected`). Bench, linked to a P1:
+chip start (lifecycled hooks `idle` and `connected`). Pin 2.4 switches the
+second PA: on every connect the script sets it from the link's uplink mode,
+which the air unit's slot asks for (`ar8030-linkctl status`, user 0's tx
+mode). A 2TX_STBC uplink (SinYine F1 TX) gets function 73, BetaFPV's
+c401_2t2r, and both PAs send; 1TX (P1, Ascent) and no link keep it low, since
+the second PA would only add noise there. A P1 must stay on 1TX: with its one
+receive path it can't use the second antenna's stream, and a strong one even
+ruins a weak first one (bench 2026-11-26, VR04 and VRX Pro alike). Bench, linked to a P1:
 uplink SNR 3-9 -> 15.5 dB at 23 dBm (the P1's AGC gain 98 -> 35), the
 goggles' own AGC gain 69/93 -> 32/36. The L_Gnd firmware reads the stock
 VR04 PA calibration's layout (four values per row, no sub-bands) as is.

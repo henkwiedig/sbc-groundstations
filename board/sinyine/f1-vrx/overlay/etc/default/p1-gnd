@@ -17,9 +17,10 @@ UPDATE_GLOB='SinYine_F1_VRX_*.bin'
 DISPLAY_MODULES="artosyn_gpio artosyn_pwm display-connector ite-it66121 artosyn_vo"
 # HDMI: no backlight, the framebuffer alone says the display is up
 BACKLIGHT=
-# vr04-fem: the FEM control pin 2.4 as SinYine's own VRX baseband sets it,
-# its function 73 (dir 2: function only), not the VR04's GPIO low
-FEM_PIN_2_4="2 73 0"
+# vr04-fem: pin 2.4 (the second PA) follows the uplink mode, as on the VR04:
+# function 73 with SinYine's TX image (its slot asks for 2TX_STBC), GPIO low
+# with a 1TX air unit (P1, Ascent). SinYine's own VRX baseband holds 73 for
+# good, but there the VRX is the AP and always sends 2TX_STBC.
 # lifecycled's output power levels (/etc/default/ar8030-transport-rx), in
 # place of the VR04's 200,100,25: SinYine's stock runs the VRX at 25 dBm
 # (bb_config_gnd.json manu_init 25, pwr_range [5, 25]), so 300,200,100,25 =
